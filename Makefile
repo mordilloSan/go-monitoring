@@ -9,8 +9,8 @@ endif
 
 GO_INSTALL_DIR := $(HOME)/.go
 GOLANGCI_LINT_OPTS ?= --modules-download-mode=mod
-BUILD_DIR := $(CURDIR)/build
 AGENT_PKG := ./internal/cmd
+BUILD_OUTPUT = $(CURDIR)/go-monitoring
 
 GO_BIN := $(or $(wildcard $(GO_INSTALL_DIR)/bin/go),$(shell command -v go 2>/dev/null))
 ifeq ($(GO_BIN),)
@@ -84,14 +84,13 @@ endif
 
 clean:
 	@( cd "$(BACKEND_DIR)" && $(GO_CMD_ENV) "$(GO_BIN)" clean )
-	rm -rf "$(BUILD_DIR)"
+	rm -f "$(BUILD_OUTPUT)"
 
 test:
 	@( cd "$(BACKEND_DIR)" && $(GO_CMD_ENV) "$(GO_BIN)" test ./... )
 
 build:
-	@mkdir -p "$(BUILD_DIR)"
-	@( cd "$(BACKEND_DIR)" && GOOS=$(OS) GOARCH=$(ARCH) $(GO_CMD_ENV) "$(GO_BIN)" build $(AGENT_GO_TAGS) -o "$(BUILD_DIR)/beszel-agent_$(OS)_$(ARCH)" -ldflags "-w -s" $(AGENT_PKG) )
+	@( cd "$(BACKEND_DIR)" && GOOS=$(OS) GOARCH=$(ARCH) $(GO_CMD_ENV) "$(GO_BIN)" build $(AGENT_GO_TAGS) -o "$(BUILD_OUTPUT)" -ldflags "-w -s" $(AGENT_PKG) )
 
 dev:
 	@if command -v entr >/dev/null 2>&1; then \
@@ -99,4 +98,3 @@ dev:
 	else \
 		cd "$(BACKEND_DIR)" && $(GO_CMD_ENV) "$(GO_BIN)" run $(AGENT_GO_TAGS) $(AGENT_PKG); \
 	fi
-

@@ -131,9 +131,9 @@ func (a *Agent) collectAndPersist(now time.Time) error {
 		return err
 	}
 
-	if err := a.refreshSmartIfDue(now); err != nil {
-		slog.Warn("smart refresh failed", "err", err)
-	}
+	// SMART refresh failures are logged when the refresh state changes so
+	// persistent probe failures do not emit the same warning every cycle.
+	_ = a.refreshSmartIfDue(now)
 	if err := a.store.RunMaintenance(now); err != nil {
 		return fmt.Errorf("maintenance failed: %w", err)
 	}
@@ -152,11 +152,15 @@ func (a *Agent) refreshSmartIfDue(now time.Time) error {
 		return nil
 	}
 
-	return a.refreshSmart(now, false)
+	err := a.refreshSmart(now, false)
+	a.logSmartRefreshResult(err)
+	return err
 }
 
 func (a *Agent) RefreshSmartNow() error {
-	return a.refreshSmart(time.Now().UTC(), true)
+	err := a.refreshSmart(time.Now().UTC(), true)
+	a.logSmartRefreshResult(err)
+	return err
 }
 
 func (a *Agent) refreshSmart(now time.Time, forceScan bool) error {
@@ -179,4 +183,27 @@ func (a *Agent) refreshSmart(now time.Time, forceScan bool) error {
 
 func (a *Agent) ListenAddr() string {
 	return a.listenAddr
+}
+
+func (a *Agent) logSmartRefreshResult(err error) {
+	currentError := ""
+	if err != nil {
+		currentError = err.Error()
+	}
+
+	a.Lock()
+	previousError := a.lastSmartRefreshError
+	a.lastSmartRefreshError = currentError
+	a.Unlock()
+
+	switch {
+	case currentError == "":
+		if previousError != "" {
+			slog.Info("smart refresh recovered")
+		}
+	case previousError != currentError:
+		slog.Warn("smart refresh failed", "err", err)
+	default:
+		slog.Debug("smart refresh still failing", "err", err)
+	}
 }

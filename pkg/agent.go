@@ -1,7 +1,5 @@
-// Package agent implements the standalone Beszel monitoring agent.
-//
-// The agent runs on the local system, collects metrics, stores them in SQLite,
-// and serves them over the built-in HTTP API.
+// Package agent runs the standalone monitoring agent, collecting local system
+// metrics, storing them in SQLite, and serving them over the built-in HTTP API.
 package agent
 
 import (
@@ -46,6 +44,7 @@ type Agent struct {
 	connectionType            system.ConnectionType                                 // Connection type reported in summaries
 	smartRefreshInterval      time.Duration                                         // Interval used for SMART refresh
 	lastSmartRefresh          time.Time                                             // Last successful SMART refresh
+	lastSmartRefreshError     string                                                // Last SMART refresh error to avoid repeating identical warnings
 	store                     *Store                                                // Persistent local store
 	httpServer                *http.Server                                          // Standalone HTTP server
 	listenAddr                string                                                // Effective listen address

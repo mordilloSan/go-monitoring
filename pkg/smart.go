@@ -536,10 +536,10 @@ func (sm *SmartManager) CollectSmart(deviceInfo *DeviceInfo) error {
 
 	if !hasValidData {
 		if err != nil {
-			slog.Info("smartctl failed", "device", deviceInfo.Name, "err", err)
+			slog.Debug("smartctl failed", "device", deviceInfo.Name, "err", err)
 			return err
 		}
-		slog.Info("no valid SMART data found", "device", deviceInfo.Name)
+		slog.Debug("no valid SMART data found", "device", deviceInfo.Name)
 		return errNoValidSmartData
 	}
 
