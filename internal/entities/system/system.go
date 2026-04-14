@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/henrygd/beszel/internal/entities/container"
-	"github.com/henrygd/beszel/internal/entities/systemd"
+	"github.com/mordilloSan/go-monitoring/internal/entities/container"
+	"github.com/mordilloSan/go-monitoring/internal/entities/systemd"
 )
 
 type Stats struct {

@@ -6,9 +6,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/henrygd/beszel/internal/buildinfo"
-	"github.com/henrygd/beszel/pkg/agent"
-	"github.com/henrygd/beszel/pkg/agent/health"
+	"github.com/mordilloSan/go-monitoring/internal/buildinfo"
+	agent "github.com/mordilloSan/go-monitoring/pkg"
+	"github.com/mordilloSan/go-monitoring/pkg/health"
 	"github.com/spf13/pflag"
 )
 

@@ -10,8 +10,8 @@
 
 
 /internal/cmd/agent/agent
-/pkg/agent/lhm/bin/
-/pkg/agent/lhm/obj/
+/pkg/lhm/bin/
+/pkg/lhm/obj/
 
 *.test
 *.bak

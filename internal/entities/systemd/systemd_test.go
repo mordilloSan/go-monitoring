@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/henrygd/beszel/internal/entities/systemd"
+	"github.com/mordilloSan/go-monitoring/internal/entities/systemd"
 	"github.com/stretchr/testify/assert"
 )
 

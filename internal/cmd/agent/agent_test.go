@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/henrygd/beszel/pkg/agent"
+	agent "github.com/mordilloSan/go-monitoring/pkg"
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 )

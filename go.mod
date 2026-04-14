@@ -1,4 +1,4 @@
-module github.com/henrygd/beszel
+module github.com/mordilloSan/go-monitoring
 
 go 1.26.2
 
