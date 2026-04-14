@@ -8,11 +8,6 @@
 /data/
 /temp/
 
-
-/internal/cmd/agent/agent
-/pkg/lhm/bin/
-/pkg/lhm/obj/
-
 *.test
 *.bak
 *timestamp*

@@ -9,8 +9,16 @@ endif
 
 GO_INSTALL_DIR := $(HOME)/.go
 GOLANGCI_LINT_OPTS ?= --modules-download-mode=mod
-AGENT_PKG := ./internal/cmd
-BUILD_OUTPUT = $(CURDIR)/go-monitoring
+AGENT_PKG    := ./cmd/go-monitoring
+BUILD_OUTPUT  = $(CURDIR)/go-monitoring
+VERSION_PKG  := github.com/mordilloSan/go-monitoring/internal/version
+GIT_VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "untracked")
+GIT_COMMIT   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "")
+BUILD_TIME   ?= $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
+LDFLAGS      := -w -s \
+  -X $(VERSION_PKG).Version=$(GIT_VERSION) \
+  -X $(VERSION_PKG).CommitSHA=$(GIT_COMMIT) \
+  -X $(VERSION_PKG).BuildTime=$(BUILD_TIME)
 
 GO_BIN := $(or $(wildcard $(GO_INSTALL_DIR)/bin/go),$(shell command -v go 2>/dev/null))
 ifeq ($(GO_BIN),)
@@ -90,7 +98,7 @@ test:
 	@( cd "$(BACKEND_DIR)" && $(GO_CMD_ENV) "$(GO_BIN)" test ./... )
 
 build:
-	@( cd "$(BACKEND_DIR)" && GOOS=$(OS) GOARCH=$(ARCH) $(GO_CMD_ENV) "$(GO_BIN)" build $(AGENT_GO_TAGS) -o "$(BUILD_OUTPUT)" -ldflags "-w -s" $(AGENT_PKG) )
+	@( cd "$(BACKEND_DIR)" && GOOS=$(OS) GOARCH=$(ARCH) $(GO_CMD_ENV) "$(GO_BIN)" build $(AGENT_GO_TAGS) -o "$(BUILD_OUTPUT)" -ldflags "$(LDFLAGS)" $(AGENT_PKG) )
 
 dev:
 	@if command -v entr >/dev/null 2>&1; then \

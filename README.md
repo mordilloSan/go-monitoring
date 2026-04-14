@@ -1,0 +1,82 @@
+# go-monitoring
+
+This project is a fork of Beszel, adapted for a different deployment model: a single standalone binary with embedded storage and an HTTP API, without the original hub-agent pattern.
+
+A standalone Go agent that collects local system metrics, persists them to an embedded SQLite store, and exposes them over an HTTP JSON API.
+
+## Features
+
+- **System metrics** — CPU, memory, load, uptime, temperatures and sensors
+- **Storage** — disks, filesystems, SMART attributes, mdraid, eMMC, ZFS ARC stats
+- **GPU** — NVIDIA (NVML), AMD, Intel, Apple (Darwin), with `nvtop` fallback
+- **Network** — per-interface bandwidth and I/O deltas
+- **Containers** — Docker stats and container history
+- **Services** — systemd unit state (Linux)
+- **Persistence** — embedded SQLite store with rollups for history queries
+- **HTTP API** — health, summary, history, containers, systemd, SMART
+
+## Layout
+
+- [cmd/go-monitoring/](cmd/go-monitoring/) — entrypoint (`main` package)
+- [internal/agent/](internal/agent/) — agent core: collectors, HTTP server, store
+- [internal/model/](internal/model/) — shared data types (system, container, smart, systemd)
+- [internal/health/](internal/health/) — freshness check used by `go-monitoring health`
+- [internal/version/](internal/version/) — version/app metadata
+- [internal/common/](internal/common/), [internal/utils/](internal/utils/), [internal/deltatracker/](internal/deltatracker/) — shared helpers
+- [internal/battery/](internal/battery/), [internal/zfs/](internal/zfs/) — platform-specific helpers
+
+## Build
+
+Requires Go (see [go.mod](go.mod) for the pinned toolchain).
+
+```sh
+make build        # produces ./go-monitoring
+make test
+make golint       # gofmt + go mod tidy + modernize + golangci-lint
+make dev          # runs the agent, live-reloads with `entr` if installed
+make clean
+```
+
+NVML (NVIDIA GPU) support is enabled automatically on `linux/amd64` glibc hosts. Override with `NVML=true` or `NVML=false`. Cross-compile with `OS=... ARCH=...`.
+
+## Run
+
+```sh
+./go-monitoring                       # listens on :45876 by default
+./go-monitoring --listen :9000        # custom address/port
+./go-monitoring health                # exit 0 if the latest tick is fresh
+./go-monitoring --version
+```
+
+Environment variables:
+
+- `LISTEN` / `PORT` — fallback listen address if `--listen` is not provided
+- `MEM_CALC` — memory calculation formula
+- `DISK_USAGE_CACHE` — cache duration for disk-usage polling (e.g. `15m`) to avoid waking sleeping disks
+- `LOG_LEVEL` — set to `debug` for verbose logs
+- `GPU_COLLECTOR` — comma-separated collector priority override (for example `nvml`, `amd_sysfs`, `intel_gpu_top`, `nvtop`)
+- `SKIP_GPU` — set to `true` to disable GPU monitoring entirely
+
+GPU auto-selection defaults to `tegrastats` on Jetson, `nvidia-smi` with `nvml` fallback for NVIDIA, `amd_sysfs` with `rocm-smi` fallback for AMD, `intel_gpu_top` for Intel, and `nvtop` only as a last resort. Apple Silicon collectors remain opt-in via `GPU_COLLECTOR`.
+
+## HTTP API
+
+Base URL: `http://<listen>`
+
+- `GET /healthz` — liveness / freshness
+- `GET /api/v1/meta` — agent metadata and collector interval
+- `GET /api/v1/summary` — latest snapshot
+- `GET /api/v1/history/system` — system history (`resolution`, `from`, `to`, `limit`)
+- `GET /api/v1/history/containers` — container history
+- `GET /api/v1/containers` — current container list
+- `GET /api/v1/systemd` — systemd unit state
+- `GET /api/v1/smart` — SMART data
+- `POST /api/v1/smart/refresh` — force a SMART refresh
+
+## Acknowledgment
+
+This codebase started from Beszel and still reflects a lot of that upstream work. This fork exists for the narrower use case of running everything as a single binary on one node, with no separate hub service and no hub-agent communication model.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
