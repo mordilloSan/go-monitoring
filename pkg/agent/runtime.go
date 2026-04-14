@@ -1,0 +1,182 @@
+package agent
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/henrygd/beszel/internal/common"
+	"github.com/henrygd/beszel/internal/entities/smart"
+	"github.com/henrygd/beszel/pkg/agent/health"
+)
+
+const defaultCollectorInterval = time.Minute
+
+type RunOptions struct {
+	Addr              string
+	CollectorInterval time.Duration
+}
+
+func (a *Agent) Start(opts RunOptions) error {
+	sigCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	return a.StartContext(sigCtx, opts)
+}
+
+func (a *Agent) StartContext(ctx context.Context, opts RunOptions) error {
+	if a.dataDir == "" {
+		return errors.New("data directory not configured")
+	}
+	if a.store != nil {
+		return errors.New("agent already started")
+	}
+	if opts.CollectorInterval <= 0 {
+		opts.CollectorInterval = defaultCollectorInterval
+	}
+	if opts.Addr == "" {
+		return errors.New("listen address is required")
+	}
+
+	store, err := OpenStore(a.dataDir)
+	if err != nil {
+		return err
+	}
+	a.store = store
+	defer func() {
+		_ = a.store.Close()
+		a.store = nil
+	}()
+
+	if collectErr := a.collectAndPersist(time.Now().UTC()); collectErr != nil {
+		return collectErr
+	}
+
+	listener, err := net.Listen("tcp", opts.Addr)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+
+	a.listenAddr = listener.Addr().String()
+	a.httpServer = &http.Server{
+		Addr:              opts.Addr,
+		Handler:           a.routes(opts.CollectorInterval),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	serverErr := make(chan error, 1)
+	go func() {
+		if err := a.httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
+		}
+	}()
+
+	go a.runCollector(ctx, opts.CollectorInterval)
+
+	var runErr error
+	select {
+	case <-ctx.Done():
+		slog.Info("Shutting down standalone agent")
+	case err := <-serverErr:
+		if err != nil {
+			runErr = err
+		}
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := a.httpServer.Shutdown(shutdownCtx); err != nil {
+		return err
+	}
+	if err := health.CleanUp(); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return runErr
+}
+
+func (a *Agent) runCollector(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case tickTime := <-ticker.C:
+			if err := a.collectAndPersist(tickTime.UTC()); err != nil {
+				slog.Error("collector tick failed", "err", err)
+			}
+		}
+	}
+}
+
+func (a *Agent) collectAndPersist(now time.Time) error {
+	data := a.gatherStats(common.DataRequestOptions{
+		CacheTimeMs:    defaultDataCacheTimeMs,
+		IncludeDetails: true,
+	})
+	capturedAt := now.UnixMilli()
+
+	if err := a.store.WriteSnapshot(capturedAt, data); err != nil {
+		return err
+	}
+	if err := health.Update(); err != nil {
+		return err
+	}
+
+	if err := a.refreshSmartIfDue(now); err != nil {
+		slog.Warn("smart refresh failed", "err", err)
+	}
+	if err := a.store.RunMaintenance(now); err != nil {
+		return fmt.Errorf("maintenance failed: %w", err)
+	}
+	return nil
+}
+
+func (a *Agent) refreshSmartIfDue(now time.Time) error {
+	if a.smartManager == nil {
+		return nil
+	}
+
+	a.Lock()
+	shouldRefresh := a.lastSmartRefresh.IsZero() || now.Sub(a.lastSmartRefresh) >= a.smartRefreshInterval
+	a.Unlock()
+	if !shouldRefresh {
+		return nil
+	}
+
+	return a.refreshSmart(now, false)
+}
+
+func (a *Agent) RefreshSmartNow() error {
+	return a.refreshSmart(time.Now().UTC(), true)
+}
+
+func (a *Agent) refreshSmart(now time.Time, forceScan bool) error {
+	if a.smartManager == nil {
+		return a.store.WriteSmartDevices(now.UnixMilli(), map[string]smart.SmartData{})
+	}
+
+	if err := a.smartManager.Refresh(forceScan); err != nil {
+		return err
+	}
+	if err := a.store.WriteSmartDevices(now.UnixMilli(), a.smartManager.GetCurrentData()); err != nil {
+		return err
+	}
+
+	a.Lock()
+	a.lastSmartRefresh = now
+	a.Unlock()
+	return nil
+}
+
+func (a *Agent) ListenAddr() string {
+	return a.listenAddr
+}

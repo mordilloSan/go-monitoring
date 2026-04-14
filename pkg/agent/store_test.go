@@ -1,0 +1,137 @@
+package agent
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/henrygd/beszel/internal/entities/container"
+	"github.com/henrygd/beszel/internal/entities/smart"
+	"github.com/henrygd/beszel/internal/entities/system"
+	"github.com/henrygd/beszel/internal/entities/systemd"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func sampleCombinedData(cpu float64) *system.CombinedData {
+	return &system.CombinedData{
+		Stats: system.Stats{
+			Cpu:       cpu,
+			Mem:       16,
+			MemUsed:   8,
+			MemPct:    50,
+			DiskTotal: 100,
+			DiskUsed:  40,
+			DiskPct:   40,
+			LoadAvg:   [3]float64{1, 2, 3},
+			Bandwidth: [2]uint64{1000, 2000},
+		},
+		Info: system.Info{
+			Uptime:       100,
+			Cpu:          cpu,
+			MemPct:       50,
+			DiskPct:      40,
+			AgentVersion: "test",
+		},
+		Containers: []*container.Stats{
+			{
+				Id:        "c1",
+				Name:      "web",
+				Image:     "nginx",
+				Status:    "running",
+				Health:    container.DockerHealthHealthy,
+				Cpu:       cpu / 2,
+				Mem:       1,
+				Bandwidth: [2]uint64{200, 100},
+			},
+		},
+		SystemdServices: []*systemd.Service{
+			{
+				Name:  "nginx.service",
+				State: systemd.StatusActive,
+				Sub:   systemd.SubStateRunning,
+				Cpu:   cpu / 4,
+				Mem:   1024,
+			},
+		},
+		Details: &system.Details{
+			Hostname:    "host-a",
+			CpuModel:    "cpu",
+			MemoryTotal: 16 * 1024 * 1024 * 1024,
+		},
+	}
+}
+
+func TestStoreSnapshotAndCurrentQueries(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := OpenStore(tmpDir)
+	require.NoError(t, err)
+	defer store.Close()
+
+	capturedAt := time.Now().UTC().UnixMilli()
+	require.NoError(t, store.WriteSnapshot(capturedAt, sampleCombinedData(42)))
+	require.NoError(t, store.WriteSmartDevices(capturedAt, map[string]smart.SmartData{
+		"/dev/sda": {
+			ModelName:   "disk-a",
+			DiskName:    "/dev/sda",
+			SmartStatus: "passed",
+		},
+	}))
+
+	summary, err := store.Summary()
+	require.NoError(t, err)
+	assert.Equal(t, capturedAt, summary.CapturedAt)
+	assert.Equal(t, 42.0, summary.Stats.Cpu)
+	require.Len(t, summary.Containers, 1)
+	assert.Equal(t, "web", summary.Containers[0].Name)
+	require.Len(t, summary.SystemdServices, 1)
+	assert.Equal(t, "nginx.service", summary.SystemdServices[0].Name)
+
+	containers, err := store.CurrentContainers()
+	require.NoError(t, err)
+	require.Len(t, containers.Items, 1)
+	assert.Equal(t, "nginx", containers.Items[0].Image)
+
+	systemdResp, err := store.CurrentSystemd()
+	require.NoError(t, err)
+	require.Len(t, systemdResp.Items, 1)
+	assert.Equal(t, systemd.StatusActive, systemdResp.Items[0].State)
+
+	smartResp, err := store.CurrentSmartDevices()
+	require.NoError(t, err)
+	require.Len(t, smartResp.Items, 1)
+	assert.Equal(t, "/dev/sda", smartResp.Items[0].Data.DiskName)
+
+	_, err = os.Stat(filepath.Join(tmpDir, "metrics.db"))
+	require.NoError(t, err)
+}
+
+func TestStoreMaintenanceCreatesRollupsAndDeletesExpiredRows(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := OpenStore(tmpDir)
+	require.NoError(t, err)
+	defer store.Close()
+
+	now := time.Now().UTC().Truncate(time.Minute)
+	for i := range 9 {
+		capturedAt := now.Add(-time.Duration(9-i) * time.Minute).UnixMilli()
+		require.NoError(t, store.WriteSnapshot(capturedAt, sampleCombinedData(float64((i+1)*10))))
+	}
+	oldCapturedAt := now.Add(-2 * time.Hour).UnixMilli()
+	require.NoError(t, store.WriteSnapshot(oldCapturedAt, sampleCombinedData(5)))
+
+	require.NoError(t, store.RunMaintenance(now))
+
+	rolled, err := store.SystemHistory(resolution10m, 0, now.UnixMilli(), 10)
+	require.NoError(t, err)
+	require.Len(t, rolled.Items, 1)
+	assert.InDelta(t, 50.0, rolled.Items[0].Stats.Cpu, 0.01)
+
+	current, err := store.SystemHistory(resolution1m, 0, now.UnixMilli(), 20)
+	require.NoError(t, err)
+	require.NotEmpty(t, current.Items)
+	for _, item := range current.Items {
+		assert.GreaterOrEqual(t, item.CapturedAt, now.Add(-time.Hour).UnixMilli())
+	}
+}
