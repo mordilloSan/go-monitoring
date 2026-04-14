@@ -10,7 +10,7 @@ endif
 GO_INSTALL_DIR := $(HOME)/.go
 GOLANGCI_LINT_OPTS ?= --modules-download-mode=mod
 BUILD_DIR := $(CURDIR)/build
-AGENT_PKG := ./internal/cmd/agent
+AGENT_PKG := ./internal/cmd
 
 GO_BIN := $(or $(wildcard $(GO_INSTALL_DIR)/bin/go),$(shell command -v go 2>/dev/null))
 ifeq ($(GO_BIN),)
