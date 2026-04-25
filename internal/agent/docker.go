@@ -21,8 +21,6 @@ import (
 	"github.com/mordilloSan/go-monitoring/internal/model/container"
 	"github.com/mordilloSan/go-monitoring/internal/model/system"
 	"github.com/mordilloSan/go-monitoring/internal/utils"
-
-	"github.com/blang/semver"
 )
 
 const (
@@ -697,11 +695,36 @@ func (dm *dockerManager) applyDockerVersionInfo(serverHeader string, versionInfo
 		return
 	}
 	// if version > 24, one-shot works correctly and we can limit concurrent operations
-	if dockerVersion, err := semver.Parse(versionInfo.Version); err == nil && dockerVersion.Major > 24 {
+	if dockerMajorVersion(versionInfo.Version) > 24 {
 		dm.goodDockerVersion = true
 	} else {
 		slog.Info(fmt.Sprintf("Docker %s is outdated. Upgrade if possible. See https://github.com/mordilloSan/go-monitoring/issues/58", versionInfo.Version))
 	}
+}
+
+func dockerMajorVersion(version string) uint64 {
+	major, rest, found := strings.Cut(version, ".")
+	if !found {
+		return 0
+	}
+	minor, patchAndSuffix, found := strings.Cut(rest, ".")
+	if !found {
+		return 0
+	}
+	patch, _, _ := strings.Cut(patchAndSuffix, "-")
+	patch, _, _ = strings.Cut(patch, "+")
+
+	v, err := strconv.ParseUint(major, 10, 64)
+	if err != nil {
+		return 0
+	}
+	if _, err := strconv.ParseUint(minor, 10, 64); err != nil {
+		return 0
+	}
+	if _, err := strconv.ParseUint(patch, 10, 64); err != nil {
+		return 0
+	}
+	return v
 }
 
 // Decodes Docker API JSON response using a reusable buffer and decoder. Not thread safe.

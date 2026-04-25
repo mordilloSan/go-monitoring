@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	agent "github.com/mordilloSan/go-monitoring/internal/agent"
-	buildinfo "github.com/mordilloSan/go-monitoring/internal/version"
 	"github.com/mordilloSan/go-monitoring/internal/health"
+	buildinfo "github.com/mordilloSan/go-monitoring/internal/version"
 	"github.com/spf13/pflag"
 )
 

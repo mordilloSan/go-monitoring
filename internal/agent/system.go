@@ -10,10 +10,10 @@ import (
 	"strings"
 
 	"github.com/mordilloSan/go-monitoring/internal/battery"
-	"github.com/mordilloSan/go-monitoring/internal/version"
 	"github.com/mordilloSan/go-monitoring/internal/model/container"
 	"github.com/mordilloSan/go-monitoring/internal/model/system"
 	"github.com/mordilloSan/go-monitoring/internal/utils"
+	"github.com/mordilloSan/go-monitoring/internal/version"
 	"github.com/mordilloSan/go-monitoring/internal/zfs"
 
 	"github.com/shirou/gopsutil/v4/cpu"

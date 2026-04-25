@@ -9,11 +9,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mordilloSan/go-monitoring/internal/version"
 	"github.com/mordilloSan/go-monitoring/internal/common"
 	"github.com/mordilloSan/go-monitoring/internal/deltatracker"
 	"github.com/mordilloSan/go-monitoring/internal/model/system"
 	"github.com/mordilloSan/go-monitoring/internal/utils"
+	"github.com/mordilloSan/go-monitoring/internal/version"
 )
 
 const defaultDataCacheTimeMs uint16 = 60_000

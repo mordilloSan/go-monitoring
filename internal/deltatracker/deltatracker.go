@@ -1,15 +1,13 @@
 // Package deltatracker provides a tracker for calculating differences in numeric values over time.
 package deltatracker
 
-import (
-	"sync"
-
-	"golang.org/x/exp/constraints"
-)
+import "sync"
 
 // Numeric is a constraint that permits any integer or floating-point type.
 type Numeric interface {
-	constraints.Integer | constraints.Float
+	~int | ~int8 | ~int16 | ~int32 | ~int64 |
+		~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 | ~uintptr |
+		~float32 | ~float64
 }
 
 // DeltaTracker is a generic, thread-safe tracker for calculating differences

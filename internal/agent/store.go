@@ -9,11 +9,11 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/mordilloSan/go-monitoring/internal/version"
 	"github.com/mordilloSan/go-monitoring/internal/model/container"
 	"github.com/mordilloSan/go-monitoring/internal/model/smart"
 	"github.com/mordilloSan/go-monitoring/internal/model/system"
 	"github.com/mordilloSan/go-monitoring/internal/model/systemd"
+	"github.com/mordilloSan/go-monitoring/internal/version"
 	_ "modernc.org/sqlite"
 )
 
