@@ -1,4 +1,4 @@
-//go:build testing && linux
+//go:build linux
 
 package battery
 
@@ -18,6 +18,9 @@ func setupFakeSysfs(t *testing.T) (tmpDir string, addBattery func(name, capacity
 
 	tmp := t.TempDir()
 	resetBatteryState(tmp)
+	t.Cleanup(func() {
+		resetBatteryState("/sys/class/power_supply")
+	})
 
 	write := func(path, content string) {
 		t.Helper()

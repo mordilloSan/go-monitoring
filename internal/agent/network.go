@@ -13,6 +13,22 @@ import (
 	psutilNet "github.com/shirou/gopsutil/v4/net"
 )
 
+// networkManager owns network interface tracking and per-cache-time NIC delta state.
+type networkManager struct {
+	netInterfaces             map[string]struct{}                                   // Valid network interfaces
+	netIoStats                map[uint16]system.NetIoStats                          // Bandwidth usage per cache interval
+	netInterfaceDeltaTrackers map[uint16]*deltatracker.DeltaTracker[string, uint64] // Per-cache-time NIC delta trackers
+}
+
+// newNetworkManager constructs a networkManager with empty tracking maps.
+func newNetworkManager() *networkManager {
+	return &networkManager{
+		netInterfaces:             make(map[string]struct{}),
+		netIoStats:                make(map[uint16]system.NetIoStats),
+		netInterfaceDeltaTrackers: make(map[uint16]*deltatracker.DeltaTracker[string, uint64]),
+	}
+}
+
 // NicConfig controls inclusion/exclusion of network interfaces via the NICS env var
 //
 // Behavior mirrors SensorConfig's matching logic:
@@ -76,23 +92,23 @@ func isValidNic(nicName string, cfg *NicConfig) bool {
 	return cfg.isBlacklist
 }
 
-func (a *Agent) updateNetworkStats(cacheTimeMs uint16, systemStats *system.Stats) {
+func (m *networkManager) updateNetworkStats(cacheTimeMs uint16, systemStats *system.Stats) {
 	// network stats
-	a.ensureNetInterfacesInitialized()
+	m.ensureNetInterfacesInitialized()
 
-	a.ensureNetworkInterfacesMap(systemStats)
+	m.ensureNetworkInterfacesMap(systemStats)
 
 	if netIO, err := psutilNet.IOCounters(true); err == nil {
-		nis, msElapsed := a.loadAndTickNetBaseline(cacheTimeMs)
-		totalBytesSent, totalBytesRecv := a.sumAndTrackPerNicDeltas(cacheTimeMs, msElapsed, netIO, systemStats)
-		bytesSentPerSecond, bytesRecvPerSecond := a.computeBytesPerSecond(msElapsed, totalBytesSent, totalBytesRecv, nis)
-		a.applyNetworkTotals(cacheTimeMs, netIO, systemStats, nis, totalBytesSent, totalBytesRecv, bytesSentPerSecond, bytesRecvPerSecond)
+		nis, msElapsed := m.loadAndTickNetBaseline(cacheTimeMs)
+		totalBytesSent, totalBytesRecv := m.sumAndTrackPerNicDeltas(cacheTimeMs, msElapsed, netIO, systemStats)
+		bytesSentPerSecond, bytesRecvPerSecond := m.computeBytesPerSecond(msElapsed, totalBytesSent, totalBytesRecv, nis)
+		m.applyNetworkTotals(cacheTimeMs, netIO, systemStats, nis, totalBytesSent, totalBytesRecv, bytesSentPerSecond, bytesRecvPerSecond)
 	}
 }
 
-func (a *Agent) initializeNetIoStats() {
+func (m *networkManager) initializeNetIoStats() {
 	// reset valid network interfaces
-	a.netInterfaces = make(map[string]struct{}, 0)
+	m.netInterfaces = make(map[string]struct{}, 0)
 
 	// parse NICS env var for whitelist / blacklist
 	nicsEnvVal, nicsEnvExists := utils.GetEnv("NICS")
@@ -109,36 +125,36 @@ func (a *Agent) initializeNetIoStats() {
 			}
 			slog.Info("Detected network interface", "name", v.Name, "sent", v.BytesSent, "recv", v.BytesRecv)
 			// store as a valid network interface
-			a.netInterfaces[v.Name] = struct{}{}
+			m.netInterfaces[v.Name] = struct{}{}
 		}
 	}
 
 	// Reset per-cache-time trackers and baselines so they will reinitialize on next use
-	a.netInterfaceDeltaTrackers = make(map[uint16]*deltatracker.DeltaTracker[string, uint64])
-	a.netIoStats = make(map[uint16]system.NetIoStats)
+	m.netInterfaceDeltaTrackers = make(map[uint16]*deltatracker.DeltaTracker[string, uint64])
+	m.netIoStats = make(map[uint16]system.NetIoStats)
 }
 
 // ensureNetInterfacesInitialized re-initializes NICs if none are currently tracked
-func (a *Agent) ensureNetInterfacesInitialized() {
-	if len(a.netInterfaces) == 0 {
+func (m *networkManager) ensureNetInterfacesInitialized() {
+	if len(m.netInterfaces) == 0 {
 		// if no network interfaces, initialize again
 		// this is a fix if agent started before network is online (#466)
 		// maybe refactor this in the future to not cache interface names at all so we
 		// don't miss an interface that's been added after agent started in any circumstance
-		a.initializeNetIoStats()
+		m.initializeNetIoStats()
 	}
 }
 
 // ensureNetworkInterfacesMap ensures systemStats.NetworkInterfaces map exists
-func (a *Agent) ensureNetworkInterfacesMap(systemStats *system.Stats) {
+func (m *networkManager) ensureNetworkInterfacesMap(systemStats *system.Stats) {
 	if systemStats.NetworkInterfaces == nil {
 		systemStats.NetworkInterfaces = make(map[string][4]uint64, 0)
 	}
 }
 
 // loadAndTickNetBaseline returns the NetIoStats baseline and milliseconds elapsed, updating time
-func (a *Agent) loadAndTickNetBaseline(cacheTimeMs uint16) (netIoStat system.NetIoStats, msElapsed uint64) {
-	netIoStat = a.netIoStats[cacheTimeMs]
+func (m *networkManager) loadAndTickNetBaseline(cacheTimeMs uint16) (netIoStat system.NetIoStats, msElapsed uint64) {
+	netIoStat = m.netIoStats[cacheTimeMs]
 	if netIoStat.Time.IsZero() {
 		netIoStat.Time = time.Now()
 		msElapsed = 0
@@ -152,16 +168,16 @@ func (a *Agent) loadAndTickNetBaseline(cacheTimeMs uint16) (netIoStat system.Net
 // sumAndTrackPerNicDeltas accumulates totals and records per-NIC up/down deltas into systemStats
 //
 //nolint:gocognit // Network delta aggregation handles multiple filtering and tracker edge cases.
-func (a *Agent) sumAndTrackPerNicDeltas(cacheTimeMs uint16, msElapsed uint64, netIO []psutilNet.IOCountersStat, systemStats *system.Stats) (totalBytesSent, totalBytesRecv uint64) {
-	tracker := a.netInterfaceDeltaTrackers[cacheTimeMs]
+func (m *networkManager) sumAndTrackPerNicDeltas(cacheTimeMs uint16, msElapsed uint64, netIO []psutilNet.IOCountersStat, systemStats *system.Stats) (totalBytesSent, totalBytesRecv uint64) {
+	tracker := m.netInterfaceDeltaTrackers[cacheTimeMs]
 	if tracker == nil {
 		tracker = deltatracker.NewDeltaTracker[string, uint64]()
-		a.netInterfaceDeltaTrackers[cacheTimeMs] = tracker
+		m.netInterfaceDeltaTrackers[cacheTimeMs] = tracker
 	}
 	tracker.Cycle()
 
 	for _, v := range netIO {
-		if _, exists := a.netInterfaces[v.Name]; !exists {
+		if _, exists := m.netInterfaces[v.Name]; !exists {
 			continue
 		}
 		totalBytesSent += v.BytesSent
@@ -198,7 +214,7 @@ func (a *Agent) sumAndTrackPerNicDeltas(cacheTimeMs uint16, msElapsed uint64, ne
 }
 
 // computeBytesPerSecond calculates per-second totals from elapsed time and totals
-func (a *Agent) computeBytesPerSecond(msElapsed, totalBytesSent, totalBytesRecv uint64, nis system.NetIoStats) (bytesSentPerSecond, bytesRecvPerSecond uint64) {
+func (m *networkManager) computeBytesPerSecond(msElapsed, totalBytesSent, totalBytesRecv uint64, nis system.NetIoStats) (bytesSentPerSecond, bytesRecvPerSecond uint64) {
 	if msElapsed > 0 {
 		bytesSentPerSecond = (totalBytesSent - nis.BytesSent) * 1000 / msElapsed
 		bytesRecvPerSecond = (totalBytesRecv - nis.BytesRecv) * 1000 / msElapsed
@@ -207,7 +223,7 @@ func (a *Agent) computeBytesPerSecond(msElapsed, totalBytesSent, totalBytesRecv 
 }
 
 // applyNetworkTotals validates and writes computed network stats, or resets on anomaly
-func (a *Agent) applyNetworkTotals(
+func (m *networkManager) applyNetworkTotals(
 	cacheTimeMs uint16,
 	netIO []psutilNet.IOCountersStat,
 	systemStats *system.Stats,
@@ -218,14 +234,14 @@ func (a *Agent) applyNetworkTotals(
 	if bytesSentPerSecond > 10_000_000_000 || bytesRecvPerSecond > 10_000_000_000 {
 		slog.Warn("Invalid net stats. Resetting.", "sent", bytesSentPerSecond, "recv", bytesRecvPerSecond)
 		for _, v := range netIO {
-			if _, exists := a.netInterfaces[v.Name]; !exists {
+			if _, exists := m.netInterfaces[v.Name]; !exists {
 				continue
 			}
 			slog.Info(v.Name, "recv", v.BytesRecv, "sent", v.BytesSent)
 		}
-		a.initializeNetIoStats()
-		delete(a.netIoStats, cacheTimeMs)
-		delete(a.netInterfaceDeltaTrackers, cacheTimeMs)
+		m.initializeNetIoStats()
+		delete(m.netIoStats, cacheTimeMs)
+		delete(m.netInterfaceDeltaTrackers, cacheTimeMs)
 		systemStats.Bandwidth[0], systemStats.Bandwidth[1] = 0, 0
 		return
 	}
@@ -233,7 +249,7 @@ func (a *Agent) applyNetworkTotals(
 	systemStats.Bandwidth[0], systemStats.Bandwidth[1] = bytesSentPerSecond, bytesRecvPerSecond
 	nis.BytesSent = totalBytesSent
 	nis.BytesRecv = totalBytesRecv
-	a.netIoStats[cacheTimeMs] = nis
+	m.netIoStats[cacheTimeMs] = nis
 }
 
 // skipNetworkInterface returns true if the network interface should be ignored.

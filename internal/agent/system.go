@@ -205,13 +205,13 @@ func (a *Agent) getSystemStats(cacheTimeMs uint16) system.Stats {
 	}
 
 	// disk usage
-	a.updateDiskUsage(&systemStats)
+	a.fsManager.updateDiskUsage(&systemStats)
 
 	// disk i/o (cache-aware per interval)
-	a.updateDiskIo(cacheTimeMs, &systemStats)
+	a.fsManager.updateDiskIo(cacheTimeMs, &systemStats)
 
 	// network stats (per cache interval)
-	a.updateNetworkStats(cacheTimeMs, &systemStats)
+	a.networkManager.updateNetworkStats(cacheTimeMs, &systemStats)
 
 	// temperatures
 	// TODO: maybe refactor to methods on systemStats

@@ -295,55 +295,55 @@ func TestSkipNetworkInterface(t *testing.T) {
 }
 
 func TestEnsureNetworkInterfacesMap(t *testing.T) {
-	var a Agent
+	var m networkManager
 	var stats system.Stats
 
 	// Initially nil
 	assert.Nil(t, stats.NetworkInterfaces)
 	// Ensure map is created
-	a.ensureNetworkInterfacesMap(&stats)
+	m.ensureNetworkInterfacesMap(&stats)
 	assert.NotNil(t, stats.NetworkInterfaces)
 	// Idempotent
-	a.ensureNetworkInterfacesMap(&stats)
+	m.ensureNetworkInterfacesMap(&stats)
 	assert.NotNil(t, stats.NetworkInterfaces)
 }
 
 func TestLoadAndTickNetBaseline(t *testing.T) {
-	a := &Agent{netIoStats: make(map[uint16]system.NetIoStats)}
+	m := &networkManager{netIoStats: make(map[uint16]system.NetIoStats)}
 
 	// First call initializes time and returns 0 elapsed
-	ni, elapsed := a.loadAndTickNetBaseline(100)
+	ni, elapsed := m.loadAndTickNetBaseline(100)
 	assert.Equal(t, uint64(0), elapsed)
 	assert.False(t, ni.Time.IsZero())
 
 	// Store back what loadAndTick returns to mimic updateNetworkStats behavior
-	a.netIoStats[100] = ni
+	m.netIoStats[100] = ni
 
 	time.Sleep(2 * time.Millisecond)
 
 	// Next call should produce >= 0 elapsed and update time
-	ni2, elapsed2 := a.loadAndTickNetBaseline(100)
+	ni2, elapsed2 := m.loadAndTickNetBaseline(100)
 	assert.True(t, elapsed2 > 0)
 	assert.False(t, ni2.Time.IsZero())
 }
 
 func TestComputeBytesPerSecond(t *testing.T) {
-	a := &Agent{}
+	m := &networkManager{}
 
 	// No elapsed -> zero rate
-	bytesUp, bytesDown := a.computeBytesPerSecond(0, 2000, 3000, system.NetIoStats{BytesSent: 1000, BytesRecv: 1000})
+	bytesUp, bytesDown := m.computeBytesPerSecond(0, 2000, 3000, system.NetIoStats{BytesSent: 1000, BytesRecv: 1000})
 	assert.Equal(t, uint64(0), bytesUp)
 	assert.Equal(t, uint64(0), bytesDown)
 
 	// With elapsed -> per-second calculation
-	bytesUp, bytesDown = a.computeBytesPerSecond(500, 6000, 11000, system.NetIoStats{BytesSent: 1000, BytesRecv: 1000})
+	bytesUp, bytesDown = m.computeBytesPerSecond(500, 6000, 11000, system.NetIoStats{BytesSent: 1000, BytesRecv: 1000})
 	// (6000-1000)*1000/500 = 10000; (11000-1000)*1000/500 = 20000
 	assert.Equal(t, uint64(10000), bytesUp)
 	assert.Equal(t, uint64(20000), bytesDown)
 }
 
 func TestSumAndTrackPerNicDeltas(t *testing.T) {
-	a := &Agent{
+	m := &networkManager{
 		netInterfaces:             map[string]struct{}{"eth0": {}, "wlan0": {}},
 		netInterfaceDeltaTrackers: make(map[uint16]*deltatracker.DeltaTracker[string, uint64]),
 	}
@@ -352,16 +352,16 @@ func TestSumAndTrackPerNicDeltas(t *testing.T) {
 	cache := uint16(42)
 	net1 := []psutilNet.IOCountersStat{{Name: "eth0", BytesSent: 1000, BytesRecv: 2000}}
 	stats1 := &system.Stats{}
-	a.ensureNetworkInterfacesMap(stats1)
-	tx1, rx1 := a.sumAndTrackPerNicDeltas(cache, 0, net1, stats1)
+	m.ensureNetworkInterfacesMap(stats1)
+	tx1, rx1 := m.sumAndTrackPerNicDeltas(cache, 0, net1, stats1)
 	assert.Equal(t, uint64(1000), tx1)
 	assert.Equal(t, uint64(2000), rx1)
 
 	// Second cycle with elapsed, larger counters -> deltas computed inside
 	net2 := []psutilNet.IOCountersStat{{Name: "eth0", BytesSent: 4000, BytesRecv: 9000}}
 	stats := &system.Stats{}
-	a.ensureNetworkInterfacesMap(stats)
-	tx2, rx2 := a.sumAndTrackPerNicDeltas(cache, 1000, net2, stats)
+	m.ensureNetworkInterfacesMap(stats)
+	tx2, rx2 := m.sumAndTrackPerNicDeltas(cache, 1000, net2, stats)
 	assert.Equal(t, uint64(4000), tx2)
 	assert.Equal(t, uint64(9000), rx2)
 	// Up/Down deltas per second should be (4000-1000)/1s = 3000 and (9000-2000)/1s = 7000
@@ -372,7 +372,7 @@ func TestSumAndTrackPerNicDeltas(t *testing.T) {
 }
 
 func TestSumAndTrackPerNicDeltasHandlesCounterReset(t *testing.T) {
-	a := &Agent{
+	m := &networkManager{
 		netInterfaces:             map[string]struct{}{"eth0": {}},
 		netInterfaceDeltaTrackers: make(map[uint16]*deltatracker.DeltaTracker[string, uint64]),
 	}
@@ -382,14 +382,14 @@ func TestSumAndTrackPerNicDeltasHandlesCounterReset(t *testing.T) {
 	// First interval establishes baseline values
 	initial := []psutilNet.IOCountersStat{{Name: "eth0", BytesSent: 4_000, BytesRecv: 6_000}}
 	statsInitial := &system.Stats{}
-	a.ensureNetworkInterfacesMap(statsInitial)
-	_, _ = a.sumAndTrackPerNicDeltas(cache, 0, initial, statsInitial)
+	m.ensureNetworkInterfacesMap(statsInitial)
+	_, _ = m.sumAndTrackPerNicDeltas(cache, 0, initial, statsInitial)
 
 	// Second interval increments counters normally so previous snapshot gets populated
 	increment := []psutilNet.IOCountersStat{{Name: "eth0", BytesSent: 9_000, BytesRecv: 11_000}}
 	statsIncrement := &system.Stats{}
-	a.ensureNetworkInterfacesMap(statsIncrement)
-	_, _ = a.sumAndTrackPerNicDeltas(cache, 1_000, increment, statsIncrement)
+	m.ensureNetworkInterfacesMap(statsIncrement)
+	_, _ = m.sumAndTrackPerNicDeltas(cache, 1_000, increment, statsIncrement)
 
 	niIncrement, ok := statsIncrement.NetworkInterfaces["eth0"]
 	require.True(t, ok)
@@ -399,8 +399,8 @@ func TestSumAndTrackPerNicDeltasHandlesCounterReset(t *testing.T) {
 	// Third interval simulates counter reset (values drop below previous totals)
 	reset := []psutilNet.IOCountersStat{{Name: "eth0", BytesSent: 1_200, BytesRecv: 1_500}}
 	statsReset := &system.Stats{}
-	a.ensureNetworkInterfacesMap(statsReset)
-	_, _ = a.sumAndTrackPerNicDeltas(cache, 1_000, reset, statsReset)
+	m.ensureNetworkInterfacesMap(statsReset)
+	_, _ = m.sumAndTrackPerNicDeltas(cache, 1_000, reset, statsReset)
 
 	niReset, ok := statsReset.NetworkInterfaces["eth0"]
 	require.True(t, ok)
@@ -468,7 +468,7 @@ func TestApplyNetworkTotals(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Setup agent with initialized maps
-			a := &Agent{
+			m := &networkManager{
 				netInterfaces:             make(map[string]struct{}),
 				netIoStats:                make(map[uint16]system.NetIoStats),
 				netInterfaceDeltaTrackers: make(map[uint16]*deltatracker.DeltaTracker[string, uint64]),
@@ -481,7 +481,7 @@ func TestApplyNetworkTotals(t *testing.T) {
 			systemStats := &system.Stats{}
 			nis := system.NetIoStats{}
 
-			a.applyNetworkTotals(
+			m.applyNetworkTotals(
 				cacheTimeMs,
 				netIO,
 				systemStats,
@@ -494,8 +494,8 @@ func TestApplyNetworkTotals(t *testing.T) {
 
 			if tt.expectReset {
 				// Should have reset network tracking state - maps cleared and stats zeroed
-				assert.NotContains(t, a.netIoStats, cacheTimeMs, "cache entry should be cleared after reset")
-				assert.NotContains(t, a.netInterfaceDeltaTrackers, cacheTimeMs, "tracker should be cleared on reset")
+				assert.NotContains(t, m.netIoStats, cacheTimeMs, "cache entry should be cleared after reset")
+				assert.NotContains(t, m.netInterfaceDeltaTrackers, cacheTimeMs, "tracker should be cleared on reset")
 				assert.Zero(t, systemStats.Bandwidth[0])
 				assert.Zero(t, systemStats.Bandwidth[1])
 			} else {
@@ -504,7 +504,7 @@ func TestApplyNetworkTotals(t *testing.T) {
 				assert.Equal(t, tt.expectedBandwidthRecv, systemStats.Bandwidth[1])
 
 				// Should have updated NetIoStats
-				updatedNis := a.netIoStats[cacheTimeMs]
+				updatedNis := m.netIoStats[cacheTimeMs]
 				assert.Equal(t, tt.totalBytesSent, updatedNis.BytesSent)
 				assert.Equal(t, tt.totalBytesRecv, updatedNis.BytesRecv)
 			}

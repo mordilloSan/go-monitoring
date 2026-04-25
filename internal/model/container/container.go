@@ -51,6 +51,10 @@ type HostInfo struct {
 }
 
 func (s *ApiStats) CalculateCpuPercentLinux(prevCpuContainer uint64, prevCpuSystem uint64) float64 {
+	if s.CPUStats.CPUUsage.TotalUsage < prevCpuContainer || s.CPUStats.SystemUsage < prevCpuSystem {
+		return 0.0
+	}
+
 	cpuDelta := s.CPUStats.CPUUsage.TotalUsage - prevCpuContainer
 	systemDelta := s.CPUStats.SystemUsage - prevCpuSystem
 

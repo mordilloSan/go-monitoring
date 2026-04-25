@@ -14,6 +14,32 @@ import (
 	"github.com/shirou/gopsutil/v4/disk"
 )
 
+// fsManager owns filesystem and disk I/O state previously held directly on Agent.
+type fsManager struct {
+	fsNames                []string                       // List of filesystem device names being monitored
+	fsStats                map[string]*system.FsStats     // Disk stats per filesystem
+	diskPrev               map[uint16]map[string]prevDisk // Previous disk I/O counters per cache interval
+	diskUsageCacheDuration time.Duration                  // How long to cache disk usage (avoids waking sleeping disks)
+	lastDiskUsageUpdate    time.Time                      // Last time disk usage was collected
+}
+
+// newFsManager constructs an fsManager and parses DISK_USAGE_CACHE.
+func newFsManager() *fsManager {
+	m := &fsManager{
+		fsStats:  make(map[string]*system.FsStats),
+		diskPrev: make(map[uint16]map[string]prevDisk),
+	}
+	if diskUsageCache, exists := utils.GetEnv("DISK_USAGE_CACHE"); exists {
+		if duration, parseErr := time.ParseDuration(diskUsageCache); parseErr == nil {
+			m.diskUsageCacheDuration = duration
+			slog.Info("DISK_USAGE_CACHE", "duration", duration)
+		} else {
+			slog.Warn("Invalid DISK_USAGE_CACHE", "err", parseErr)
+		}
+	}
+	return m
+}
+
 // fsRegistrationContext holds the shared lookup state needed to resolve a
 // filesystem into the tracked fsStats key and metadata.
 type fsRegistrationContext struct {
@@ -25,7 +51,7 @@ type fsRegistrationContext struct {
 // diskDiscovery groups the transient state for a single initializeDiskInfo run so
 // helper methods can share the same partitions, mount paths, and lookup functions
 type diskDiscovery struct {
-	agent          *Agent
+	manager        *fsManager
 	rootMountPoint string
 	partitions     []disk.PartitionStat
 	usageFn        func(string) (*disk.UsageStat, error)
@@ -152,11 +178,11 @@ func registerFilesystemStats(existing map[string]*system.FsStats, device, mountp
 // key. The key selection itself lives in buildFsStatRegistration so that logic
 // can stay directly unit-tested.
 func (d *diskDiscovery) addFsStat(device, mountpoint string, root bool, customName string) {
-	key, fsStats, ok := registerFilesystemStats(d.agent.fsStats, device, mountpoint, root, customName, d.ctx)
+	key, fsStats, ok := registerFilesystemStats(d.manager.fsStats, device, mountpoint, root, customName, d.ctx)
 	if !ok {
 		return
 	}
-	d.agent.fsStats[key] = fsStats
+	d.manager.fsStats[key] = fsStats
 	name := key
 	if customName != "" {
 		name = customName
@@ -182,7 +208,7 @@ func (d *diskDiscovery) addConfiguredRootFs() bool {
 	// FILESYSTEM may name a physical disk absent from partitions (e.g. ZFS lists
 	// dataset paths like zroot/ROOT/default, not block devices).
 	if ioKey, match := findIoDevice(d.ctx.filesystem, d.ctx.diskIoCounters); match {
-		d.agent.fsStats[ioKey] = &system.FsStats{Root: true, Mountpoint: d.rootMountPoint}
+		d.manager.fsStats[ioKey] = &system.FsStats{Root: true, Mountpoint: d.rootMountPoint}
 		return true
 	}
 
@@ -218,12 +244,12 @@ func (d *diskDiscovery) addLastResortRootFs() {
 		slog.Warn("Using most active device for root I/O; set FILESYSTEM to override", "device", rootKey)
 	} else {
 		rootKey = filepath.Base(d.rootMountPoint)
-		if _, exists := d.agent.fsStats[rootKey]; exists {
+		if _, exists := d.manager.fsStats[rootKey]; exists {
 			rootKey = "root"
 		}
 		slog.Warn("Root I/O device not detected; set FILESYSTEM to override")
 	}
-	d.agent.fsStats[rootKey] = &system.FsStats{Root: true, Mountpoint: d.rootMountPoint}
+	d.manager.fsStats[rootKey] = &system.FsStats{Root: true, Mountpoint: d.rootMountPoint}
 }
 
 // findPartitionByFilesystemSetting matches an EXTRA_FILESYSTEMS entry against a
@@ -279,8 +305,8 @@ func (d *diskDiscovery) addPartitionExtraFs(p disk.PartitionStat) {
 // that may not appear in partition discovery, while skipping mountpoints that
 // were already registered from higher-fidelity sources.
 func (d *diskDiscovery) addExtraFilesystemFolders(folderNames []string) {
-	existingMountpoints := make(map[string]bool, len(d.agent.fsStats))
-	for _, stats := range d.agent.fsStats {
+	existingMountpoints := make(map[string]bool, len(d.manager.fsStats))
+	for _, stats := range d.manager.fsStats {
 		existingMountpoints[stats.Mountpoint] = true
 	}
 
@@ -296,7 +322,7 @@ func (d *diskDiscovery) addExtraFilesystemFolders(folderNames []string) {
 }
 
 // Sets up the filesystems to monitor for disk usage and I/O.
-func (a *Agent) initializeDiskInfo() {
+func (m *fsManager) initializeDiskInfo() {
 	filesystem, _ := utils.GetEnv("FILESYSTEM")
 	hasRoot := false
 
@@ -319,8 +345,8 @@ func (a *Agent) initializeDiskInfo() {
 
 	// Get the appropriate root mount point for this system
 	discovery := diskDiscovery{
-		agent:          a,
-		rootMountPoint: a.getRootMountPoint(),
+		manager:        m,
+		rootMountPoint: m.getRootMountPoint(),
 		partitions:     partitions,
 		usageFn:        disk.Usage,
 		ctx:            ctx,
@@ -358,14 +384,14 @@ func (a *Agent) initializeDiskInfo() {
 		discovery.addLastResortRootFs()
 	}
 
-	a.pruneDuplicateRootExtraFilesystems()
-	a.initializeDiskIoStats(diskIoCounters)
+	m.pruneDuplicateRootExtraFilesystems()
+	m.initializeDiskIoStats(diskIoCounters)
 }
 
 // Removes extra filesystems that mirror root usage (https://github.com/mordilloSan/go-monitoring/issues/1428).
-func (a *Agent) pruneDuplicateRootExtraFilesystems() {
+func (m *fsManager) pruneDuplicateRootExtraFilesystems() {
 	var rootMountpoint string
-	for _, stats := range a.fsStats {
+	for _, stats := range m.fsStats {
 		if stats != nil && stats.Root {
 			rootMountpoint = stats.Mountpoint
 			break
@@ -378,7 +404,7 @@ func (a *Agent) pruneDuplicateRootExtraFilesystems() {
 	if err != nil {
 		return
 	}
-	for name, stats := range a.fsStats {
+	for name, stats := range m.fsStats {
 		if stats == nil || stats.Root {
 			continue
 		}
@@ -388,7 +414,7 @@ func (a *Agent) pruneDuplicateRootExtraFilesystems() {
 		}
 		if hasSameDiskUsage(rootUsage, extraUsage) {
 			slog.Info("Ignoring duplicate FS", "name", name, "mount", stats.Mountpoint)
-			delete(a.fsStats, name)
+			delete(m.fsStats, name)
 		}
 	}
 }
@@ -519,10 +545,10 @@ func normalizeDeviceName(value string) string {
 }
 
 // Sets start values for disk I/O stats.
-func (a *Agent) initializeDiskIoStats(diskIoCounters map[string]disk.IOCountersStat) {
-	a.fsNames = a.fsNames[:0]
+func (m *fsManager) initializeDiskIoStats(diskIoCounters map[string]disk.IOCountersStat) {
+	m.fsNames = m.fsNames[:0]
 	now := time.Now()
-	for device, stats := range a.fsStats {
+	for device, stats := range m.fsStats {
 		// skip if not in diskIoCounters
 		d, exists := diskIoCounters[device]
 		if !exists {
@@ -534,21 +560,21 @@ func (a *Agent) initializeDiskIoStats(diskIoCounters map[string]disk.IOCountersS
 		stats.TotalRead = d.ReadBytes
 		stats.TotalWrite = d.WriteBytes
 		// add to list of valid io device names
-		a.fsNames = append(a.fsNames, device)
+		m.fsNames = append(m.fsNames, device)
 	}
 }
 
 // Updates disk usage statistics for all monitored filesystems
-func (a *Agent) updateDiskUsage(systemStats *system.Stats) {
+func (m *fsManager) updateDiskUsage(systemStats *system.Stats) {
 	// Check if we should skip extra filesystem collection to avoid waking sleeping disks.
 	// Root filesystem is always updated since it can't be sleeping while the agent runs.
 	// Always collect on first call (lastDiskUsageUpdate is zero) or if caching is disabled.
-	cacheExtraFs := a.diskUsageCacheDuration > 0 &&
-		!a.lastDiskUsageUpdate.IsZero() &&
-		time.Since(a.lastDiskUsageUpdate) < a.diskUsageCacheDuration
+	cacheExtraFs := m.diskUsageCacheDuration > 0 &&
+		!m.lastDiskUsageUpdate.IsZero() &&
+		time.Since(m.lastDiskUsageUpdate) < m.diskUsageCacheDuration
 
 	// disk usage
-	for _, stats := range a.fsStats {
+	for _, stats := range m.fsStats {
 		// Skip non-root filesystems if caching is active
 		if cacheExtraFs && !stats.Root {
 			continue
@@ -573,30 +599,30 @@ func (a *Agent) updateDiskUsage(systemStats *system.Stats) {
 
 	// Update the last disk usage update time when we've collected extra filesystems
 	if !cacheExtraFs {
-		a.lastDiskUsageUpdate = time.Now()
+		m.lastDiskUsageUpdate = time.Now()
 	}
 }
 
 // Updates disk I/O statistics for all monitored filesystems
 //
 //nolint:gocognit // Disk I/O collection must handle filtering, normalization, and delta tracking in one pass.
-func (a *Agent) updateDiskIo(cacheTimeMs uint16, systemStats *system.Stats) {
+func (m *fsManager) updateDiskIo(cacheTimeMs uint16, systemStats *system.Stats) {
 	// disk i/o (cache-aware per interval)
-	if ioCounters, err := disk.IOCounters(a.fsNames...); err == nil {
+	if ioCounters, err := disk.IOCounters(m.fsNames...); err == nil {
 		// Ensure map for this interval exists
-		if _, ok := a.diskPrev[cacheTimeMs]; !ok {
-			a.diskPrev[cacheTimeMs] = make(map[string]prevDisk)
+		if _, ok := m.diskPrev[cacheTimeMs]; !ok {
+			m.diskPrev[cacheTimeMs] = make(map[string]prevDisk)
 		}
 		now := time.Now()
 		for name, d := range ioCounters {
-			stats := a.fsStats[d.Name]
+			stats := m.fsStats[d.Name]
 			if stats == nil {
 				// skip devices not tracked
 				continue
 			}
 
 			// Previous snapshot for this interval and device
-			prev, hasPrev := a.diskPrev[cacheTimeMs][name]
+			prev, hasPrev := m.diskPrev[cacheTimeMs][name]
 			if !hasPrev {
 				// Seed from agent-level fsStats if present, else seed from current
 				prev = prevDisk{
@@ -618,7 +644,7 @@ func (a *Agent) updateDiskIo(cacheTimeMs uint16, systemStats *system.Stats) {
 			msElapsed := uint64(now.Sub(prev.at).Milliseconds())
 
 			// Update per-interval snapshot
-			a.diskPrev[cacheTimeMs][name] = prevDiskFromCounter(d, now)
+			m.diskPrev[cacheTimeMs][name] = prevDiskFromCounter(d, now)
 
 			// Avoid division by zero or clock issues
 			if msElapsed < 100 {
@@ -634,7 +660,7 @@ func (a *Agent) updateDiskIo(cacheTimeMs uint16, systemStats *system.Stats) {
 			if readMbPerSecond > 50_000 || writeMbPerSecond > 50_000 {
 				slog.Warn("Invalid disk I/O. Resetting.", "name", d.Name, "read", readMbPerSecond, "write", writeMbPerSecond)
 				// also refresh agent baseline to avoid future negatives
-				a.initializeDiskIoStats(ioCounters)
+				m.initializeDiskIoStats(ioCounters)
 				continue
 			}
 
@@ -699,7 +725,7 @@ func (a *Agent) updateDiskIo(cacheTimeMs uint16, systemStats *system.Stats) {
 
 // getRootMountPoint returns the appropriate root mount point for the system.
 // For immutable systems like Fedora Silverblue, it returns /sysroot instead of /
-func (a *Agent) getRootMountPoint() string {
+func (m *fsManager) getRootMountPoint() string {
 	// 1. Check if /etc/os-release contains indicators of an immutable system
 	if osReleaseContent, err := os.ReadFile("/etc/os-release"); err == nil {
 		content := string(osReleaseContent)

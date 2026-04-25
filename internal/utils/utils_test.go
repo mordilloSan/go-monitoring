@@ -130,6 +130,30 @@ func TestReadUintFile(t *testing.T) {
 	})
 }
 
+func TestReadStringFileLimited(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "limited.txt")
+	require.NoError(t, os.WriteFile(path, []byte("abcdef\n"), 0644))
+
+	t.Run("reads and trims within limit", func(t *testing.T) {
+		got, err := ReadStringFileLimited(path, 16)
+		require.NoError(t, err)
+		assert.Equal(t, "abcdef", got)
+	})
+
+	t.Run("caps read length", func(t *testing.T) {
+		got, err := ReadStringFileLimited(path, 3)
+		require.NoError(t, err)
+		assert.Equal(t, "abc", got)
+	})
+
+	t.Run("missing file returns read error", func(t *testing.T) {
+		got, err := ReadStringFileLimited(filepath.Join(tmpDir, "missing.txt"), 16)
+		assert.Error(t, err)
+		assert.Empty(t, got)
+	})
+}
+
 func TestGetEnv(t *testing.T) {
 	key := "TEST_VAR"
 

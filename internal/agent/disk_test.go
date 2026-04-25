@@ -256,9 +256,9 @@ func TestBuildFsStatRegistration(t *testing.T) {
 
 func TestAddConfiguredRootFs(t *testing.T) {
 	t.Run("adds root from matching partition", func(t *testing.T) {
-		agent := &Agent{fsStats: make(map[string]*system.FsStats)}
+		manager := &fsManager{fsStats: make(map[string]*system.FsStats)}
 		discovery := diskDiscovery{
-			agent:          agent,
+			manager:        manager,
 			rootMountPoint: "/",
 			partitions:     []disk.PartitionStat{{Device: "/dev/ada0p2", Mountpoint: "/"}},
 			ctx: fsRegistrationContext{
@@ -272,16 +272,16 @@ func TestAddConfiguredRootFs(t *testing.T) {
 		ok := discovery.addConfiguredRootFs()
 
 		assert.True(t, ok)
-		stats, exists := agent.fsStats["ada0"]
+		stats, exists := manager.fsStats["ada0"]
 		assert.True(t, exists)
 		assert.True(t, stats.Root)
 		assert.Equal(t, "/", stats.Mountpoint)
 	})
 
 	t.Run("adds root from io device when partition is missing", func(t *testing.T) {
-		agent := &Agent{fsStats: make(map[string]*system.FsStats)}
+		manager := &fsManager{fsStats: make(map[string]*system.FsStats)}
 		discovery := diskDiscovery{
-			agent:          agent,
+			manager:        manager,
 			rootMountPoint: "/sysroot",
 			ctx: fsRegistrationContext{
 				filesystem: "zroot",
@@ -294,16 +294,16 @@ func TestAddConfiguredRootFs(t *testing.T) {
 		ok := discovery.addConfiguredRootFs()
 
 		assert.True(t, ok)
-		stats, exists := agent.fsStats["nda0"]
+		stats, exists := manager.fsStats["nda0"]
 		assert.True(t, exists)
 		assert.True(t, stats.Root)
 		assert.Equal(t, "/sysroot", stats.Mountpoint)
 	})
 
 	t.Run("returns false when filesystem cannot be resolved", func(t *testing.T) {
-		agent := &Agent{fsStats: make(map[string]*system.FsStats)}
+		manager := &fsManager{fsStats: make(map[string]*system.FsStats)}
 		discovery := diskDiscovery{
-			agent:          agent,
+			manager:        manager,
 			rootMountPoint: "/",
 			ctx: fsRegistrationContext{
 				filesystem:     "missing-disk",
@@ -314,15 +314,15 @@ func TestAddConfiguredRootFs(t *testing.T) {
 		ok := discovery.addConfiguredRootFs()
 
 		assert.False(t, ok)
-		assert.Empty(t, agent.fsStats)
+		assert.Empty(t, manager.fsStats)
 	})
 }
 
 func TestAddPartitionRootFs(t *testing.T) {
 	t.Run("adds root from fallback partition candidate", func(t *testing.T) {
-		agent := &Agent{fsStats: make(map[string]*system.FsStats)}
+		manager := &fsManager{fsStats: make(map[string]*system.FsStats)}
 		discovery := diskDiscovery{
-			agent: agent,
+			manager: manager,
 			ctx: fsRegistrationContext{
 				diskIoCounters: map[string]disk.IOCountersStat{
 					"nvme0n1": {Name: "nvme0n1", ReadBytes: 1000, WriteBytes: 1000},
@@ -333,47 +333,47 @@ func TestAddPartitionRootFs(t *testing.T) {
 		ok := discovery.addPartitionRootFs("/dev/nvme0n1p2", "/")
 
 		assert.True(t, ok)
-		stats, exists := agent.fsStats["nvme0n1"]
+		stats, exists := manager.fsStats["nvme0n1"]
 		assert.True(t, exists)
 		assert.True(t, stats.Root)
 		assert.Equal(t, "/", stats.Mountpoint)
 	})
 
 	t.Run("returns false when no io device matches", func(t *testing.T) {
-		agent := &Agent{fsStats: make(map[string]*system.FsStats)}
-		discovery := diskDiscovery{agent: agent, ctx: fsRegistrationContext{diskIoCounters: map[string]disk.IOCountersStat{}}}
+		manager := &fsManager{fsStats: make(map[string]*system.FsStats)}
+		discovery := diskDiscovery{manager: manager, ctx: fsRegistrationContext{diskIoCounters: map[string]disk.IOCountersStat{}}}
 
 		ok := discovery.addPartitionRootFs("/dev/mapper/root", "/")
 
 		assert.False(t, ok)
-		assert.Empty(t, agent.fsStats)
+		assert.Empty(t, manager.fsStats)
 	})
 }
 
 func TestAddLastResortRootFs(t *testing.T) {
 	t.Run("uses most active io device when available", func(t *testing.T) {
-		agent := &Agent{fsStats: make(map[string]*system.FsStats)}
-		discovery := diskDiscovery{agent: agent, rootMountPoint: "/", ctx: fsRegistrationContext{diskIoCounters: map[string]disk.IOCountersStat{
+		manager := &fsManager{fsStats: make(map[string]*system.FsStats)}
+		discovery := diskDiscovery{manager: manager, rootMountPoint: "/", ctx: fsRegistrationContext{diskIoCounters: map[string]disk.IOCountersStat{
 			"sda": {Name: "sda", ReadBytes: 5000, WriteBytes: 5000},
 			"sdb": {Name: "sdb", ReadBytes: 1000, WriteBytes: 1000},
 		}}}
 
 		discovery.addLastResortRootFs()
 
-		stats, exists := agent.fsStats["sda"]
+		stats, exists := manager.fsStats["sda"]
 		assert.True(t, exists)
 		assert.True(t, stats.Root)
 	})
 
 	t.Run("falls back to root key when mountpoint basename collides", func(t *testing.T) {
-		agent := &Agent{fsStats: map[string]*system.FsStats{
+		manager := &fsManager{fsStats: map[string]*system.FsStats{
 			"sysroot": {Mountpoint: "/extra-filesystems/sysroot"},
 		}}
-		discovery := diskDiscovery{agent: agent, rootMountPoint: "/sysroot", ctx: fsRegistrationContext{diskIoCounters: map[string]disk.IOCountersStat{}}}
+		discovery := diskDiscovery{manager: manager, rootMountPoint: "/sysroot", ctx: fsRegistrationContext{diskIoCounters: map[string]disk.IOCountersStat{}}}
 
 		discovery.addLastResortRootFs()
 
-		stats, exists := agent.fsStats["root"]
+		stats, exists := manager.fsStats["root"]
 		assert.True(t, exists)
 		assert.True(t, stats.Root)
 		assert.Equal(t, "/sysroot", stats.Mountpoint)
@@ -382,9 +382,9 @@ func TestAddLastResortRootFs(t *testing.T) {
 
 func TestAddConfiguredExtraFsEntry(t *testing.T) {
 	t.Run("uses matching partition when present", func(t *testing.T) {
-		agent := &Agent{fsStats: make(map[string]*system.FsStats)}
+		manager := &fsManager{fsStats: make(map[string]*system.FsStats)}
 		discovery := diskDiscovery{
-			agent:      agent,
+			manager:    manager,
 			partitions: []disk.PartitionStat{{Device: "/dev/sdb1", Mountpoint: "/mnt/backup"}},
 			usageFn: func(string) (*disk.UsageStat, error) {
 				t.Fatal("usage fallback should not be called when partition matches")
@@ -399,16 +399,16 @@ func TestAddConfiguredExtraFsEntry(t *testing.T) {
 
 		discovery.addConfiguredExtraFsEntry("sdb1", "backup")
 
-		stats, exists := agent.fsStats["sdb1"]
+		stats, exists := manager.fsStats["sdb1"]
 		assert.True(t, exists)
 		assert.Equal(t, "/mnt/backup", stats.Mountpoint)
 		assert.Equal(t, "backup", stats.Name)
 	})
 
 	t.Run("falls back to usage-validated path", func(t *testing.T) {
-		agent := &Agent{fsStats: make(map[string]*system.FsStats)}
+		manager := &fsManager{fsStats: make(map[string]*system.FsStats)}
 		discovery := diskDiscovery{
-			agent: agent,
+			manager: manager,
 			usageFn: func(path string) (*disk.UsageStat, error) {
 				assert.Equal(t, "/srv/archive", path)
 				return &disk.UsageStat{}, nil
@@ -422,16 +422,16 @@ func TestAddConfiguredExtraFsEntry(t *testing.T) {
 
 		discovery.addConfiguredExtraFsEntry("/srv/archive", "archive")
 
-		stats, exists := agent.fsStats["archive"]
+		stats, exists := manager.fsStats["archive"]
 		assert.True(t, exists)
 		assert.Equal(t, "/srv/archive", stats.Mountpoint)
 		assert.Equal(t, "archive", stats.Name)
 	})
 
 	t.Run("ignores invalid filesystem entry", func(t *testing.T) {
-		agent := &Agent{fsStats: make(map[string]*system.FsStats)}
+		manager := &fsManager{fsStats: make(map[string]*system.FsStats)}
 		discovery := diskDiscovery{
-			agent: agent,
+			manager: manager,
 			usageFn: func(string) (*disk.UsageStat, error) {
 				return nil, os.ErrNotExist
 			},
@@ -439,15 +439,15 @@ func TestAddConfiguredExtraFsEntry(t *testing.T) {
 
 		discovery.addConfiguredExtraFsEntry("/missing/archive", "")
 
-		assert.Empty(t, agent.fsStats)
+		assert.Empty(t, manager.fsStats)
 	})
 }
 
 func TestAddConfiguredExtraFilesystems(t *testing.T) {
 	t.Run("parses and registers multiple configured filesystems", func(t *testing.T) {
-		agent := &Agent{fsStats: make(map[string]*system.FsStats)}
+		manager := &fsManager{fsStats: make(map[string]*system.FsStats)}
 		discovery := diskDiscovery{
-			agent:      agent,
+			manager:    manager,
 			partitions: []disk.PartitionStat{{Device: "/dev/sda1", Mountpoint: "/mnt/fast"}},
 			usageFn: func(path string) (*disk.UsageStat, error) {
 				if path == "/srv/archive" {
@@ -465,20 +465,20 @@ func TestAddConfiguredExtraFilesystems(t *testing.T) {
 
 		discovery.addConfiguredExtraFilesystems("sda1__fast,/srv/archive__cold")
 
-		assert.Contains(t, agent.fsStats, "sda1")
-		assert.Equal(t, "fast", agent.fsStats["sda1"].Name)
-		assert.Contains(t, agent.fsStats, "archive")
-		assert.Equal(t, "cold", agent.fsStats["archive"].Name)
+		assert.Contains(t, manager.fsStats, "sda1")
+		assert.Equal(t, "fast", manager.fsStats["sda1"].Name)
+		assert.Contains(t, manager.fsStats, "archive")
+		assert.Equal(t, "cold", manager.fsStats["archive"].Name)
 	})
 }
 
 func TestAddExtraFilesystemFolders(t *testing.T) {
 	t.Run("adds missing folders and skips existing mountpoints", func(t *testing.T) {
-		agent := &Agent{fsStats: map[string]*system.FsStats{
+		manager := &fsManager{fsStats: map[string]*system.FsStats{
 			"existing": {Mountpoint: "/extra-filesystems/existing"},
 		}}
 		discovery := diskDiscovery{
-			agent: agent,
+			manager: manager,
 			ctx: fsRegistrationContext{
 				efPath: "/extra-filesystems",
 				diskIoCounters: map[string]disk.IOCountersStat{
@@ -489,8 +489,8 @@ func TestAddExtraFilesystemFolders(t *testing.T) {
 
 		discovery.addExtraFilesystemFolders([]string{"existing", "newdisk__Archive"})
 
-		assert.Len(t, agent.fsStats, 2)
-		stats, exists := agent.fsStats["newdisk"]
+		assert.Len(t, manager.fsStats, 2)
+		stats, exists := manager.fsStats["newdisk"]
 		assert.True(t, exists)
 		assert.Equal(t, "/extra-filesystems/newdisk__Archive", stats.Mountpoint)
 		assert.Equal(t, "Archive", stats.Name)
@@ -498,9 +498,9 @@ func TestAddExtraFilesystemFolders(t *testing.T) {
 }
 
 func TestAddPartitionExtraFs(t *testing.T) {
-	makeDiscovery := func(agent *Agent) diskDiscovery {
+	makeDiscovery := func(manager *fsManager) diskDiscovery {
 		return diskDiscovery{
-			agent: agent,
+			manager: manager,
 			ctx: fsRegistrationContext{
 				efPath: "/extra-filesystems",
 				diskIoCounters: map[string]disk.IOCountersStat{
@@ -512,23 +512,23 @@ func TestAddPartitionExtraFs(t *testing.T) {
 	}
 
 	t.Run("registers direct child of extra-filesystems", func(t *testing.T) {
-		agent := &Agent{fsStats: make(map[string]*system.FsStats)}
-		d := makeDiscovery(agent)
+		manager := &fsManager{fsStats: make(map[string]*system.FsStats)}
+		d := makeDiscovery(manager)
 
 		d.addPartitionExtraFs(disk.PartitionStat{
 			Device:     "/dev/nvme0n1p1",
 			Mountpoint: "/extra-filesystems/nvme0n1p1__caddy1-root",
 		})
 
-		stats, exists := agent.fsStats["nvme0n1p1"]
+		stats, exists := manager.fsStats["nvme0n1p1"]
 		assert.True(t, exists)
 		assert.Equal(t, "/extra-filesystems/nvme0n1p1__caddy1-root", stats.Mountpoint)
 		assert.Equal(t, "caddy1-root", stats.Name)
 	})
 
 	t.Run("skips nested mount under extra-filesystem bind mount", func(t *testing.T) {
-		agent := &Agent{fsStats: make(map[string]*system.FsStats)}
-		d := makeDiscovery(agent)
+		manager := &fsManager{fsStats: make(map[string]*system.FsStats)}
+		d := makeDiscovery(manager)
 
 		// These simulate the virtual mounts that appear when host / is bind-mounted
 		// with disk.Partitions(all=true) — e.g. /proc, /sys, /dev visible under the mount.
@@ -541,12 +541,12 @@ func TestAddPartitionExtraFs(t *testing.T) {
 			d.addPartitionExtraFs(disk.PartitionStat{Device: "tmpfs", Mountpoint: nested})
 		}
 
-		assert.Empty(t, agent.fsStats)
+		assert.Empty(t, manager.fsStats)
 	})
 
 	t.Run("registers both direct children, skips their nested mounts", func(t *testing.T) {
-		agent := &Agent{fsStats: make(map[string]*system.FsStats)}
-		d := makeDiscovery(agent)
+		manager := &fsManager{fsStats: make(map[string]*system.FsStats)}
+		d := makeDiscovery(manager)
 
 		partitions := []disk.PartitionStat{
 			{Device: "/dev/nvme0n1p1", Mountpoint: "/extra-filesystems/nvme0n1p1__caddy1-root"},
@@ -559,21 +559,21 @@ func TestAddPartitionExtraFs(t *testing.T) {
 			d.addPartitionExtraFs(p)
 		}
 
-		assert.Len(t, agent.fsStats, 2)
-		assert.Equal(t, "caddy1-root", agent.fsStats["nvme0n1p1"].Name)
-		assert.Equal(t, "caddy1-docker", agent.fsStats["nvme1n1"].Name)
+		assert.Len(t, manager.fsStats, 2)
+		assert.Equal(t, "caddy1-root", manager.fsStats["nvme0n1p1"].Name)
+		assert.Equal(t, "caddy1-docker", manager.fsStats["nvme1n1"].Name)
 	})
 
 	t.Run("skips partition not under extra-filesystems", func(t *testing.T) {
-		agent := &Agent{fsStats: make(map[string]*system.FsStats)}
-		d := makeDiscovery(agent)
+		manager := &fsManager{fsStats: make(map[string]*system.FsStats)}
+		d := makeDiscovery(manager)
 
 		d.addPartitionExtraFs(disk.PartitionStat{
 			Device:     "/dev/nvme0n1p1",
 			Mountpoint: "/",
 		})
 
-		assert.Empty(t, agent.fsStats)
+		assert.Empty(t, manager.fsStats)
 	})
 }
 
@@ -866,7 +866,7 @@ func TestExtraFsKeyGeneration(t *testing.T) {
 
 func TestDiskUsageCaching(t *testing.T) {
 	t.Run("caching disabled updates all filesystems", func(t *testing.T) {
-		agent := &Agent{
+		manager := &fsManager{
 			fsStats: map[string]*system.FsStats{
 				"sda": {Root: true, Mountpoint: "/"},
 				"sdb": {Root: false, Mountpoint: "/mnt/storage"},
@@ -875,16 +875,16 @@ func TestDiskUsageCaching(t *testing.T) {
 		}
 
 		var stats system.Stats
-		agent.updateDiskUsage(&stats)
+		manager.updateDiskUsage(&stats)
 
 		// Both should be updated (non-zero values from disk.Usage)
 		// Root stats should be populated in systemStats
-		assert.True(t, agent.lastDiskUsageUpdate.IsZero() || !agent.lastDiskUsageUpdate.IsZero(),
+		assert.True(t, manager.lastDiskUsageUpdate.IsZero() || !manager.lastDiskUsageUpdate.IsZero(),
 			"lastDiskUsageUpdate should be set when caching is disabled")
 	})
 
 	t.Run("caching enabled always updates root filesystem", func(t *testing.T) {
-		agent := &Agent{
+		manager := &fsManager{
 			fsStats: map[string]*system.FsStats{
 				"sda": {Root: true, Mountpoint: "/", DiskTotal: 100, DiskUsed: 50},
 				"sdb": {Root: false, Mountpoint: "/mnt/storage", DiskTotal: 200, DiskUsed: 100},
@@ -894,24 +894,24 @@ func TestDiskUsageCaching(t *testing.T) {
 		}
 
 		// Store original extra fs values
-		originalExtraTotal := agent.fsStats["sdb"].DiskTotal
-		originalExtraUsed := agent.fsStats["sdb"].DiskUsed
+		originalExtraTotal := manager.fsStats["sdb"].DiskTotal
+		originalExtraUsed := manager.fsStats["sdb"].DiskUsed
 
 		var stats system.Stats
-		agent.updateDiskUsage(&stats)
+		manager.updateDiskUsage(&stats)
 
 		// Root should be updated (systemStats populated from disk.Usage call)
 		// We can't easily check if disk.Usage was called, but we verify the flow works
 
 		// Extra filesystem should retain cached values (not reset)
-		assert.Equal(t, originalExtraTotal, agent.fsStats["sdb"].DiskTotal,
+		assert.Equal(t, originalExtraTotal, manager.fsStats["sdb"].DiskTotal,
 			"extra filesystem DiskTotal should be unchanged when cached")
-		assert.Equal(t, originalExtraUsed, agent.fsStats["sdb"].DiskUsed,
+		assert.Equal(t, originalExtraUsed, manager.fsStats["sdb"].DiskUsed,
 			"extra filesystem DiskUsed should be unchanged when cached")
 	})
 
 	t.Run("first call always updates all filesystems", func(t *testing.T) {
-		agent := &Agent{
+		manager := &fsManager{
 			fsStats: map[string]*system.FsStats{
 				"sda": {Root: true, Mountpoint: "/"},
 				"sdb": {Root: false, Mountpoint: "/mnt/storage"},
@@ -921,15 +921,15 @@ func TestDiskUsageCaching(t *testing.T) {
 		}
 
 		var stats system.Stats
-		agent.updateDiskUsage(&stats)
+		manager.updateDiskUsage(&stats)
 
 		// After first call, lastDiskUsageUpdate should be set
-		assert.False(t, agent.lastDiskUsageUpdate.IsZero(),
+		assert.False(t, manager.lastDiskUsageUpdate.IsZero(),
 			"lastDiskUsageUpdate should be set after first call")
 	})
 
 	t.Run("expired cache updates extra filesystems", func(t *testing.T) {
-		agent := &Agent{
+		manager := &fsManager{
 			fsStats: map[string]*system.FsStats{
 				"sda": {Root: true, Mountpoint: "/"},
 				"sdb": {Root: false, Mountpoint: "/mnt/storage"},
@@ -939,10 +939,10 @@ func TestDiskUsageCaching(t *testing.T) {
 		}
 
 		var stats system.Stats
-		agent.updateDiskUsage(&stats)
+		manager.updateDiskUsage(&stats)
 
 		// lastDiskUsageUpdate should be refreshed since cache expired
-		assert.True(t, time.Since(agent.lastDiskUsageUpdate) < time.Second,
+		assert.True(t, time.Since(manager.lastDiskUsageUpdate) < time.Second,
 			"lastDiskUsageUpdate should be refreshed when cache expires")
 	})
 }
@@ -982,7 +982,7 @@ func TestHasSameDiskUsage(t *testing.T) {
 }
 
 func TestInitializeDiskIoStatsResetsTrackedDevices(t *testing.T) {
-	agent := &Agent{
+	manager := &fsManager{
 		fsStats: map[string]*system.FsStats{
 			"sda": {},
 			"sdb": {},
@@ -990,23 +990,23 @@ func TestInitializeDiskIoStatsResetsTrackedDevices(t *testing.T) {
 		fsNames: []string{"stale", "sda"},
 	}
 
-	agent.initializeDiskIoStats(map[string]disk.IOCountersStat{
+	manager.initializeDiskIoStats(map[string]disk.IOCountersStat{
 		"sda": {Name: "sda", ReadBytes: 10, WriteBytes: 20},
 		"sdb": {Name: "sdb", ReadBytes: 30, WriteBytes: 40},
 	})
 
-	assert.ElementsMatch(t, []string{"sda", "sdb"}, agent.fsNames)
-	assert.Len(t, agent.fsNames, 2)
-	assert.Equal(t, uint64(10), agent.fsStats["sda"].TotalRead)
-	assert.Equal(t, uint64(20), agent.fsStats["sda"].TotalWrite)
-	assert.False(t, agent.fsStats["sda"].Time.IsZero())
-	assert.False(t, agent.fsStats["sdb"].Time.IsZero())
+	assert.ElementsMatch(t, []string{"sda", "sdb"}, manager.fsNames)
+	assert.Len(t, manager.fsNames, 2)
+	assert.Equal(t, uint64(10), manager.fsStats["sda"].TotalRead)
+	assert.Equal(t, uint64(20), manager.fsStats["sda"].TotalWrite)
+	assert.False(t, manager.fsStats["sda"].Time.IsZero())
+	assert.False(t, manager.fsStats["sdb"].Time.IsZero())
 
-	agent.initializeDiskIoStats(map[string]disk.IOCountersStat{
+	manager.initializeDiskIoStats(map[string]disk.IOCountersStat{
 		"sdb": {Name: "sdb", ReadBytes: 50, WriteBytes: 60},
 	})
 
-	assert.Equal(t, []string{"sdb"}, agent.fsNames)
-	assert.Equal(t, uint64(50), agent.fsStats["sdb"].TotalRead)
-	assert.Equal(t, uint64(60), agent.fsStats["sdb"].TotalWrite)
+	assert.Equal(t, []string{"sdb"}, manager.fsNames)
+	assert.Equal(t, uint64(50), manager.fsStats["sdb"].TotalRead)
+	assert.Equal(t, uint64(60), manager.fsStats["sdb"].TotalWrite)
 }
