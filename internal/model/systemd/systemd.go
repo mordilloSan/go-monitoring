@@ -67,13 +67,13 @@ func ParseServiceSubState(subState string) ServiceSubState {
 
 // Service represents a single systemd service with its stats.
 type Service struct {
-	Name         string          `json:"n" cbor:"0,keyasint"`
-	State        ServiceState    `json:"s" cbor:"1,keyasint"`
-	Cpu          float64         `json:"c" cbor:"2,keyasint"`
-	Mem          uint64          `json:"m" cbor:"3,keyasint"`
-	MemPeak      uint64          `json:"mp" cbor:"4,keyasint"`
-	Sub          ServiceSubState `json:"ss" cbor:"5,keyasint"`
-	CpuPeak      float64         `json:"cp" cbor:"6,keyasint"`
+	Name         string          `json:"name" cbor:"0,keyasint"`
+	State        ServiceState    `json:"state" cbor:"1,keyasint"`
+	Cpu          float64         `json:"cpu_percent" cbor:"2,keyasint"`
+	Mem          uint64          `json:"memory_bytes" cbor:"3,keyasint"`
+	MemPeak      uint64          `json:"memory_peak_bytes" cbor:"4,keyasint"`
+	Sub          ServiceSubState `json:"sub_state" cbor:"5,keyasint"`
+	CpuPeak      float64         `json:"cpu_peak_percent" cbor:"6,keyasint"`
 	PrevCpuUsage uint64          `json:"-"`
 	PrevReadTime time.Time       `json:"-"`
 }
@@ -119,8 +119,8 @@ func twoDecimals(value float64) float64 {
 type ServiceDependency struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
-	ActiveState string `json:"activeState,omitempty"`
-	SubState    string `json:"subState,omitempty"`
+	ActiveState string `json:"active_state,omitempty"`
+	SubState    string `json:"sub_state,omitempty"`
 }
 
 // ServiceDetails contains extended information about a systemd service.

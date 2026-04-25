@@ -152,16 +152,28 @@ func (c *gpuCollector) start() {
 	}
 }
 
-// collect executes the command, parses output with the assigned parser function
-func (c *gpuCollector) collect() error {
+// collect executes the command, parses output with the assigned parser function.
+// Reaps the child and releases the stdout pipe on every return path so early
+// exits (errNoValidData, scanner error) cannot leak processes or FDs.
+func (c *gpuCollector) collect() (err error) {
 	cmd := exec.Command(c.name, c.cmdArgs...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
 	}
-	if err := cmd.Start(); err != nil {
-		return err
+	if startErr := cmd.Start(); startErr != nil {
+		return startErr
 	}
+
+	defer func() {
+		_ = stdout.Close()
+		if cmd.ProcessState == nil || !cmd.ProcessState.Exited() {
+			_ = cmd.Process.Kill()
+		}
+		if waitErr := cmd.Wait(); err == nil && waitErr != nil {
+			err = waitErr
+		}
+	}()
 
 	scanner := bufio.NewScanner(stdout)
 	if c.buf == nil {
@@ -176,10 +188,10 @@ func (c *gpuCollector) collect() error {
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("scanner error: %w", err)
+	if scanErr := scanner.Err(); scanErr != nil {
+		return fmt.Errorf("scanner error: %w", scanErr)
 	}
-	return cmd.Wait()
+	return nil
 }
 
 // getJetsonParser returns a function to parse the output of tegrastats and update the GPUData map

@@ -69,7 +69,7 @@ AGENT_GO_TAGS := -tags glibc
 endif
 endif
 
-.PHONY: build clean test dev golint docker-build docker-run docker-smart-devices docker-compose-override docker-up docker-up-foreground docker-logs docker-down
+.PHONY: build clean test dev golint docker-build docker-smart-devices docker-compose-override docker-up docker-down
 .DEFAULT_GOAL := build
 
 IMAGE ?= go-monitoring:local
@@ -106,24 +106,6 @@ build:
 docker-build:
 	docker build -t "$(IMAGE)" .
 
-docker-run: docker-build
-	@smart_args="$$(./scripts/discover-smart-devices.sh run-args)"; \
-	dbus_args=""; \
-	if [ -S /var/run/dbus/system_bus_socket ]; then \
-		dbus_args="-v /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro"; \
-	fi; \
-	docker run --rm --name "$(CONTAINER)" \
-		--network host \
-		$$smart_args \
-		-e LISTEN=:45876 \
-		-e DATA_DIR=/var/lib/go-monitoring \
-		-e HTTP_LOG=$${HTTP_LOG:-true} \
-		-e SKIP_GPU=true \
-		-v go-monitoring-data:/var/lib/go-monitoring \
-		-v /var/run/docker.sock:/var/run/docker.sock:ro \
-		$$dbus_args \
-		"$(IMAGE)"
-
 docker-smart-devices:
 	@./scripts/discover-smart-devices.sh summary
 
@@ -133,14 +115,7 @@ docker-compose-override:
 
 docker-up: docker-compose-override
 	docker compose down --remove-orphans
-	docker compose up --build -d
-
-docker-up-foreground: docker-compose-override
-	docker compose down --remove-orphans
 	docker compose up --build
-
-docker-logs:
-	docker compose logs -f
 
 docker-down:
 	docker compose down

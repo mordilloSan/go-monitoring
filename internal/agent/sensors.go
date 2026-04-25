@@ -163,14 +163,14 @@ func (a *Agent) updateTemperatures(systemStats *system.Stats) {
 }
 
 // getTempsWithPanicRecovery wraps sensors.TemperaturesWithContext to recover from panics (gopsutil/issues/1832)
-func (a *Agent) getTempsWithPanicRecovery(getTemps getTempsFn) (temps []sensors.TemperatureStat, err error) {
+func (a *Agent) getTempsWithPanicRecovery(ctx context.Context, getTemps getTempsFn) (temps []sensors.TemperatureStat, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("panic: %v", r)
 		}
 	}()
 	// get sensor data (error ignored intentionally as it may be only with one sensor)
-	temps, _ = getTemps(a.sensorConfig.context)
+	temps, _ = getTemps(ctx)
 	return
 }
 
@@ -188,16 +188,23 @@ func (a *Agent) getTempsWithTimeout(getTemps getTempsFn) ([]sensors.TemperatureS
 		timeout = 10 * time.Second
 	}
 
+	// Derive a timeout-aware context so a context-aware gopsutil call cancels
+	// when the timeout fires. The worker goroutine still survives the parent's
+	// return if gopsutil ignores ctx, but at least the wedge is bounded for any
+	// IO that respects context cancellation.
+	ctx, cancel := context.WithTimeout(a.sensorConfig.context, timeout)
+	defer cancel()
+
 	resultCh := make(chan result, 1)
 	go func() {
-		temps, err := a.getTempsWithPanicRecovery(getTemps)
+		temps, err := a.getTempsWithPanicRecovery(ctx, getTemps)
 		resultCh <- result{temps: temps, err: err}
 	}()
 
 	select {
 	case res := <-resultCh:
 		return res.temps, res.err
-	case <-time.After(timeout):
+	case <-ctx.Done():
 		return nil, errTemperatureFetchTimeout
 	}
 }

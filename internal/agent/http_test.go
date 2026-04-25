@@ -56,12 +56,12 @@ func TestHTTPRoutes(t *testing.T) {
 	}{
 		{name: "health", method: http.MethodGet, path: "/healthz", status: http.StatusOK, body: `"healthy":true`},
 		{name: "meta", method: http.MethodGet, path: "/api/v1/meta", status: http.StatusOK, body: `"collector_interval":"1m0s"`},
-		{name: "summary", method: http.MethodGet, path: "/api/v1/summary", status: http.StatusOK, body: `"cpu":55`},
+		{name: "summary", method: http.MethodGet, path: "/api/v1/summary", status: http.StatusOK, body: `"cpu_percent":55`},
 		{name: "system history", method: http.MethodGet, path: "/api/v1/history/system?resolution=1m&from=0&to=9999999999999&limit=10", status: http.StatusOK, body: `"resolution":"1m"`},
 		{name: "container history", method: http.MethodGet, path: "/api/v1/history/containers?resolution=1m&from=0&to=9999999999999&limit=10", status: http.StatusOK, body: `"cpu_percent":27.5`},
 		{name: "containers", method: http.MethodGet, path: "/api/v1/containers", status: http.StatusOK, body: `"memory_mb":1`},
-		{name: "systemd", method: http.MethodGet, path: "/api/v1/systemd", status: http.StatusOK, body: `"n":"nginx.service"`},
-		{name: "smart", method: http.MethodGet, path: "/api/v1/smart", status: http.StatusOK, body: `"dn":"/dev/sdb"`},
+		{name: "systemd", method: http.MethodGet, path: "/api/v1/systemd", status: http.StatusOK, body: `"name":"nginx.service"`},
+		{name: "smart", method: http.MethodGet, path: "/api/v1/smart", status: http.StatusOK, body: `"disk_name":"/dev/sdb"`},
 		{name: "invalid history", method: http.MethodGet, path: "/api/v1/history/system?resolution=bad", status: http.StatusBadRequest, body: `"error":"invalid resolution"`},
 		{name: "smart refresh", method: http.MethodPost, path: "/api/v1/smart/refresh", status: http.StatusOK, body: `"items":[]`},
 	}

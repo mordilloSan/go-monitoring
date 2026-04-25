@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -78,7 +79,17 @@ func (a *Agent) StartContext(ctx context.Context, opts RunOptions) error {
 		}
 	}()
 
-	go a.runCollector(ctx, opts.CollectorInterval)
+	// Derive a cancellable context for the collector so the server-error path
+	// also stops it. Defers run LIFO: cancelRun fires first, then collectorWG.Wait
+	// blocks the function return until runCollector exits, then the existing
+	// listener.Close and store.Close defers run.
+	runCtx, cancelRun := context.WithCancel(ctx)
+	var collectorWG sync.WaitGroup
+	collectorWG.Go(func() {
+		a.runCollector(runCtx, opts.CollectorInterval)
+	})
+	defer collectorWG.Wait()
+	defer cancelRun()
 
 	var runErr error
 	select {

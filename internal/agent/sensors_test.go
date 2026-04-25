@@ -547,7 +547,7 @@ func TestGetTempsWithPanicRecovery(t *testing.T) {
 
 			// The function should not panic, regardless of what the injected function does
 			assert.NotPanics(t, func() {
-				temps, err = agent.getTempsWithPanicRecovery(tt.getTempsFn)
+				temps, err = agent.getTempsWithPanicRecovery(context.Background(), tt.getTempsFn)
 			}, "getTempsWithPanicRecovery should not panic")
 
 			if tt.expectError {

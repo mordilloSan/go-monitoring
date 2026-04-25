@@ -64,6 +64,9 @@ func newSystemdManager() (*systemdManager, error) {
 		slog.Debug("Error connecting to systemd", "err", err)
 		return nil, err
 	}
+	// Priming connection: used once below for the initial getServiceStats call,
+	// then released. Subsequent refreshes open and close their own connection.
+	defer conn.Close()
 
 	manager := &systemdManager{
 		serviceStatsMap: make(map[string]*systemd.Service),

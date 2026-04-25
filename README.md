@@ -62,22 +62,15 @@ At startup the agent logs which GPU collectors were discovered and which ones we
 
 ## Docker
 
-Build and run the API locally:
-
-```sh
-make docker-run
-```
-
-Or use Compose:
+Build and run the API locally with Compose:
 
 ```sh
 make docker-up
 ```
 
-`make docker-up` starts the Compose service in the background. Use these helpers to follow logs or stop it:
+`make docker-up` starts the Compose service in the foreground. Stop it with:
 
 ```sh
-make docker-logs
 make docker-down
 ```
 
