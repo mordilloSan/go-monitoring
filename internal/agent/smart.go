@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,18 +20,15 @@ import (
 // SmartManager manages data collection for SMART devices
 type SmartManager struct {
 	sync.Mutex
-	SmartDataMap       map[string]*smart.SmartData
-	SmartDevices       []*DeviceInfo
-	refreshMutex       sync.Mutex
-	lastScanTime       time.Time
-	smartctlPath       string
-	excludedDevices    map[string]struct{}
-	darwinNvmeOnce     sync.Once
-	darwinNvmeCapacity map[string]uint64      // serial → bytes cache, written once via darwinNvmeOnce
-	darwinNvmeProvider func() ([]byte, error) // overridable for testing
-	refreshInterval    time.Duration          // Interval between automatic SMART refreshes
-	lastRefresh        time.Time              // Last successful SMART refresh
-	lastRefreshError   string                 // Last SMART refresh error to avoid repeating identical warnings
+	SmartDataMap     map[string]*smart.SmartData
+	SmartDevices     []*DeviceInfo
+	refreshMutex     sync.Mutex
+	lastScanTime     time.Time
+	smartctlPath     string
+	excludedDevices  map[string]struct{}
+	refreshInterval  time.Duration // Interval between automatic SMART refreshes
+	lastRefresh      time.Time     // Last successful SMART refresh
+	lastRefreshError string        // Last SMART refresh error to avoid repeating identical warnings
 }
 
 type scanOutput struct {
@@ -1039,52 +1035,6 @@ func parseScsiGigabytesProcessed(value string) int64 {
 	return parsed
 }
 
-// lookupDarwinNvmeCapacity returns the capacity in bytes for a given NVMe serial number on Darwin.
-// It uses system_profiler SPNVMeDataType to get capacity since Apple SSDs don't report user_capacity
-// via smartctl. Results are cached after the first call via sync.Once.
-func (sm *SmartManager) lookupDarwinNvmeCapacity(serial string) uint64 {
-	sm.darwinNvmeOnce.Do(func() {
-		sm.darwinNvmeCapacity = make(map[string]uint64)
-
-		provider := sm.darwinNvmeProvider
-		if provider == nil {
-			provider = func() ([]byte, error) {
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				return exec.CommandContext(ctx, "system_profiler", "SPNVMeDataType", "-json").Output()
-			}
-		}
-
-		out, err := provider()
-		if err != nil {
-			slog.Debug("system_profiler NVMe lookup failed", "err", err)
-			return
-		}
-
-		var result struct {
-			SPNVMeDataType []struct {
-				Items []struct {
-					DeviceSerial string `json:"device_serial"`
-					SizeInBytes  uint64 `json:"size_in_bytes"`
-				} `json:"_items"`
-			} `json:"SPNVMeDataType"`
-		}
-		if err := json.Unmarshal(out, &result); err != nil {
-			slog.Debug("system_profiler NVMe parse failed", "err", err)
-			return
-		}
-
-		for _, controller := range result.SPNVMeDataType {
-			for _, item := range controller.Items {
-				if item.DeviceSerial != "" && item.SizeInBytes > 0 {
-					sm.darwinNvmeCapacity[item.DeviceSerial] = item.SizeInBytes
-				}
-			}
-		}
-	})
-	return sm.darwinNvmeCapacity[serial]
-}
-
 // parseSmartForNvme parses the output of smartctl --all -j /dev/nvmeX and updates the SmartDataMap
 // Returns hasValidData and exitStatus
 func (sm *SmartManager) parseSmartForNvme(output []byte) (bool, int) {
@@ -1124,9 +1074,6 @@ func (sm *SmartManager) parseSmartForNvme(output []byte) (bool, int) {
 	if smartData.Capacity == 0 {
 		smartData.Capacity = data.NVMeTotalCapacity
 	}
-	if smartData.Capacity == 0 && (runtime.GOOS == "darwin" || sm.darwinNvmeProvider != nil) {
-		smartData.Capacity = sm.lookupDarwinNvmeCapacity(data.SerialNumber)
-	}
 	smartData.Temperature = data.NVMeSmartHealthInformationLog.Temperature
 	smartData.SmartStatus = getSmartStatus(smartData.Temperature, data.SmartStatus.Passed)
 	smartData.DiskName = data.Device.Name
@@ -1162,7 +1109,7 @@ func (sm *SmartManager) parseSmartForNvme(output []byte) (bool, int) {
 
 // detectSmartctl checks if smartctl is installed, returns an error if not
 func (sm *SmartManager) detectSmartctl() (string, error) {
-	return utils.LookPathHomebrew("smartctl")
+	return exec.LookPath("smartctl")
 }
 
 // isNvmeControllerPath checks if the path matches an NVMe controller pattern
@@ -1196,12 +1143,10 @@ func NewSmartManager() (*SmartManager, error) {
 	path, err := sm.detectSmartctl()
 	slog.Debug("smartctl", "path", path, "err", err)
 	if err != nil {
-		// Keep the previous fail-fast behavior unless this Linux host exposes
-		// eMMC or mdraid health via sysfs, in which case smartctl is optional.
-		if runtime.GOOS == "linux" {
-			if len(scanEmmcDevices()) > 0 || len(scanMdraidDevices()) > 0 {
-				return sm, nil
-			}
+		// Fail fast unless this host exposes eMMC or mdraid health via sysfs,
+		// in which case smartctl is optional.
+		if len(scanEmmcDevices()) > 0 || len(scanMdraidDevices()) > 0 {
+			return sm, nil
 		}
 		return nil, err
 	}

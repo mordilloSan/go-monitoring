@@ -3,7 +3,6 @@ package agent
 import (
 	"bufio"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
 	"runtime"
@@ -35,8 +34,6 @@ func newSystemInfoManager() *systemInfoManager {
 }
 
 // Sets initial / non-changing values about the host system
-//
-//nolint:gocognit // System detail refresh merges several platform-specific discovery paths.
 func (m *systemInfoManager) refreshSystemDetails(dockerManager *dockerManager) {
 	m.systemInfo.AgentVersion = version.Version
 
@@ -55,34 +52,18 @@ func (m *systemInfoManager) refreshSystemDetails(dockerManager *dockerManager) {
 		m.systemDetails.Arch = runtime.GOARCH
 	}
 
-	platform, _, version, _ := host.PlatformInformation()
-
-	switch platform {
-	case "darwin":
-		m.systemDetails.Os = system.Darwin
-		m.systemDetails.OsName = fmt.Sprintf("macOS %s", version)
-	case "freebsd":
-		m.systemDetails.Os = system.Freebsd
-		m.systemDetails.Kernel, _ = host.KernelVersion()
+	platform, _, _, _ := host.PlatformInformation()
+	m.systemDetails.OsName = hostInfo.OperatingSystem
+	if m.systemDetails.OsName == "" {
 		if prettyName, err := getOsPrettyName(); err == nil {
 			m.systemDetails.OsName = prettyName
 		} else {
-			m.systemDetails.OsName = "FreeBSD"
+			m.systemDetails.OsName = platform
 		}
-	default:
-		m.systemDetails.Os = system.Linux
-		m.systemDetails.OsName = hostInfo.OperatingSystem
-		if m.systemDetails.OsName == "" {
-			if prettyName, err := getOsPrettyName(); err == nil {
-				m.systemDetails.OsName = prettyName
-			} else {
-				m.systemDetails.OsName = platform
-			}
-		}
-		m.systemDetails.Kernel = hostInfo.KernelVersion
-		if m.systemDetails.Kernel == "" {
-			m.systemDetails.Kernel, _ = host.KernelVersion()
-		}
+	}
+	m.systemDetails.Kernel = hostInfo.KernelVersion
+	if m.systemDetails.Kernel == "" {
+		m.systemDetails.Kernel, _ = host.KernelVersion()
 	}
 
 	// cpu model

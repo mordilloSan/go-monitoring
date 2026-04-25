@@ -1,4 +1,4 @@
-//go:build glibc && linux && amd64
+//go:build amd64 && glibc
 
 package agent
 

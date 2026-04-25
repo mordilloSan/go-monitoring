@@ -2,7 +2,6 @@ package agent
 
 import (
 	"math"
-	"runtime"
 
 	"github.com/mordilloSan/go-monitoring/internal/model/system"
 	"github.com/shirou/gopsutil/v4/cpu"
@@ -116,16 +115,10 @@ func calculateBusy(t1, t2 cpu.TimesStat) float64 {
 }
 
 // getAllBusy calculates the total CPU time and busy CPU time from CPU times statistics.
-// On Linux, it excludes guest and guest_nice time from the total to match kernel behavior.
+// Excludes guest and guest_nice time from the total to match kernel behavior.
 // Returns total CPU time and busy CPU time (total minus idle and I/O wait time).
 func getAllBusy(t cpu.TimesStat) (float64, float64) {
-	tot := t.User + t.System + t.Idle + t.Nice + t.Iowait + t.Irq + t.Softirq + t.Steal + t.Guest + t.GuestNice
-	if runtime.GOOS == "linux" {
-		tot -= t.Guest     // Linux 2.6.24+
-		tot -= t.GuestNice // Linux 3.2.0+
-	}
-
+	tot := t.User + t.System + t.Idle + t.Nice + t.Iowait + t.Irq + t.Softirq + t.Steal
 	busy := tot - t.Idle - t.Iowait
-
 	return tot, busy
 }

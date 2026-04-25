@@ -63,4 +63,3 @@ func emmcSmartStatus(preEOL uint8) string {
 		return "UNKNOWN"
 	}
 }
-

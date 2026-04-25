@@ -41,14 +41,6 @@ func TestResolveAutoCollectorPriority(t *testing.T) {
 		assert.Equal(t, []collectorSource{collectorSourceNVTop}, got)
 	})
 
-	t.Run("keeps apple collectors opt in", func(t *testing.T) {
-		got := gm.resolveAutoCollectorPriority(gpuCapabilities{
-			hasMacmon:       true,
-			hasPowermetrics: true,
-		})
-		assert.Empty(t, got)
-	})
-
 	t.Run("skips nvidia collector order on jetson", func(t *testing.T) {
 		got := gm.resolveAutoCollectorPriority(gpuCapabilities{
 			hasNvidiaSmi:  true,

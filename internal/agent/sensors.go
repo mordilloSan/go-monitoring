@@ -6,11 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"path"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/mordilloSan/go-monitoring/internal/model/system"
 	"github.com/mordilloSan/go-monitoring/internal/utils"
@@ -131,11 +129,6 @@ func (a *Agent) updateTemperatures(systemStats *system.Stats) {
 
 	systemStats.Temperatures = make(map[string]float64, len(temps))
 	for i, sensor := range temps {
-		// check for malformed strings on darwin (gopsutil/issues/1832)
-		if runtime.GOOS == "darwin" && !utf8.ValidString(sensor.SensorKey) {
-			continue
-		}
-
 		// scale temperature
 		if sensor.Temperature != 0 && sensor.Temperature < 1 {
 			sensor.Temperature = scaleTemperature(sensor.Temperature)

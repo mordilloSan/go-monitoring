@@ -9,7 +9,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"runtime"
 	"time"
 )
 
@@ -26,11 +25,9 @@ type Status struct {
 
 func getHealthFilePath() string {
 	filename := "go_monitoring_health"
-	if runtime.GOOS == "linux" {
-		fullPath := filepath.Join("/dev/shm", filename)
-		if err := updateHealthFile(fullPath); err == nil {
-			return fullPath
-		}
+	fullPath := filepath.Join("/dev/shm", filename)
+	if err := updateHealthFile(fullPath); err == nil {
+		return fullPath
 	}
 	return filepath.Join(os.TempDir(), filename)
 }

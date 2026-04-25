@@ -12,7 +12,6 @@ import (
 	"maps"
 	"os/exec"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,13 +23,11 @@ import (
 
 const (
 	// Commands
-	nvidiaSmiCmd    string = "nvidia-smi"
-	rocmSmiCmd      string = "rocm-smi"
-	tegraStatsCmd   string = "tegrastats"
-	nvtopCmd        string = "nvtop"
-	powermetricsCmd string = "powermetrics"
-	macmonCmd       string = "macmon"
-	noGPUFoundMsg   string = "no GPU found"
+	nvidiaSmiCmd  string = "nvidia-smi"
+	rocmSmiCmd    string = "rocm-smi"
+	tegraStatsCmd string = "tegrastats"
+	nvtopCmd      string = "nvtop"
+	noGPUFoundMsg string = "no GPU found"
 
 	// Command retry and timeout constants
 	retryWaitTime     time.Duration = 5 * time.Second
@@ -176,18 +173,15 @@ func (gm *GPUManager) Stop() {
 type collectorSource string
 
 const (
-	collectorSourceNVTop        collectorSource = collectorSource(nvtopCmd)
-	collectorSourceNVML         collectorSource = "nvml"
-	collectorSourceNvidiaSMI    collectorSource = collectorSource(nvidiaSmiCmd)
-	collectorSourceIntelGpuTop  collectorSource = collectorSource(intelGpuStatsCmd)
-	collectorSourceAmdSysfs     collectorSource = "amd_sysfs"
-	collectorSourceRocmSMI      collectorSource = collectorSource(rocmSmiCmd)
-	collectorSourceMacmon       collectorSource = collectorSource(macmonCmd)
-	collectorSourcePowermetrics collectorSource = collectorSource(powermetricsCmd)
-	collectorGroupNvidia        string          = "nvidia"
-	collectorGroupIntel         string          = "intel"
-	collectorGroupAmd           string          = "amd"
-	collectorGroupApple         string          = "apple"
+	collectorSourceNVTop       collectorSource = collectorSource(nvtopCmd)
+	collectorSourceNVML        collectorSource = "nvml"
+	collectorSourceNvidiaSMI   collectorSource = collectorSource(nvidiaSmiCmd)
+	collectorSourceIntelGpuTop collectorSource = collectorSource(intelGpuStatsCmd)
+	collectorSourceAmdSysfs    collectorSource = "amd_sysfs"
+	collectorSourceRocmSMI     collectorSource = collectorSource(rocmSmiCmd)
+	collectorGroupNvidia       string          = "nvidia"
+	collectorGroupIntel        string          = "intel"
+	collectorGroupAmd          string          = "amd"
 )
 
 func isValidCollectorSource(source collectorSource) bool {
@@ -197,9 +191,7 @@ func isValidCollectorSource(source collectorSource) bool {
 		collectorSourceNvidiaSMI,
 		collectorSourceIntelGpuTop,
 		collectorSourceAmdSysfs,
-		collectorSourceRocmSMI,
-		collectorSourceMacmon,
-		collectorSourcePowermetrics:
+		collectorSourceRocmSMI:
 		return true
 	}
 	return false
@@ -207,15 +199,13 @@ func isValidCollectorSource(source collectorSource) bool {
 
 // gpuCapabilities describes detected GPU tooling and sysfs support on the host.
 type gpuCapabilities struct {
-	hasNvidiaSmi    bool
-	hasNVML         bool
-	hasRocmSmi      bool
-	hasAmdSysfs     bool
-	hasTegrastats   bool
-	hasIntelGpuTop  bool
-	hasNvtop        bool
-	hasMacmon       bool
-	hasPowermetrics bool
+	hasNvidiaSmi   bool
+	hasNVML        bool
+	hasRocmSmi     bool
+	hasAmdSysfs    bool
+	hasTegrastats  bool
+	hasIntelGpuTop bool
+	hasNvtop       bool
 }
 
 type collectorDefinition struct {
@@ -566,19 +556,11 @@ func (gm *GPUManager) discoverGpuCapabilities() gpuCapabilities {
 	if _, err := exec.LookPath(nvtopCmd); err == nil {
 		caps.hasNvtop = true
 	}
-	if runtime.GOOS == "darwin" {
-		if _, err := utils.LookPathHomebrew(macmonCmd); err == nil {
-			caps.hasMacmon = true
-		}
-		if _, err := exec.LookPath(powermetricsCmd); err == nil {
-			caps.hasPowermetrics = true
-		}
-	}
 	return caps
 }
 
 func hasAnyGpuCollector(caps gpuCapabilities) bool {
-	return caps.hasNvidiaSmi || caps.hasNVML || caps.hasRocmSmi || caps.hasAmdSysfs || caps.hasTegrastats || caps.hasIntelGpuTop || caps.hasNvtop || caps.hasMacmon || caps.hasPowermetrics
+	return caps.hasNvidiaSmi || caps.hasNVML || caps.hasRocmSmi || caps.hasAmdSysfs || caps.hasTegrastats || caps.hasIntelGpuTop || caps.hasNvtop
 }
 
 func availableCollectorSources(caps gpuCapabilities) []collectorSource {
@@ -603,12 +585,6 @@ func availableCollectorSources(caps gpuCapabilities) []collectorSource {
 	}
 	if caps.hasNvtop {
 		available = append(available, collectorSourceNVTop)
-	}
-	if caps.hasMacmon {
-		available = append(available, collectorSourceMacmon)
-	}
-	if caps.hasPowermetrics {
-		available = append(available, collectorSourcePowermetrics)
 	}
 	return available
 }
@@ -759,22 +735,6 @@ func (gm *GPUManager) collectorDefinitions(caps gpuCapabilities) map[collectorSo
 				return true
 			},
 		},
-		collectorSourceMacmon: {
-			group:     collectorGroupApple,
-			available: caps.hasMacmon,
-			start: func(_ func()) bool {
-				gm.startMacmonCollector()
-				return true
-			},
-		},
-		collectorSourcePowermetrics: {
-			group:     collectorGroupApple,
-			available: caps.hasPowermetrics,
-			start: func(_ func()) bool {
-				gm.startPowermetricsCollector()
-				return true
-			},
-		},
 	}
 }
 
@@ -883,17 +843,6 @@ func (gm *GPUManager) resolveAutoCollectorPriority(caps gpuCapabilities) []colle
 	if caps.hasIntelGpuTop {
 		priorities = append(priorities, collectorSourceIntelGpuTop)
 	}
-
-	// Apple collectors are currently opt-in only for testing.
-	// Enable them with GPU_COLLECTOR=macmon or GPU_COLLECTOR=powermetrics.
-	// TODO: uncomment below when Apple collectors are confirmed to be working.
-	//
-	// Prefer macmon on macOS (no sudo). Fall back to powermetrics if present.
-	// if caps.hasMacmon {
-	// 	priorities = append(priorities, collectorSourceMacmon)
-	// } else if caps.hasPowermetrics {
-	// 	priorities = append(priorities, collectorSourcePowermetrics)
-	// }
 
 	// Keep nvtop as a last resort only when no vendor collector exists.
 	if len(priorities) == 0 && caps.hasNvtop {

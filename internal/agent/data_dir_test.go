@@ -214,10 +214,6 @@ func TestDirectoryIsWritable(t *testing.T) {
 
 	// Test with non-writable directory (Unix-like systems only)
 	t.Run("non-writable directory", func(t *testing.T) {
-		if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
-			t.Skip("Skipping non-writable directory test on", runtime.GOOS)
-		}
-
 		tempDir := t.TempDir()
 		readOnlyDir := filepath.Join(tempDir, "readonly")
 

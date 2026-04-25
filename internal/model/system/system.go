@@ -112,15 +112,6 @@ type NetIoStats struct {
 	Name      string
 }
 
-type Os = uint8
-
-const (
-	Linux Os = iota
-	Darwin
-	_
-	Freebsd
-)
-
 type ConnectionType = uint8
 
 const (
@@ -146,7 +137,6 @@ type Info struct {
 	Podman        bool    `json:"podman,omitempty" cbor:"11,keyasint,omitempty"` // deprecated - moved to Details struct
 	GpuPct        float64 `json:"gpu_percent,omitempty" cbor:"12,keyasint,omitempty"`
 	DashboardTemp float64 `json:"dashboard_temperature_celsius,omitempty" cbor:"13,keyasint,omitempty"`
-	Os            Os      `json:"os,omitempty" cbor:"14,keyasint,omitempty"` // deprecated - moved to Details struct
 	// LoadAvg1       float64 `json:"l1,omitempty" cbor:"15,keyasint,omitempty"`  // deprecated - use `la` array instead
 	// LoadAvg5       float64 `json:"l5,omitempty" cbor:"16,keyasint,omitempty"`  // deprecated - use `la` array instead
 	// LoadAvg15      float64 `json:"l15,omitempty" cbor:"17,keyasint,omitempty"` // deprecated - use `la` array instead
@@ -166,7 +156,6 @@ type Details struct {
 	Cores         int           `json:"cores" cbor:"2,keyasint"`
 	Threads       int           `json:"threads" cbor:"3,keyasint"`
 	CpuModel      string        `json:"cpu_model" cbor:"4,keyasint"`
-	Os            Os            `json:"os" cbor:"5,keyasint"`
 	OsName        string        `json:"os_name" cbor:"6,keyasint"`
 	Arch          string        `json:"architecture" cbor:"7,keyasint"`
 	Podman        bool          `json:"podman,omitempty" cbor:"8,keyasint,omitempty"`
