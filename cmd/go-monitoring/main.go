@@ -22,15 +22,12 @@ func (opts *cmdOptions) parse() bool {
 		subcommand = os.Args[1]
 	}
 
-	switch subcommand {
-	case "health":
+	if subcommand == "health" {
 		if err := health.Check(); err != nil {
 			log.Fatal(err)
 		}
 		fmt.Print("ok")
 		return true
-	case "update":
-		log.Fatal("the update command has been removed; upgrade the agent using your package manager or deployment workflow")
 	}
 
 	pflag.StringVarP(&opts.listen, "listen", "l", "", "Address or port to listen on")

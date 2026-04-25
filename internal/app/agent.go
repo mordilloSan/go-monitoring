@@ -9,9 +9,9 @@ import (
 	"time"
 
 	httpapi "github.com/mordilloSan/go-monitoring/internal/api/http"
-	dockercoll "github.com/mordilloSan/go-monitoring/internal/collector/docker"
 	"github.com/mordilloSan/go-monitoring/internal/common"
 	"github.com/mordilloSan/go-monitoring/internal/domain/system"
+	dockerintegration "github.com/mordilloSan/go-monitoring/internal/integration/docker"
 	"github.com/mordilloSan/go-monitoring/internal/store"
 	"github.com/mordilloSan/go-monitoring/internal/utils"
 	"github.com/mordilloSan/go-monitoring/internal/version"
@@ -20,24 +20,24 @@ import (
 const defaultDataCacheTimeMs uint16 = 60_000
 
 type App struct {
-	sync.Mutex                              // Used to lock agent while collecting data
-	debug             bool                  // true if LOG_LEVEL is set to debug
-	memCalc           string                // Memory calculation formula
-	fsManager         *fsManager            // Manages filesystem and disk I/O state
-	networkManager    *networkManager       // Manages network interface and bandwidth state
-	dockerManager     *dockercoll.Manager   // Manages Docker API requests
-	sensorConfig      *SensorConfig         // Sensors config
-	systemInfoManager *systemInfoManager    // Manages host info, details, and ZFS capability
-	gpuManager        *GPUManager           // Manages GPU data
-	cache             *systemDataCache      // Cache for system stats based on cache time
-	dataDir           string                // Directory for persisting data
-	smartManager      *SmartManager         // Manages SMART data
-	systemdManager    *systemdManager       // Manages systemd services
-	connectionType    system.ConnectionType // Connection type reported in summaries
-	processManager    *processManager       // Manages per-process CPU state
-	requestLogging    bool                  // Whether HTTP API requests are logged
-	store             *store.Store          // Persistent local store
-	httpRuntime       *httpRuntime          // HTTP server + effective listen address (nil before Start)
+	sync.Mutex                                   // Used to lock agent while collecting data
+	debug             bool                       // true if LOG_LEVEL is set to debug
+	memCalc           string                     // Memory calculation formula
+	fsManager         *fsManager                 // Manages filesystem and disk I/O state
+	networkManager    *networkManager            // Manages network interface and bandwidth state
+	dockerManager     *dockerintegration.Manager // Manages Docker API requests
+	sensorConfig      *SensorConfig              // Sensors config
+	systemInfoManager *systemInfoManager         // Manages host info, details, and ZFS capability
+	gpuManager        *GPUManager                // Manages GPU data
+	cache             *systemDataCache           // Cache for system stats based on cache time
+	dataDir           string                     // Directory for persisting data
+	smartManager      *SmartManager              // Manages SMART data
+	systemdManager    *systemdManager            // Manages systemd services
+	connectionType    system.ConnectionType      // Connection type reported in summaries
+	processManager    *processManager            // Manages per-process CPU state
+	requestLogging    bool                       // Whether HTTP API requests are logged
+	store             *store.Store               // Persistent local store
+	httpRuntime       *httpRuntime               // HTTP server + effective listen address (nil before Start)
 }
 
 // New creates a new app with the given data directory for persisting data.
@@ -78,7 +78,7 @@ func New(dataDir ...string) (app *App, err error) {
 	slog.Debug(version.Version)
 
 	// initialize docker manager
-	app.dockerManager = dockercoll.NewManager(func() {
+	app.dockerManager = dockerintegration.NewManager(func() {
 		app.systemInfoManager.updateSystemDetails(func(details *system.Details) {
 			details.Podman = true
 		})

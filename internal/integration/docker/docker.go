@@ -1,3 +1,4 @@
+// Package docker integrates with Docker and Podman Engine APIs.
 package docker
 
 import (
@@ -17,9 +18,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mordilloSan/go-monitoring/internal/collector/docker/dockerapi"
 	"github.com/mordilloSan/go-monitoring/internal/deltatracker"
 	"github.com/mordilloSan/go-monitoring/internal/domain/container"
+	"github.com/mordilloSan/go-monitoring/internal/integration/docker/dockerapi"
 	"github.com/mordilloSan/go-monitoring/internal/utils"
 )
 
