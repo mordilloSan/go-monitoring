@@ -26,4 +26,4 @@ Once confirmed, we will work with you to release a fix **before** disclosing the
 
 ---
 
-Thank you for helping us keep **LinuxIO** secure! 
+Thank you for helping us keep this software secure! 
