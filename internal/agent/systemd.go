@@ -171,6 +171,9 @@ func (sm *systemdManager) getServiceStats(ctx context.Context, conn *dbus.Conn, 
 	if conn == nil || !conn.Connected() {
 		conn, err = dbus.NewSystemConnectionContext(ctx)
 		if err != nil {
+			if ctx.Err() == nil {
+				slog.Warn("systemd dbus connection failed", "err", err)
+			}
 			return nil
 		}
 		defer conn.Close()
@@ -188,10 +191,18 @@ func (sm *systemdManager) getServiceStats(ctx context.Context, conn *dbus.Conn, 
 	// Track which units are currently present to remove stale entries
 	currentUnits := make(map[string]struct{}, len(units))
 
+	skippedNeverActive := 0
+	skippedErrors := 0
 	for _, unit := range units {
 		currentUnits[unit.Name] = struct{}{}
 		service, err := sm.updateServiceStats(ctx, conn, unit)
 		if err != nil {
+			if errors.Is(err, errNoActiveTime) {
+				skippedNeverActive++
+			} else {
+				skippedErrors++
+				slog.Debug("systemd service skipped", "unit", unit.Name, "err", err)
+			}
 			continue
 		}
 		services = append(services, service)
@@ -207,6 +218,12 @@ func (sm *systemdManager) getServiceStats(ctx context.Context, conn *dbus.Conn, 
 	sm.Unlock()
 
 	sm.hasFreshStats = true
+	slog.Debug("systemd services collected",
+		"units", len(units),
+		"services", len(services),
+		"skipped_never_active", skippedNeverActive,
+		"skipped_errors", skippedErrors,
+	)
 	return services
 }
 

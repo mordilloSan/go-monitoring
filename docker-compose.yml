@@ -11,6 +11,8 @@ services:
       DATA_DIR: /var/lib/go-monitoring
       HTTP_LOG: "${HTTP_LOG:-true}"
       SKIP_GPU: "true"
+    security_opt:
+      - apparmor=unconfined
     volumes:
       - go-monitoring-data:/var/lib/go-monitoring
       - /var/run/docker.sock:/var/run/docker.sock:ro
