@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"context"
 	"io"
 	"os/exec"
 	"strconv"
@@ -52,13 +53,13 @@ func (gm *GPUManager) updateIntelFromStats(sample *intelGpuStats) bool {
 // collectIntelStats executes intel_gpu_top in text mode (-l) and parses the output
 //
 //nolint:gocognit // Intel GPU stream parsing is stateful and format-driven.
-func (gm *GPUManager) collectIntelStats() (err error) {
+func (gm *GPUManager) collectIntelStats(ctx context.Context) (err error) {
 	// Build command arguments, optionally selecting a device via -d
 	args := []string{"-s", intelGpuStatsInterval, "-l"}
 	if dev, ok := utils.GetEnv("INTEL_GPU_DEVICE"); ok && dev != "" {
 		args = append(args, "-d", dev)
 	}
-	cmd := exec.Command(intelGpuStatsCmd, args...)
+	cmd := exec.CommandContext(ctx, intelGpuStatsCmd, args...)
 	// Avoid blocking if intel_gpu_top writes to stderr
 	cmd.Stderr = io.Discard
 	stdout, err := cmd.StdoutPipe()
@@ -68,19 +69,7 @@ func (gm *GPUManager) collectIntelStats() (err error) {
 	if startErr := cmd.Start(); startErr != nil {
 		return startErr
 	}
-
-	// Ensure we always reap the child to avoid zombies on any return path and
-	// propagate a non-zero exit code if no other error was set.
-	defer func() {
-		// Best-effort close of the pipe (unblock the child if it writes)
-		_ = stdout.Close()
-		if cmd.ProcessState == nil || !cmd.ProcessState.Exited() {
-			_ = cmd.Process.Kill()
-		}
-		if waitErr := cmd.Wait(); err == nil && waitErr != nil {
-			err = waitErr
-		}
-	}()
+	defer cleanupStartedCommand(cmd, stdout, &err)
 
 	scanner := bufio.NewScanner(stdout)
 	var header1 string

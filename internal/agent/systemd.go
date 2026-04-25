@@ -27,6 +27,10 @@ type systemdManager struct {
 	isRunning       bool
 	hasFreshStats   bool
 	patterns        []string
+	lifecycleMu     sync.Mutex
+	ctx             context.Context
+	cancel          context.CancelFunc
+	wg              sync.WaitGroup
 }
 
 // isSystemdAvailable checks if systemd is used on the system to avoid unnecessary connection attempts (#1548)
@@ -59,39 +63,72 @@ func newSystemdManager() (*systemdManager, error) {
 		return nil, nil
 	}
 
-	conn, err := dbus.NewSystemConnectionContext(context.Background())
-	if err != nil {
-		slog.Debug("Error connecting to systemd", "err", err)
-		return nil, err
-	}
-	// Priming connection: used once below for the initial getServiceStats call,
-	// then released. Subsequent refreshes open and close their own connection.
-	defer conn.Close()
-
 	manager := &systemdManager{
 		serviceStatsMap: make(map[string]*systemd.Service),
 		patterns:        getServicePatterns(),
 	}
 
-	manager.startWorker(conn)
-
 	return manager, nil
 }
 
-func (sm *systemdManager) startWorker(conn *dbus.Conn) {
+func (sm *systemdManager) Start(ctx context.Context) {
+	if sm == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	sm.lifecycleMu.Lock()
+	if sm.cancel != nil {
+		sm.lifecycleMu.Unlock()
+		return
+	}
+	sm.ctx, sm.cancel = context.WithCancel(ctx)
+	sm.lifecycleMu.Unlock()
+	sm.startWorker(sm.ctx)
+}
+
+func (sm *systemdManager) Stop() {
+	if sm == nil {
+		return
+	}
+	sm.lifecycleMu.Lock()
+	cancel := sm.cancel
+	sm.cancel = nil
+	sm.ctx = nil
+	sm.lifecycleMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	sm.wg.Wait()
+	sm.lifecycleMu.Lock()
+	sm.isRunning = false
+	sm.lifecycleMu.Unlock()
+}
+
+func (sm *systemdManager) context() context.Context {
+	if sm.ctx != nil {
+		return sm.ctx
+	}
+	return context.Background()
+}
+
+func (sm *systemdManager) startWorker(ctx context.Context) {
 	if sm.isRunning {
 		return
 	}
 	sm.isRunning = true
 	// prime the service stats map with the current services
-	_ = sm.getServiceStats(conn, true)
+	_ = sm.getServiceStats(ctx, nil, true)
 	// update the services every 10 minutes
-	go func() {
+	sm.wg.Go(func() {
 		for {
-			time.Sleep(time.Minute * 10)
-			_ = sm.getServiceStats(nil, true)
+			if !sleepUntilDone(ctx, time.Minute*10) {
+				return
+			}
+			_ = sm.getServiceStats(ctx, nil, true)
 		}
-	}()
+	})
 }
 
 // getFailedServiceCount returns the number of systemd services in a failed state.
@@ -108,7 +145,7 @@ func (sm *systemdManager) getFailedServiceCount() uint16 {
 }
 
 // getServiceStats collects statistics for all running systemd services.
-func (sm *systemdManager) getServiceStats(conn *dbus.Conn, refresh bool) []*systemd.Service {
+func (sm *systemdManager) getServiceStats(ctx context.Context, conn *dbus.Conn, refresh bool) []*systemd.Service {
 	// start := time.Now()
 	// defer func() {
 	// 	slog.Info("systemdManager.getServiceStats", "duration", time.Since(start))
@@ -116,6 +153,9 @@ func (sm *systemdManager) getServiceStats(conn *dbus.Conn, refresh bool) []*syst
 
 	var services []*systemd.Service
 	var err error
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	if !refresh {
 		// return nil
@@ -129,15 +169,18 @@ func (sm *systemdManager) getServiceStats(conn *dbus.Conn, refresh bool) []*syst
 	}
 
 	if conn == nil || !conn.Connected() {
-		conn, err = dbus.NewSystemConnectionContext(context.Background())
+		conn, err = dbus.NewSystemConnectionContext(ctx)
 		if err != nil {
 			return nil
 		}
 		defer conn.Close()
 	}
 
-	units, err := conn.ListUnitsByPatternsContext(context.Background(), []string{"loaded"}, sm.patterns)
+	units, err := conn.ListUnitsByPatternsContext(ctx, []string{"loaded"}, sm.patterns)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
 		slog.Error("Error listing systemd service units", "err", err)
 		return nil
 	}
@@ -147,7 +190,7 @@ func (sm *systemdManager) getServiceStats(conn *dbus.Conn, refresh bool) []*syst
 
 	for _, unit := range units {
 		currentUnits[unit.Name] = struct{}{}
-		service, err := sm.updateServiceStats(conn, unit)
+		service, err := sm.updateServiceStats(ctx, conn, unit)
 		if err != nil {
 			continue
 		}
@@ -168,11 +211,9 @@ func (sm *systemdManager) getServiceStats(conn *dbus.Conn, refresh bool) []*syst
 }
 
 // updateServiceStats updates the statistics for a single systemd service.
-func (sm *systemdManager) updateServiceStats(conn *dbus.Conn, unit dbus.UnitStatus) (*systemd.Service, error) {
+func (sm *systemdManager) updateServiceStats(ctx context.Context, conn *dbus.Conn, unit dbus.UnitStatus) (*systemd.Service, error) {
 	sm.Lock()
 	defer sm.Unlock()
-
-	ctx := context.Background()
 
 	// if service has never been active (no active since time), skip it
 	if activeEnterTsProp, err := conn.GetUnitTypePropertyContext(ctx, unit.Name, "Unit", "ActiveEnterTimestamp"); err == nil {

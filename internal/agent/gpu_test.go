@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,6 +17,16 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func startGPUManagerForTest(t *testing.T, gm *GPUManager) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		gm.Stop()
+	})
+	require.NoError(t, gm.Start(ctx))
+}
 
 func TestParseNvidiaData(t *testing.T) {
 	tests := []struct {
@@ -1345,6 +1356,8 @@ echo '[{"device_name":"NVIDIA Test GPU","temp":"52C","power_draw":"31W","gpu_uti
 					GpuDataMap: make(map[string]*system.GPUData),
 				}
 			}
+			tt.gm.ctx, tt.gm.cancel = context.WithCancel(context.Background())
+			t.Cleanup(tt.gm.Stop)
 			switch tt.command {
 			case nvidiaSmiCmd:
 				tt.gm.startNvidiaSmiCollector("4")
@@ -1381,6 +1394,7 @@ echo "0, NVIDIA Priority GPU, 45, 512, 2048, 12, 25"`
 	gm, err := NewGPUManager()
 	require.NoError(t, err)
 	require.NotNil(t, gm)
+	startGPUManagerForTest(t, gm)
 
 	time.Sleep(150 * time.Millisecond)
 	gpu, ok := gm.GpuDataMap["0"]
@@ -1412,6 +1426,7 @@ echo '{"card0": {"Temperature (Sensor edge) (C)": "49.0", "Current Socket Graphi
 	gm, err := NewGPUManager()
 	require.NoError(t, err)
 	require.NotNil(t, gm)
+	startGPUManagerForTest(t, gm)
 
 	time.Sleep(150 * time.Millisecond)
 	_, intelOk := gm.GpuDataMap["i0"]
@@ -1433,6 +1448,7 @@ echo "0, NVIDIA Fallback GPU, 41, 256, 1024, 8, 14"`
 	gm, err := NewGPUManager()
 	require.NoError(t, err)
 	require.NotNil(t, gm)
+	startGPUManagerForTest(t, gm)
 
 	time.Sleep(150 * time.Millisecond)
 	gpu, ok := gm.GpuDataMap["0"]
@@ -1447,7 +1463,10 @@ func TestNewGPUManagerConfiguredCollectorsMustStart(t *testing.T) {
 	t.Run("configured valid collector unavailable", func(t *testing.T) {
 		t.Setenv("GPU_COLLECTOR", "nvidia-smi")
 		gm, err := NewGPUManager()
-		require.Nil(t, gm)
+		require.NoError(t, err)
+		require.NotNil(t, gm)
+		err = gm.Start(context.Background())
+		gm.Stop()
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no configured GPU collectors are available")
 	})
@@ -1455,7 +1474,10 @@ func TestNewGPUManagerConfiguredCollectorsMustStart(t *testing.T) {
 	t.Run("configured collector list has only unknown entries", func(t *testing.T) {
 		t.Setenv("GPU_COLLECTOR", "bad,unknown")
 		gm, err := NewGPUManager()
-		require.Nil(t, gm)
+		require.NoError(t, err)
+		require.NotNil(t, gm)
+		err = gm.Start(context.Background())
+		gm.Stop()
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no configured GPU collectors are available")
 	})
@@ -1474,7 +1496,10 @@ func TestNewGPUManagerConfiguredNvmlBypassesCapabilityGate(t *testing.T) {
 	t.Setenv("GPU_COLLECTOR", "nvml")
 
 	gm, err := NewGPUManager()
-	require.Nil(t, gm)
+	require.NoError(t, err)
+	require.NotNil(t, gm)
+	err = gm.Start(context.Background())
+	gm.Stop()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no configured GPU collectors are available")
 	assert.NotContains(t, err.Error(), noGPUFoundMsg)
@@ -1493,6 +1518,7 @@ echo "11-14-2024 22:54:33 RAM 1024/4096MB GR3D_FREQ 80% tj@70C VDD_GPU_SOC 1000m
 	gm, err := NewGPUManager()
 	require.NoError(t, err)
 	require.NotNil(t, gm)
+	startGPUManagerForTest(t, gm)
 
 	time.Sleep(100 * time.Millisecond)
 	gpu, ok := gm.GpuDataMap["0"]
@@ -1738,7 +1764,7 @@ echo "298  295      278  51  2.20  3.12   1675    942   5.75    1   2    9.50   
 	}
 
 	// Run the collector once; it should read four samples but skip the first and return
-	if err := gm.collectIntelStats(); err != nil {
+	if err := gm.collectIntelStats(context.Background()); err != nil {
 		t.Fatalf("collectIntelStats error: %v", err)
 	}
 
@@ -1995,7 +2021,7 @@ echo "189  187      412  67  1.80  2.45   1950    823   8.50    2   1    15.00  
 	t.Setenv("INTEL_GPU_DEVICE", "sriov")
 
 	gm := &GPUManager{GpuDataMap: make(map[string]*system.GPUData)}
-	if err := gm.collectIntelStats(); err != nil {
+	if err := gm.collectIntelStats(context.Background()); err != nil {
 		t.Fatalf("collectIntelStats error: %v", err)
 	}
 

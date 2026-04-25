@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -131,12 +132,18 @@ func (c *nvmlCollector) init() error {
 	return nil
 }
 
-func (c *nvmlCollector) start() {
+func (c *nvmlCollector) start(ctx context.Context) {
 	defer nvmlShutdown()
-	ticker := time.Tick(3 * time.Second)
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
 
-	for range ticker {
-		c.collect()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			c.collect()
+		}
 	}
 }
 

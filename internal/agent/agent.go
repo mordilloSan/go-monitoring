@@ -178,7 +178,7 @@ func (a *Agent) gatherStats(options common.DataRequestOptions) *system.CombinedD
 
 	// skip updating systemd services if cache time is not the default 60sec interval
 	if a.systemdManager != nil && cacheTimeMs == defaultDataCacheTimeMs {
-		services := a.systemdManager.getServiceStats(nil, true)
+		services := a.systemdManager.getServiceStats(a.systemdManager.context(), nil, true)
 		totalCount := uint16(len(services))
 		if totalCount > 0 {
 			numFailed := a.systemdManager.getFailedServiceCount()

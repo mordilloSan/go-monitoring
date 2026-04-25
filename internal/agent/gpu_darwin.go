@@ -5,6 +5,7 @@ package agent
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -36,29 +37,40 @@ func (gm *GPUManager) startPowermetricsCollector() {
 		gm.GpuDataMap[appleGPUID] = &system.GPUData{Name: "Apple GPU"}
 	}
 
-	go func() {
+	ctx := gm.collectorContext()
+	gm.startCollector(func() {
 		failures := 0
 		for {
-			if err := gm.collectPowermetrics(); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			if err := gm.collectPowermetrics(ctx); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				failures++
 				if failures > maxFailureRetries {
 					slog.Warn("powermetrics GPU collector failed repeatedly, stopping", "err", err)
 					break
 				}
 				slog.Warn("Error collecting macOS GPU data via powermetrics (may require sudo)", "err", err)
-				time.Sleep(retryWaitTime)
+				if !sleepUntilDone(ctx, retryWaitTime) {
+					return
+				}
 				continue
 			}
 			failures = 0
-			time.Sleep(powermetricsPollInterval)
+			if !sleepUntilDone(ctx, powermetricsPollInterval) {
+				return
+			}
 		}
-	}()
+	})
 }
 
 // collectPowermetrics runs powermetrics once and parses GPU usage and power from its output.
-func (gm *GPUManager) collectPowermetrics() error {
+func (gm *GPUManager) collectPowermetrics(ctx context.Context) error {
 	interval := strconv.Itoa(powermetricsSampleIntervalMs)
-	cmd := exec.Command(powermetricsCmd, "--samplers", "gpu_power", "-i", interval, "-n", "1")
+	cmd := exec.CommandContext(ctx, powermetricsCmd, "--samplers", "gpu_power", "-i", interval, "-n", "1")
 	cmd.Stderr = nil
 	out, err := cmd.Output()
 	if err != nil {
@@ -140,24 +152,35 @@ func (gm *GPUManager) startMacmonCollector() {
 		gm.GpuDataMap[appleGPUID] = &system.GPUData{Name: "Apple GPU"}
 	}
 
-	go func() {
+	ctx := gm.collectorContext()
+	gm.startCollector(func() {
 		failures := 0
 		for {
-			if err := gm.collectMacmonPipe(); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			if err := gm.collectMacmonPipe(ctx); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				failures++
 				if failures > maxFailureRetries {
 					slog.Warn("macmon GPU collector failed repeatedly, stopping", "err", err)
 					break
 				}
 				slog.Warn("Error collecting macOS GPU data via macmon", "err", err)
-				time.Sleep(retryWaitTime)
+				if !sleepUntilDone(ctx, retryWaitTime) {
+					return
+				}
 				continue
 			}
 			failures = 0
 			// `macmon pipe` is long-running; if it returns, wait a bit before restarting.
-			time.Sleep(retryWaitTime)
+			if !sleepUntilDone(ctx, retryWaitTime) {
+				return
+			}
 		}
-	}()
+	})
 }
 
 type macmonTemp struct {
@@ -171,12 +194,12 @@ type macmonSample struct {
 	Temp        macmonTemp `json:"temp"`
 }
 
-func (gm *GPUManager) collectMacmonPipe() (err error) {
+func (gm *GPUManager) collectMacmonPipe(ctx context.Context) (err error) {
 	macmonPath, err := utils.LookPathHomebrew(macmonCmd)
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(macmonPath, "pipe", "-i", strconv.Itoa(macmonIntervalMs))
+	cmd := exec.CommandContext(ctx, macmonPath, "pipe", "-i", strconv.Itoa(macmonIntervalMs))
 	// Avoid blocking if macmon writes to stderr.
 	cmd.Stderr = io.Discard
 	stdout, err := cmd.StdoutPipe()
@@ -186,18 +209,7 @@ func (gm *GPUManager) collectMacmonPipe() (err error) {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-
-	// Ensure we always reap the child to avoid zombies on any return path and
-	// propagate a non-zero exit code if no other error was set.
-	defer func() {
-		_ = stdout.Close()
-		if cmd.ProcessState == nil || !cmd.ProcessState.Exited() {
-			_ = cmd.Process.Kill()
-		}
-		if waitErr := cmd.Wait(); err == nil && waitErr != nil {
-			err = waitErr
-		}
-	}()
+	defer cleanupStartedCommand(cmd, stdout, &err)
 
 	scanner := bufio.NewScanner(stdout)
 	var hadSample bool

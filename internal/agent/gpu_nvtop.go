@@ -1,13 +1,13 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"os/exec"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/mordilloSan/go-monitoring/internal/model/system"
 	"github.com/mordilloSan/go-monitoring/internal/utils"
@@ -93,22 +93,16 @@ func (gm *GPUManager) updateNvtopSnapshots(snapshots []nvtopSnapshot) bool {
 }
 
 // collectNvtopStats runs nvtop loop mode and continuously decodes JSON snapshots.
-func (gm *GPUManager) collectNvtopStats(interval string) error {
-	cmd := exec.Command(nvtopCmd, "-lP", "-d", interval)
+func (gm *GPUManager) collectNvtopStats(ctx context.Context, interval string) (err error) {
+	cmd := exec.CommandContext(ctx, nvtopCmd, "-lP", "-d", interval)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
 	}
-	if err := cmd.Start(); err != nil {
-		return err
+	if startErr := cmd.Start(); startErr != nil {
+		return startErr
 	}
-	defer func() {
-		_ = stdout.Close()
-		if cmd.ProcessState == nil || !cmd.ProcessState.Exited() {
-			_ = cmd.Process.Kill()
-		}
-		_ = cmd.Wait()
-	}()
+	defer cleanupStartedCommand(cmd, stdout, &err)
 
 	decoder := json.NewDecoder(stdout)
 	foundValid := false
@@ -131,23 +125,17 @@ func (gm *GPUManager) collectNvtopStats(interval string) error {
 
 // startNvtopCollector starts nvtop collection with retry or fallback callback handling.
 func (gm *GPUManager) startNvtopCollector(interval string, onFailure func()) {
-	go func() {
-		failures := 0
-		for {
-			if err := gm.collectNvtopStats(interval); err != nil {
-				if onFailure != nil {
-					slog.Warn("Error collecting GPU data via nvtop", "err", err)
-					onFailure()
-					return
-				}
-				failures++
-				if failures > maxFailureRetries {
-					break
-				}
-				slog.Warn("Error collecting GPU data via nvtop", "err", err)
-				time.Sleep(retryWaitTime)
-				continue
+	ctx := gm.collectorContext()
+	gm.startCollector(func() {
+		runRetryingCollector(ctx, retryWaitTime, func() error {
+			return gm.collectNvtopStats(ctx, interval)
+		}, func(err error) bool {
+			slog.Warn("Error collecting GPU data via nvtop", "err", err)
+			if onFailure != nil {
+				onFailure()
+				return false
 			}
-		}
-	}()
+			return true
+		})
+	})
 }

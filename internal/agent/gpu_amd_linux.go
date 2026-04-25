@@ -4,6 +4,7 @@ package agent
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -42,11 +43,24 @@ func (gm *GPUManager) hasAmdSysfs() bool {
 }
 
 // collectAmdStats collects AMD GPU metrics directly from sysfs to avoid the overhead of rocm-smi
-func (gm *GPUManager) collectAmdStats() error {
+func (gm *GPUManager) collectAmdStats(ctx context.Context) error {
 	sysfsPollInterval := 3000 * time.Millisecond
-	cards, err := filepath.Glob("/sys/class/drm/card*")
+	amdGpuPaths, err := discoverAmdGpuPaths()
 	if err != nil {
 		return err
+	}
+	if len(amdGpuPaths) == 0 {
+		return errNoValidData
+	}
+
+	slog.Debug("Using sysfs for AMD GPU data collection")
+	return gm.pollAmdStats(ctx, amdGpuPaths, sysfsPollInterval)
+}
+
+func discoverAmdGpuPaths() ([]string, error) {
+	cards, err := filepath.Glob("/sys/class/drm/card*")
+	if err != nil {
+		return nil, err
 	}
 
 	var amdGpuPaths []string
@@ -57,32 +71,40 @@ func (gm *GPUManager) collectAmdStats() error {
 		}
 		amdGpuPaths = append(amdGpuPaths, card)
 	}
+	return amdGpuPaths, nil
+}
 
-	if len(amdGpuPaths) == 0 {
-		return errNoValidData
+func (gm *GPUManager) updateAmdGpuPaths(amdGpuPaths []string) bool {
+	hasData := false
+	for _, cardPath := range amdGpuPaths {
+		if gm.updateAmdGpuData(cardPath) {
+			hasData = true
+		}
 	}
+	return hasData
+}
 
-	slog.Debug("Using sysfs for AMD GPU data collection")
-
+func (gm *GPUManager) pollAmdStats(ctx context.Context, amdGpuPaths []string, pollInterval time.Duration) error {
 	failures := 0
 	for {
-		hasData := false
-		for _, cardPath := range amdGpuPaths {
-			if gm.updateAmdGpuData(cardPath) {
-				hasData = true
-			}
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
-		if !hasData {
+		if !gm.updateAmdGpuPaths(amdGpuPaths) {
 			failures++
 			if failures > maxFailureRetries {
 				return errNoValidData
 			}
 			slog.Warn("No AMD GPU data from sysfs", "failures", failures)
-			time.Sleep(retryWaitTime)
+			if !sleepUntilDone(ctx, retryWaitTime) {
+				return ctx.Err()
+			}
 			continue
 		}
 		failures = 0
-		time.Sleep(sysfsPollInterval)
+		if !sleepUntilDone(ctx, pollInterval) {
+			return ctx.Err()
+		}
 	}
 }
 

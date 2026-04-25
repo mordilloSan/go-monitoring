@@ -55,6 +55,19 @@ func (a *Agent) StartContext(ctx context.Context, opts RunOptions) error {
 		a.store = nil
 	}()
 
+	runCtx, cancelRun := context.WithCancel(ctx)
+	var collectorWG sync.WaitGroup
+	collectorStarted := false
+
+	a.startManagers(runCtx)
+	defer a.stopManagers()
+	defer func() {
+		cancelRun()
+		if collectorStarted {
+			collectorWG.Wait()
+		}
+	}()
+
 	if collectErr := a.collectAndPersist(time.Now().UTC()); collectErr != nil {
 		return collectErr
 	}
@@ -79,21 +92,16 @@ func (a *Agent) StartContext(ctx context.Context, opts RunOptions) error {
 		}
 	}()
 
-	// Derive a cancellable context for the collector so the server-error path
-	// also stops it. Defers run LIFO: cancelRun fires first, then collectorWG.Wait
-	// blocks the function return until runCollector exits, then the existing
-	// listener.Close and store.Close defers run.
-	runCtx, cancelRun := context.WithCancel(ctx)
-	var collectorWG sync.WaitGroup
+	// The child context also stops the collector on the server-error path where
+	// the caller's context may still be live.
+	collectorStarted = true
 	collectorWG.Go(func() {
 		a.runCollector(runCtx, opts.CollectorInterval)
 	})
-	defer collectorWG.Wait()
-	defer cancelRun()
 
 	var runErr error
 	select {
-	case <-ctx.Done():
+	case <-runCtx.Done():
 		slog.Info("Shutting down standalone agent")
 	case err := <-serverErr:
 		if err != nil {
@@ -110,6 +118,27 @@ func (a *Agent) StartContext(ctx context.Context, opts RunOptions) error {
 		return err
 	}
 	return runErr
+}
+
+func (a *Agent) startManagers(ctx context.Context) {
+	if a.systemdManager != nil {
+		a.systemdManager.Start(ctx)
+	}
+	if a.gpuManager != nil {
+		if err := a.gpuManager.Start(ctx); err != nil {
+			slog.Debug("GPU", "err", err)
+			a.gpuManager.Stop()
+		}
+	}
+}
+
+func (a *Agent) stopManagers() {
+	if a.gpuManager != nil {
+		a.gpuManager.Stop()
+	}
+	if a.systemdManager != nil {
+		a.systemdManager.Stop()
+	}
 }
 
 func (a *Agent) runCollector(ctx context.Context, interval time.Duration) {

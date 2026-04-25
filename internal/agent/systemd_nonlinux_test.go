@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -19,11 +20,11 @@ func TestSystemdManagerGetServiceStats(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Test with refresh = true
-	result := manager.getServiceStats("any-service", true)
+	result := manager.getServiceStats(context.Background(), "any-service", true)
 	assert.Nil(t, result)
 
 	// Test with refresh = false
-	result = manager.getServiceStats("any-service", false)
+	result = manager.getServiceStats(context.Background(), "any-service", false)
 	assert.Nil(t, result)
 }
 

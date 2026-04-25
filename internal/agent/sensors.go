@@ -29,6 +29,7 @@ type SensorConfig struct {
 	sensors        map[string]struct{}
 	primarySensor  string
 	timeout        time.Duration
+	readSem        chan struct{}
 	isBlacklist    bool
 	hasWildcards   bool
 	skipCollection bool
@@ -61,6 +62,7 @@ func (a *Agent) newSensorConfigWithEnv(primarySensor, sysSensors, sensorsEnvVal,
 		context:        context.Background(),
 		primarySensor:  primarySensor,
 		timeout:        timeout,
+		readSem:        make(chan struct{}, 1),
 		skipCollection: skipCollection,
 		firstRun:       true,
 		sensors:        make(map[string]struct{}),
@@ -174,6 +176,28 @@ func (a *Agent) getTempsWithPanicRecovery(ctx context.Context, getTemps getTemps
 	return
 }
 
+func (c *SensorConfig) tryStartRead() bool {
+	if c.readSem == nil {
+		c.readSem = make(chan struct{}, 1)
+	}
+	select {
+	case c.readSem <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *SensorConfig) finishRead() {
+	if c.readSem == nil {
+		return
+	}
+	select {
+	case <-c.readSem:
+	default:
+	}
+}
+
 func (a *Agent) getTempsWithTimeout(getTemps getTempsFn) ([]sensors.TemperatureStat, error) {
 	type result struct {
 		temps []sensors.TemperatureStat
@@ -188,17 +212,25 @@ func (a *Agent) getTempsWithTimeout(getTemps getTempsFn) ([]sensors.TemperatureS
 		timeout = 10 * time.Second
 	}
 
+	if !a.sensorConfig.tryStartRead() {
+		return nil, errTemperatureFetchTimeout
+	}
+
 	// Derive a timeout-aware context so a context-aware gopsutil call cancels
 	// when the timeout fires. The worker goroutine still survives the parent's
-	// return if gopsutil ignores ctx, but at least the wedge is bounded for any
-	// IO that respects context cancellation.
+	// return if gopsutil ignores ctx, but this gate prevents one stuck read from
+	// growing into one new goroutine per poll.
 	ctx, cancel := context.WithTimeout(a.sensorConfig.context, timeout)
 	defer cancel()
 
 	resultCh := make(chan result, 1)
 	go func() {
+		defer a.sensorConfig.finishRead()
 		temps, err := a.getTempsWithPanicRecovery(ctx, getTemps)
-		resultCh <- result{temps: temps, err: err}
+		select {
+		case resultCh <- result{temps: temps, err: err}:
+		case <-ctx.Done():
+		}
 	}()
 
 	select {

@@ -3,9 +3,11 @@ package agent
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"os/exec"
@@ -49,6 +51,11 @@ type GPUManager struct {
 	// Per-cache-key tracking for delta calculations
 	// cacheKey -> gpuId -> snapshot of last count/usage/power values
 	lastSnapshots map[uint16]map[string]*gpuSnapshot
+	caps          gpuCapabilities
+	lifecycleMu   sync.Mutex
+	ctx           context.Context
+	cancel        context.CancelFunc
+	wg            sync.WaitGroup
 }
 
 // gpuSnapshot stores the last observed incremental values for delta tracking
@@ -82,6 +89,88 @@ type gpuCollector struct {
 }
 
 var errNoValidData = fmt.Errorf("no valid GPU data found") // Error for missing data
+
+func sleepUntilDone(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func runRetryingCollector(ctx context.Context, interval time.Duration, collect func() error, handleErr func(error) bool) {
+	failures := 0
+	for ctx.Err() == nil {
+		err := collect()
+		if err == nil {
+			failures = 0
+			if !sleepUntilDone(ctx, interval) {
+				return
+			}
+			continue
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		failures++
+		if failures > maxFailureRetries {
+			return
+		}
+		if handleErr != nil && !handleErr(err) {
+			return
+		}
+		if !sleepUntilDone(ctx, retryWaitTime) {
+			return
+		}
+	}
+}
+
+func cleanupStartedCommand(cmd *exec.Cmd, stdout io.Closer, err *error) {
+	if stdout != nil {
+		_ = stdout.Close()
+	}
+	if *err != nil && cmd.Process != nil && cmd.ProcessState == nil {
+		_ = cmd.Process.Kill()
+	}
+	if cmd.Process == nil {
+		return
+	}
+	if waitErr := cmd.Wait(); *err == nil && waitErr != nil {
+		*err = waitErr
+	}
+}
+
+func (gm *GPUManager) startCollector(fn func()) {
+	gm.wg.Go(func() {
+		fn()
+	})
+}
+
+func (gm *GPUManager) collectorContext() context.Context {
+	if gm.ctx != nil {
+		return gm.ctx
+	}
+	return context.Background()
+}
+
+func (gm *GPUManager) Stop() {
+	if gm == nil {
+		return
+	}
+	gm.lifecycleMu.Lock()
+	cancel := gm.cancel
+	gm.cancel = nil
+	gm.ctx = nil
+	gm.lifecycleMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	gm.wg.Wait()
+}
 
 // collectorSource identifies a selectable GPU collector in GPU_COLLECTOR.
 type collectorSource string
@@ -137,17 +226,28 @@ type collectorDefinition struct {
 }
 
 // starts and manages the ongoing collection of GPU data for the specified GPU management utility
-func (c *gpuCollector) start() {
+func (c *gpuCollector) start(ctx context.Context) {
 	for {
-		err := c.collect()
+		if ctx.Err() != nil {
+			return
+		}
+		err := c.collect(ctx)
 		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			if err == errNoValidData {
 				slog.Warn(c.name + " found no valid GPU data, stopping")
 				break
 			}
 			slog.Warn(c.name+" failed, restarting", "err", err)
-			time.Sleep(retryWaitTime)
+			if !sleepUntilDone(ctx, retryWaitTime) {
+				return
+			}
 			continue
+		}
+		if !sleepUntilDone(ctx, retryWaitTime) {
+			return
 		}
 	}
 }
@@ -155,8 +255,8 @@ func (c *gpuCollector) start() {
 // collect executes the command, parses output with the assigned parser function.
 // Reaps the child and releases the stdout pipe on every return path so early
 // exits (errNoValidData, scanner error) cannot leak processes or FDs.
-func (c *gpuCollector) collect() (err error) {
-	cmd := exec.Command(c.name, c.cmdArgs...)
+func (c *gpuCollector) collect(ctx context.Context) (err error) {
+	cmd := exec.CommandContext(ctx, c.name, c.cmdArgs...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -164,16 +264,7 @@ func (c *gpuCollector) collect() (err error) {
 	if startErr := cmd.Start(); startErr != nil {
 		return startErr
 	}
-
-	defer func() {
-		_ = stdout.Close()
-		if cmd.ProcessState == nil || !cmd.ProcessState.Exited() {
-			_ = cmd.Process.Kill()
-		}
-		if waitErr := cmd.Wait(); err == nil && waitErr != nil {
-			err = waitErr
-		}
-	}()
+	defer cleanupStartedCommand(cmd, stdout, &err)
 
 	scanner := bufio.NewScanner(stdout)
 	if c.buf == nil {
@@ -548,20 +639,15 @@ func logGPUDiscovery(mode string, caps gpuCapabilities, requested, selected []co
 }
 
 func (gm *GPUManager) startIntelCollector() {
-	go func() {
-		failures := 0
-		for {
-			if err := gm.collectIntelStats(); err != nil {
-				failures++
-				if failures > maxFailureRetries {
-					break
-				}
-				slog.Warn("Error collecting Intel GPU data", "err", err)
-				time.Sleep(retryWaitTime)
-				continue
-			}
-		}
-	}()
+	ctx := gm.collectorContext()
+	gm.startCollector(func() {
+		runRetryingCollector(ctx, retryWaitTime, func() error {
+			return gm.collectIntelStats(ctx)
+		}, func(err error) bool {
+			slog.Warn("Error collecting Intel GPU data", "err", err)
+			return true
+		})
+	})
 }
 
 func (gm *GPUManager) startNvidiaSmiCollector(intervalSeconds string) {
@@ -575,7 +661,10 @@ func (gm *GPUManager) startNvidiaSmiCollector(intervalSeconds string) {
 		},
 		parse: gm.parseNvidiaData,
 	}
-	go collector.start()
+	ctx := gm.collectorContext()
+	gm.startCollector(func() {
+		collector.start(ctx)
+	})
 }
 
 func (gm *GPUManager) startTegraStatsCollector(intervalMilliseconds string) {
@@ -585,7 +674,10 @@ func (gm *GPUManager) startTegraStatsCollector(intervalMilliseconds string) {
 		cmdArgs: []string{"--interval", intervalMilliseconds},
 		parse:   gm.getJetsonParser(),
 	}
-	go collector.start()
+	ctx := gm.collectorContext()
+	gm.startCollector(func() {
+		collector.start(ctx)
+	})
 }
 
 func (gm *GPUManager) startRocmSmiCollector(pollInterval time.Duration) {
@@ -595,19 +687,28 @@ func (gm *GPUManager) startRocmSmiCollector(pollInterval time.Duration) {
 		cmdArgs: []string{"--showid", "--showtemp", "--showuse", "--showpower", "--showproductname", "--showmeminfo", "vram", "--json"},
 		parse:   gm.parseAmdData,
 	}
-	go func() {
+	ctx := gm.collectorContext()
+	gm.startCollector(func() {
 		failures := 0
 		for {
-			if err := collector.collect(); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			if err := collector.collect(ctx); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				failures++
 				if failures > maxFailureRetries {
 					break
 				}
 				slog.Warn("Error collecting AMD GPU data via rocm-smi", "err", err)
 			}
-			time.Sleep(pollInterval)
+			if !sleepUntilDone(ctx, pollInterval) {
+				return
+			}
 		}
-	}()
+	})
 }
 
 func (gm *GPUManager) collectorDefinitions(caps gpuCapabilities) map[collectorSource]collectorDefinition {
@@ -701,17 +802,21 @@ func (gm *GPUManager) startNvmlCollector() bool {
 		slog.Warn("Failed to initialize NVML", "err", err)
 		return false
 	}
-	go collector.start()
+	ctx := gm.collectorContext()
+	gm.startCollector(func() {
+		collector.start(ctx)
+	})
 	return true
 }
 
 // startAmdSysfsCollector starts AMD GPU collection via sysfs.
 func (gm *GPUManager) startAmdSysfsCollector() bool {
-	go func() {
-		if err := gm.collectAmdStats(); err != nil {
+	ctx := gm.collectorContext()
+	gm.startCollector(func() {
+		if err := gm.collectAmdStats(ctx); err != nil && ctx.Err() == nil {
 			slog.Warn("Error collecting AMD GPU data via sysfs", "err", err)
 		}
-	}()
+	})
 	return true
 }
 
@@ -797,7 +902,7 @@ func (gm *GPUManager) resolveAutoCollectorPriority(caps gpuCapabilities) []colle
 	return priorities
 }
 
-// NewGPUManager creates and initializes a new GPUManager
+// NewGPUManager creates a GPUManager. Start begins the long-lived collectors.
 func NewGPUManager() (*GPUManager, error) {
 	if skipGPU, _ := utils.GetEnv("SKIP_GPU"); skipGPU == "true" {
 		logGPUDiscovery("disabled", gpuCapabilities{}, nil, nil, "SKIP_GPU=true")
@@ -806,12 +911,33 @@ func NewGPUManager() (*GPUManager, error) {
 	var gm GPUManager
 	caps := gm.discoverGpuCapabilities()
 	gm.GpuDataMap = make(map[string]*system.GPUData)
+	gm.caps = caps
+
+	return &gm, nil
+}
+
+// Start begins GPU collectors and binds their lifetime to ctx.
+func (gm *GPUManager) Start(ctx context.Context) error {
+	if gm == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	gm.lifecycleMu.Lock()
+	if gm.cancel != nil {
+		gm.lifecycleMu.Unlock()
+		return nil
+	}
+	gm.ctx, gm.cancel = context.WithCancel(ctx)
+	gm.lifecycleMu.Unlock()
+	caps := gm.caps
 
 	// Jetson devices should always use tegrastats (ignore GPU_COLLECTOR).
 	if caps.hasTegrastats {
 		gm.startTegraStatsCollector("3700")
 		logGPUDiscovery("auto", caps, nil, []collectorSource{collectorSource(tegraStatsCmd)}, "tegrastats detected")
-		return &gm, nil
+		return nil
 	}
 
 	// Respect explicit collector selection before capability auto-detection.
@@ -820,15 +946,17 @@ func NewGPUManager() (*GPUManager, error) {
 		started := gm.startCollectorsByPriority(priorities, caps)
 		if len(started) == 0 {
 			logGPUDiscovery("configured", caps, priorities, nil, "no configured GPU collectors started")
-			return nil, fmt.Errorf("no configured GPU collectors are available")
+			gm.Stop()
+			return fmt.Errorf("no configured GPU collectors are available")
 		}
 		logGPUDiscovery("configured", caps, priorities, started, "")
-		return &gm, nil
+		return nil
 	}
 
 	if !hasAnyGpuCollector(caps) {
 		logGPUDiscovery("disabled", caps, nil, nil, "no GPU collector detected")
-		return nil, errors.New(noGPUFoundMsg)
+		gm.Stop()
+		return errors.New(noGPUFoundMsg)
 	}
 
 	// auto-detect and start collectors when GPU_COLLECTOR is unset.
@@ -836,9 +964,10 @@ func NewGPUManager() (*GPUManager, error) {
 	started := gm.startCollectorsByPriority(autoPriorities, caps)
 	if len(started) == 0 {
 		logGPUDiscovery("auto", caps, autoPriorities, nil, "no GPU collectors started")
-		return nil, errors.New(noGPUFoundMsg)
+		gm.Stop()
+		return errors.New(noGPUFoundMsg)
 	}
 	logGPUDiscovery("auto", caps, autoPriorities, started, "")
 
-	return &gm, nil
+	return nil
 }

@@ -2,7 +2,11 @@
 
 package agent
 
-import "github.com/mordilloSan/go-monitoring/internal/model/systemd"
+import (
+	"context"
+
+	"github.com/mordilloSan/go-monitoring/internal/model/systemd"
+)
 
 // systemdManager manages the collection of systemd service statistics.
 type systemdManager struct {
@@ -14,8 +18,16 @@ func newSystemdManager() (*systemdManager, error) {
 	return &systemdManager{}, nil
 }
 
+func (sm *systemdManager) Start(_ context.Context) {}
+
+func (sm *systemdManager) Stop() {}
+
+func (sm *systemdManager) context() context.Context {
+	return context.Background()
+}
+
 // getServiceStats returns nil for non-linux systems.
-func (sm *systemdManager) getServiceStats(conn any, refresh bool) []*systemd.Service {
+func (sm *systemdManager) getServiceStats(_ context.Context, _ any, _ bool) []*systemd.Service {
 	return nil
 }
 
