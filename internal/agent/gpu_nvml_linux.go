@@ -24,6 +24,18 @@ func hasSymbol(lib uintptr, symbol string) bool {
 	return err == nil
 }
 
+func detectNVMLAvailability() bool {
+	if _, err := os.Stat("/dev/nvidiactl"); err != nil {
+		return false
+	}
+	lib, err := openLibrary(getNVMLPath())
+	if err != nil {
+		return false
+	}
+	_ = purego.Dlclose(lib)
+	return true
+}
+
 func (c *nvmlCollector) isGPUActive(bdf string) bool {
 	// runtime_status
 	statusPath := filepath.Join("/sys/bus/pci/devices", bdf, "power/runtime_status")

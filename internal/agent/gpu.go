@@ -119,6 +119,7 @@ func isValidCollectorSource(source collectorSource) bool {
 // gpuCapabilities describes detected GPU tooling and sysfs support on the host.
 type gpuCapabilities struct {
 	hasNvidiaSmi    bool
+	hasNVML         bool
 	hasRocmSmi      bool
 	hasAmdSysfs     bool
 	hasTegrastats   bool
@@ -445,6 +446,7 @@ func (gm *GPUManager) storeSnapshot(id string, gpu *system.GPUData, cacheKey uin
 func (gm *GPUManager) discoverGpuCapabilities() gpuCapabilities {
 	caps := gpuCapabilities{
 		hasAmdSysfs: gm.hasAmdSysfs(),
+		hasNVML:     detectNVMLAvailability(),
 	}
 	if _, err := exec.LookPath(nvidiaSmiCmd); err == nil {
 		caps.hasNvidiaSmi = true
@@ -473,7 +475,64 @@ func (gm *GPUManager) discoverGpuCapabilities() gpuCapabilities {
 }
 
 func hasAnyGpuCollector(caps gpuCapabilities) bool {
-	return caps.hasNvidiaSmi || caps.hasRocmSmi || caps.hasAmdSysfs || caps.hasTegrastats || caps.hasIntelGpuTop || caps.hasNvtop || caps.hasMacmon || caps.hasPowermetrics
+	return caps.hasNvidiaSmi || caps.hasNVML || caps.hasRocmSmi || caps.hasAmdSysfs || caps.hasTegrastats || caps.hasIntelGpuTop || caps.hasNvtop || caps.hasMacmon || caps.hasPowermetrics
+}
+
+func availableCollectorSources(caps gpuCapabilities) []collectorSource {
+	available := make([]collectorSource, 0, 9)
+	if caps.hasTegrastats {
+		available = append(available, collectorSource(tegraStatsCmd))
+	}
+	if caps.hasNvidiaSmi {
+		available = append(available, collectorSourceNvidiaSMI)
+	}
+	if caps.hasNVML {
+		available = append(available, collectorSourceNVML)
+	}
+	if caps.hasAmdSysfs {
+		available = append(available, collectorSourceAmdSysfs)
+	}
+	if caps.hasRocmSmi {
+		available = append(available, collectorSourceRocmSMI)
+	}
+	if caps.hasIntelGpuTop {
+		available = append(available, collectorSourceIntelGpuTop)
+	}
+	if caps.hasNvtop {
+		available = append(available, collectorSourceNVTop)
+	}
+	if caps.hasMacmon {
+		available = append(available, collectorSourceMacmon)
+	}
+	if caps.hasPowermetrics {
+		available = append(available, collectorSourcePowermetrics)
+	}
+	return available
+}
+
+func collectorSourceStrings(sources []collectorSource) []string {
+	names := make([]string, 0, len(sources))
+	for _, source := range sources {
+		names = append(names, string(source))
+	}
+	return names
+}
+
+func logGPUDiscovery(mode string, caps gpuCapabilities, requested, selected []collectorSource, reason string) {
+	args := []any{
+		"mode", mode,
+		"available", collectorSourceStrings(availableCollectorSources(caps)),
+	}
+	if len(requested) > 0 {
+		args = append(args, "requested", collectorSourceStrings(requested))
+	}
+	if len(selected) > 0 {
+		args = append(args, "selected", collectorSourceStrings(selected))
+	}
+	if reason != "" {
+		args = append(args, "reason", reason)
+	}
+	slog.Info("GPU discovery", args...)
 }
 
 func (gm *GPUManager) startIntelCollector() {
@@ -645,10 +704,10 @@ func (gm *GPUManager) startAmdSysfsCollector() bool {
 }
 
 // startCollectorsByPriority starts collectors in order with one source per vendor group.
-func (gm *GPUManager) startCollectorsByPriority(priorities []collectorSource, caps gpuCapabilities) int {
+func (gm *GPUManager) startCollectorsByPriority(priorities []collectorSource, caps gpuCapabilities) []collectorSource {
 	definitions := gm.collectorDefinitions(caps)
 	selectedGroups := make(map[string]bool, 3)
-	started := 0
+	started := make([]collectorSource, 0, len(priorities))
 	for i, source := range priorities {
 		definition, ok := definitions[source]
 		if !ok || !definition.available {
@@ -665,7 +724,7 @@ func (gm *GPUManager) startCollectorsByPriority(priorities []collectorSource, ca
 			if definition.start(func() {
 				gm.startCollectorsByPriority(remaining, caps)
 			}) {
-				started++
+				started = append(started, source)
 				return started
 			}
 		}
@@ -678,7 +737,7 @@ func (gm *GPUManager) startCollectorsByPriority(priorities []collectorSource, ca
 		}
 		if definition.start(nil) {
 			selectedGroups[group] = true
-			started++
+			started = append(started, source)
 		}
 	}
 	return started
@@ -688,8 +747,13 @@ func (gm *GPUManager) startCollectorsByPriority(priorities []collectorSource, ca
 func (gm *GPUManager) resolveAutoCollectorPriority(caps gpuCapabilities) []collectorSource {
 	priorities := make([]collectorSource, 0, 4)
 
-	if caps.hasNvidiaSmi && !caps.hasTegrastats {
-		priorities = append(priorities, collectorSourceNvidiaSMI, collectorSourceNVML)
+	if !caps.hasTegrastats {
+		if caps.hasNvidiaSmi {
+			priorities = append(priorities, collectorSourceNvidiaSMI)
+		}
+		if caps.hasNVML {
+			priorities = append(priorities, collectorSourceNVML)
+		}
 	}
 
 	if caps.hasAmdSysfs {
@@ -724,6 +788,7 @@ func (gm *GPUManager) resolveAutoCollectorPriority(caps gpuCapabilities) []colle
 // NewGPUManager creates and initializes a new GPUManager
 func NewGPUManager() (*GPUManager, error) {
 	if skipGPU, _ := utils.GetEnv("SKIP_GPU"); skipGPU == "true" {
+		logGPUDiscovery("disabled", gpuCapabilities{}, nil, nil, "SKIP_GPU=true")
 		return nil, nil
 	}
 	var gm GPUManager
@@ -733,26 +798,35 @@ func NewGPUManager() (*GPUManager, error) {
 	// Jetson devices should always use tegrastats (ignore GPU_COLLECTOR).
 	if caps.hasTegrastats {
 		gm.startTegraStatsCollector("3700")
+		logGPUDiscovery("auto", caps, nil, []collectorSource{collectorSource(tegraStatsCmd)}, "tegrastats detected")
 		return &gm, nil
 	}
 
 	// Respect explicit collector selection before capability auto-detection.
 	if collectorConfig, ok := utils.GetEnv("GPU_COLLECTOR"); ok && strings.TrimSpace(collectorConfig) != "" {
 		priorities := parseCollectorPriority(collectorConfig)
-		if gm.startCollectorsByPriority(priorities, caps) == 0 {
+		started := gm.startCollectorsByPriority(priorities, caps)
+		if len(started) == 0 {
+			logGPUDiscovery("configured", caps, priorities, nil, "no configured GPU collectors started")
 			return nil, fmt.Errorf("no configured GPU collectors are available")
 		}
+		logGPUDiscovery("configured", caps, priorities, started, "")
 		return &gm, nil
 	}
 
 	if !hasAnyGpuCollector(caps) {
+		logGPUDiscovery("disabled", caps, nil, nil, "no GPU collector detected")
 		return nil, errors.New(noGPUFoundMsg)
 	}
 
 	// auto-detect and start collectors when GPU_COLLECTOR is unset.
-	if gm.startCollectorsByPriority(gm.resolveAutoCollectorPriority(caps), caps) == 0 {
+	autoPriorities := gm.resolveAutoCollectorPriority(caps)
+	started := gm.startCollectorsByPriority(autoPriorities, caps)
+	if len(started) == 0 {
+		logGPUDiscovery("auto", caps, autoPriorities, nil, "no GPU collectors started")
 		return nil, errors.New(noGPUFoundMsg)
 	}
+	logGPUDiscovery("auto", caps, autoPriorities, started, "")
 
 	return &gm, nil
 }

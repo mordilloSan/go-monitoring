@@ -13,3 +13,7 @@ func (c *nvmlCollector) init() error {
 }
 
 func (c *nvmlCollector) start() {}
+
+func detectNVMLAvailability() bool {
+	return false
+}

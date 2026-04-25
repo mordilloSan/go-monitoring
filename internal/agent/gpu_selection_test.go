@@ -12,6 +12,7 @@ func TestResolveAutoCollectorPriority(t *testing.T) {
 	t.Run("prefers host native collectors in auto mode", func(t *testing.T) {
 		got := gm.resolveAutoCollectorPriority(gpuCapabilities{
 			hasNvidiaSmi:   true,
+			hasNVML:        true,
 			hasAmdSysfs:    true,
 			hasRocmSmi:     true,
 			hasIntelGpuTop: true,
@@ -24,6 +25,13 @@ func TestResolveAutoCollectorPriority(t *testing.T) {
 			collectorSourceIntelGpuTop,
 		}
 		assert.Equal(t, want, got)
+	})
+
+	t.Run("uses nvml when nvidia smi is unavailable", func(t *testing.T) {
+		got := gm.resolveAutoCollectorPriority(gpuCapabilities{
+			hasNVML: true,
+		})
+		assert.Equal(t, []collectorSource{collectorSourceNVML}, got)
 	})
 
 	t.Run("keeps nvtop as last resort", func(t *testing.T) {

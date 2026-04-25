@@ -57,7 +57,9 @@ Environment variables:
 - `GPU_COLLECTOR` — comma-separated collector priority override (for example `nvml`, `amd_sysfs`, `intel_gpu_top`, `nvtop`)
 - `SKIP_GPU` — set to `true` to disable GPU monitoring entirely
 
-GPU auto-selection defaults to `tegrastats` on Jetson, `nvidia-smi` with `nvml` fallback for NVIDIA, `amd_sysfs` with `rocm-smi` fallback for AMD, `intel_gpu_top` for Intel, and `nvtop` only as a last resort. Apple Silicon collectors remain opt-in via `GPU_COLLECTOR`.
+GPU auto-selection defaults to `tegrastats` on Jetson, `nvidia-smi` with NVML fallback for NVIDIA when the runtime exposes NVML, `amd_sysfs` with `rocm-smi` fallback for AMD, `intel_gpu_top` for Intel, and `nvtop` only as a last resort. Apple Silicon collectors remain opt-in via `GPU_COLLECTOR`.
+
+At startup the agent logs which GPU collectors were discovered and which ones were selected. In containers, detection only works against what the runtime actually exposes to the process: device nodes, libraries, capabilities, and helper binaries still need to be present in the container.
 
 ## HTTP API
 
