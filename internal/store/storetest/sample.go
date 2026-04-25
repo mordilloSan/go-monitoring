@@ -3,11 +3,11 @@
 package storetest
 
 import (
-	"github.com/mordilloSan/go-monitoring/internal/model/container"
-	modelnet "github.com/mordilloSan/go-monitoring/internal/model/network"
-	procmodel "github.com/mordilloSan/go-monitoring/internal/model/process"
-	"github.com/mordilloSan/go-monitoring/internal/model/system"
-	"github.com/mordilloSan/go-monitoring/internal/model/systemd"
+	"github.com/mordilloSan/go-monitoring/internal/domain/container"
+	modelnet "github.com/mordilloSan/go-monitoring/internal/domain/network"
+	procmodel "github.com/mordilloSan/go-monitoring/internal/domain/process"
+	"github.com/mordilloSan/go-monitoring/internal/domain/system"
+	"github.com/mordilloSan/go-monitoring/internal/domain/systemd"
 )
 
 // SampleCombinedData returns a CombinedData snapshot whose field values are

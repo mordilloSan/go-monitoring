@@ -16,12 +16,16 @@ A standalone Go agent that collects local system metrics, persists them to an em
 ## Layout
 
 - [cmd/go-monitoring/](cmd/go-monitoring/) — entrypoint (`main` package)
-- [internal/agent/](internal/agent/) — agent core: collectors, HTTP server, store
-- [internal/model/](internal/model/) — shared data types (system, container, smart, systemd)
+- [internal/app/](internal/app/) — app lifecycle, collection orchestration, and remaining local collectors
+- [internal/api/http/](internal/api/http/) — REST API routes, handlers, request logging, and query parsing
+- [internal/api/model/](internal/api/model/) — REST API response contracts
+- [internal/collector/docker/](internal/collector/docker/) — Docker/Podman collector
+- [internal/collector/docker/dockerapi/](internal/collector/docker/dockerapi/) — Docker Engine API wire DTOs
+- [internal/domain/](internal/domain/) — shared domain data types (system, container, smart, systemd)
+- [internal/store/](internal/store/) — SQLite persistence, history, and rollups
 - [internal/health/](internal/health/) — freshness check used by `go-monitoring health`
 - [internal/version/](internal/version/) — version/app metadata
 - [internal/common/](internal/common/), [internal/utils/](internal/utils/), [internal/deltatracker/](internal/deltatracker/) — shared helpers
-- [internal/battery/](internal/battery/), [internal/zfs/](internal/zfs/) — platform-specific helpers
 
 ## Build
 

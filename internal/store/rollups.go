@@ -7,8 +7,8 @@ import (
 	"math"
 	"time"
 
-	"github.com/mordilloSan/go-monitoring/internal/model/container"
-	"github.com/mordilloSan/go-monitoring/internal/model/system"
+	"github.com/mordilloSan/go-monitoring/internal/domain/container"
+	"github.com/mordilloSan/go-monitoring/internal/domain/system"
 	"github.com/mordilloSan/go-monitoring/internal/utils"
 )
 

@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	agent "github.com/mordilloSan/go-monitoring/internal/agent"
+	"github.com/mordilloSan/go-monitoring/internal/app"
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 )
@@ -45,7 +45,7 @@ func TestGetAddress(t *testing.T) {
 			for key, value := range tt.envVars {
 				t.Setenv(key, value)
 			}
-			assert.Equal(t, tt.expected, agent.GetAddress(tt.listen))
+			assert.Equal(t, tt.expected, app.GetAddress(tt.listen))
 		})
 	}
 }

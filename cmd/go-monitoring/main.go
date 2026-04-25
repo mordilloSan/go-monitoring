@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	agent "github.com/mordilloSan/go-monitoring/internal/agent"
+	"github.com/mordilloSan/go-monitoring/internal/app"
 	"github.com/mordilloSan/go-monitoring/internal/health"
 	buildinfo "github.com/mordilloSan/go-monitoring/internal/version"
 	"github.com/spf13/pflag"
@@ -78,13 +78,13 @@ func main() {
 		return
 	}
 
-	a, err := agent.NewAgent()
+	a, err := app.New()
 	if err != nil {
 		log.Fatal("Failed to create agent: ", err)
 	}
 
-	if err := a.Start(agent.RunOptions{
-		Addr: agent.GetAddress(opts.listen),
+	if err := a.Start(app.RunOptions{
+		Addr: app.GetAddress(opts.listen),
 	}); err != nil {
 		log.Fatal("Failed to start standalone agent: ", err)
 	}

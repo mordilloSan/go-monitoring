@@ -11,12 +11,12 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/mordilloSan/go-monitoring/internal/model/container"
-	modelnet "github.com/mordilloSan/go-monitoring/internal/model/network"
-	procmodel "github.com/mordilloSan/go-monitoring/internal/model/process"
-	"github.com/mordilloSan/go-monitoring/internal/model/smart"
-	"github.com/mordilloSan/go-monitoring/internal/model/system"
-	"github.com/mordilloSan/go-monitoring/internal/model/systemd"
+	"github.com/mordilloSan/go-monitoring/internal/domain/container"
+	modelnet "github.com/mordilloSan/go-monitoring/internal/domain/network"
+	procmodel "github.com/mordilloSan/go-monitoring/internal/domain/process"
+	"github.com/mordilloSan/go-monitoring/internal/domain/smart"
+	"github.com/mordilloSan/go-monitoring/internal/domain/system"
+	"github.com/mordilloSan/go-monitoring/internal/domain/systemd"
 	_ "modernc.org/sqlite"
 )
 
@@ -57,32 +57,25 @@ type Store struct {
 	path string
 }
 
-type SummaryResponse struct {
-	CapturedAt int64 `json:"captured_at"`
-	system.CombinedData
+type snapshotJSONPayload struct {
+	infoJSON             string
+	statsJSON            string
+	containerHistoryJSON string
+	detailsJSON          any
 }
 
-type HistoryItem[T any] struct {
-	CapturedAt int64 `json:"captured_at"`
-	Stats      T     `json:"stats"`
+type HistoryRecord[T any] struct {
+	CapturedAt int64
+	Stats      T
 }
 
-type HistoryResponse[T any] struct {
-	Resolution string           `json:"resolution"`
-	Items      []HistoryItem[T] `json:"items"`
+type SmartDeviceRecord struct {
+	ID   string
+	Key  string
+	Data smart.SmartData
 }
 
-type CurrentItemsResponse[T any] struct {
-	CapturedAt int64 `json:"captured_at"`
-	Items      []T   `json:"items"`
-}
-
-type CurrentDataResponse[T any] struct {
-	CapturedAt int64 `json:"captured_at"`
-	Data       T     `json:"data"`
-}
-
-type ContainerCurrent struct {
+type containerCurrentRecord struct {
 	ID          string                 `json:"id"`
 	Name        string                 `json:"name"`
 	Image       string                 `json:"image,omitempty"`
@@ -94,29 +87,6 @@ type ContainerCurrent struct {
 	NetworkSent float64                `json:"network_sent_mb,omitempty,omitzero"`
 	NetworkRecv float64                `json:"network_recv_mb,omitempty,omitzero"`
 	Bandwidth   [2]uint64              `json:"bandwidth_bytes,omitempty,omitzero"`
-}
-
-type SmartDeviceCurrent struct {
-	ID   string          `json:"id"`
-	Key  string          `json:"key"`
-	Data smart.SmartData `json:"data"`
-}
-
-type snapshotJSONPayload struct {
-	infoJSON             string
-	statsJSON            string
-	containerHistoryJSON string
-	detailsJSON          any
-}
-
-type MetaResponse struct {
-	Version              string            `json:"version"`
-	DataDir              string            `json:"data_dir"`
-	DBPath               string            `json:"db_path"`
-	ListenAddr           string            `json:"listen_addr"`
-	CollectorInterval    string            `json:"collector_interval"`
-	SmartRefreshInterval string            `json:"smart_refresh_interval"`
-	Retention            map[string]string `json:"retention"`
 }
 
 func OpenStore(dataDir string) (*Store, error) {
@@ -472,7 +442,7 @@ func replaceCurrentContainers(tx *sql.Tx, capturedAt int64, items []*container.S
 		if item == nil {
 			continue
 		}
-		current := ContainerCurrent{
+		current := containerCurrentRecord{
 			ID:          item.Id,
 			Name:        item.Name,
 			Image:       item.Image,
@@ -688,7 +658,7 @@ func upsertMeta(tx *sql.Tx, key, value string) error {
 	return err
 }
 
-func (s *Store) Summary() (*SummaryResponse, error) {
+func (s *Store) Summary() (int64, *system.CombinedData, error) {
 	var (
 		capturedAt int64
 		infoJSON   string
@@ -701,30 +671,29 @@ func (s *Store) Summary() (*SummaryResponse, error) {
 		WHERE singleton = 1
 	`).Scan(&capturedAt, &infoJSON, &statsJSON, &detailsRaw)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 
-	var summary SummaryResponse
-	summary.CapturedAt = capturedAt
+	var summary system.CombinedData
 	if unmarshalErr := json.Unmarshal([]byte(infoJSON), &summary.Info); unmarshalErr != nil {
-		return nil, unmarshalErr
+		return 0, nil, unmarshalErr
 	}
 	if unmarshalErr := json.Unmarshal([]byte(statsJSON), &summary.Stats); unmarshalErr != nil {
-		return nil, unmarshalErr
+		return 0, nil, unmarshalErr
 	}
 	if detailsRaw.Valid && detailsRaw.String != "" {
 		summary.Details = &system.Details{}
 		if unmarshalErr := json.Unmarshal([]byte(detailsRaw.String), summary.Details); unmarshalErr != nil {
-			return nil, unmarshalErr
+			return 0, nil, unmarshalErr
 		}
 	}
 	if summary.Containers, err = s.currentContainerStats(); err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	if summary.SystemdServices, err = s.CurrentSystemdItems(); err != nil {
-		return nil, err
+		return 0, nil, err
 	}
-	return &summary, nil
+	return capturedAt, &summary, nil
 }
 
 func (s *Store) currentContainerStats() ([]*container.Stats, error) {
@@ -740,7 +709,7 @@ func (s *Store) currentContainerStats() ([]*container.Stats, error) {
 		if err := rows.Scan(&raw); err != nil {
 			return nil, err
 		}
-		var current ContainerCurrent
+		var current containerCurrentRecord
 		if err := json.Unmarshal([]byte(raw), &current); err != nil {
 			return nil, err
 		}
@@ -761,46 +730,25 @@ func (s *Store) currentContainerStats() ([]*container.Stats, error) {
 	return items, rows.Err()
 }
 
-func (s *Store) CurrentContainers() (*CurrentItemsResponse[ContainerCurrent], error) {
+func (s *Store) CurrentContainers() (int64, []*container.Stats, error) {
 	capturedAt, err := s.currentCapturedAt()
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
-
-	rows, err := s.db.Query("SELECT data_json FROM containers_current ORDER BY name ASC")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	resp := &CurrentItemsResponse[ContainerCurrent]{CapturedAt: capturedAt, Items: []ContainerCurrent{}}
-	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			return nil, err
-		}
-		var current ContainerCurrent
-		if err := json.Unmarshal([]byte(raw), &current); err != nil {
-			return nil, err
-		}
-		resp.Items = append(resp.Items, current)
-	}
-	return resp, rows.Err()
+	items, err := s.currentContainerStats()
+	return capturedAt, items, err
 }
 
-func (s *Store) CurrentSystemd() (*CurrentItemsResponse[*systemd.Service], error) {
+func (s *Store) CurrentSystemd() (int64, []*systemd.Service, error) {
 	capturedAt, err := s.currentCapturedAt()
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	items, err := s.CurrentSystemdItems()
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
-	return &CurrentItemsResponse[*systemd.Service]{
-		CapturedAt: capturedAt,
-		Items:      items,
-	}, nil
+	return capturedAt, items, nil
 }
 
 func (s *Store) CurrentSystemdItems() ([]*systemd.Service, error) {
@@ -825,101 +773,101 @@ func (s *Store) CurrentSystemdItems() ([]*systemd.Service, error) {
 	return items, rows.Err()
 }
 
-func (s *Store) CurrentProcessCount() (*CurrentDataResponse[procmodel.Count], error) {
+func (s *Store) CurrentProcessCount() (int64, procmodel.Count, error) {
 	return currentSingleton[procmodel.Count](s, "process_count_current")
 }
 
-func (s *Store) CurrentProcesses() (*CurrentItemsResponse[procmodel.Process], error) {
+func (s *Store) CurrentProcesses() (int64, []procmodel.Process, error) {
 	capturedAt, err := s.currentCapturedAt()
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 
 	rows, err := s.db.Query("SELECT data_json FROM processes_current ORDER BY cpu_percent DESC, memory_percent DESC, pid ASC")
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	defer rows.Close()
 
-	resp := &CurrentItemsResponse[procmodel.Process]{CapturedAt: capturedAt, Items: []procmodel.Process{}}
+	items := []procmodel.Process{}
 	for rows.Next() {
 		var raw string
 		if err := rows.Scan(&raw); err != nil {
-			return nil, err
+			return 0, nil, err
 		}
 		var current procmodel.Process
 		if err := json.Unmarshal([]byte(raw), &current); err != nil {
-			return nil, err
+			return 0, nil, err
 		}
-		resp.Items = append(resp.Items, current)
+		items = append(items, current)
 	}
-	return resp, rows.Err()
+	return capturedAt, items, rows.Err()
 }
 
-func (s *Store) CurrentPrograms() (*CurrentItemsResponse[procmodel.Program], error) {
+func (s *Store) CurrentPrograms() (int64, []procmodel.Program, error) {
 	capturedAt, err := s.currentCapturedAt()
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 
 	rows, err := s.db.Query("SELECT data_json FROM programs_current ORDER BY cpu_percent DESC, memory_percent DESC, name ASC")
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	defer rows.Close()
 
-	resp := &CurrentItemsResponse[procmodel.Program]{CapturedAt: capturedAt, Items: []procmodel.Program{}}
+	items := []procmodel.Program{}
 	for rows.Next() {
 		var raw string
 		if err := rows.Scan(&raw); err != nil {
-			return nil, err
+			return 0, nil, err
 		}
 		var current procmodel.Program
 		if err := json.Unmarshal([]byte(raw), &current); err != nil {
-			return nil, err
+			return 0, nil, err
 		}
-		resp.Items = append(resp.Items, current)
+		items = append(items, current)
 	}
-	return resp, rows.Err()
+	return capturedAt, items, rows.Err()
 }
 
-func (s *Store) CurrentConnections() (*CurrentDataResponse[modelnet.ConnectionStats], error) {
+func (s *Store) CurrentConnections() (int64, modelnet.ConnectionStats, error) {
 	return currentSingleton[modelnet.ConnectionStats](s, "connections_current")
 }
 
-func (s *Store) CurrentIRQ() (*CurrentItemsResponse[modelnet.IRQStat], error) {
+func (s *Store) CurrentIRQ() (int64, []modelnet.IRQStat, error) {
 	capturedAt, err := s.currentCapturedAt()
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 
 	rows, err := s.db.Query("SELECT data_json FROM irq_current ORDER BY total DESC, irq ASC")
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	defer rows.Close()
 
-	resp := &CurrentItemsResponse[modelnet.IRQStat]{CapturedAt: capturedAt, Items: []modelnet.IRQStat{}}
+	items := []modelnet.IRQStat{}
 	for rows.Next() {
 		var raw string
 		if err := rows.Scan(&raw); err != nil {
-			return nil, err
+			return 0, nil, err
 		}
 		var current modelnet.IRQStat
 		if err := json.Unmarshal([]byte(raw), &current); err != nil {
-			return nil, err
+			return 0, nil, err
 		}
-		resp.Items = append(resp.Items, current)
+		items = append(items, current)
 	}
-	return resp, rows.Err()
+	return capturedAt, items, rows.Err()
 }
 
-func (s *Store) CurrentSmartDevices() (*CurrentItemsResponse[SmartDeviceCurrent], error) {
+func (s *Store) CurrentSmartDevices() (int64, []SmartDeviceRecord, error) {
 	var capturedAt int64
 	if err := s.db.QueryRow(`
 		SELECT value FROM meta WHERE key = 'last_smart_refresh_at'
 	`).Scan(&capturedAt); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return nil, err
+		return 0, nil, err
 	}
 
 	rows, err := s.db.Query(`
@@ -928,11 +876,11 @@ func (s *Store) CurrentSmartDevices() (*CurrentItemsResponse[SmartDeviceCurrent]
 		ORDER BY device_key ASC
 	`)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	defer rows.Close()
 
-	resp := &CurrentItemsResponse[SmartDeviceCurrent]{CapturedAt: capturedAt, Items: []SmartDeviceCurrent{}}
+	items := []SmartDeviceRecord{}
 	for rows.Next() {
 		var (
 			id  string
@@ -940,19 +888,19 @@ func (s *Store) CurrentSmartDevices() (*CurrentItemsResponse[SmartDeviceCurrent]
 			raw string
 		)
 		if err := rows.Scan(&id, &key, &raw); err != nil {
-			return nil, err
+			return 0, nil, err
 		}
-		item := SmartDeviceCurrent{ID: id, Key: key}
+		item := SmartDeviceRecord{ID: id, Key: key}
 		if err := json.Unmarshal([]byte(raw), &item.Data); err != nil {
-			return nil, err
+			return 0, nil, err
 		}
-		resp.Items = append(resp.Items, item)
+		items = append(items, item)
 	}
-	return resp, rows.Err()
+	return capturedAt, items, rows.Err()
 }
 
-func (s *Store) SystemHistory(resolution string, from, to int64, limit int) (*HistoryResponse[system.Stats], error) {
-	items := []HistoryItem[system.Stats]{}
+func (s *Store) SystemHistory(resolution string, from, to int64, limit int) ([]HistoryRecord[system.Stats], error) {
+	items := []HistoryRecord[system.Stats]{}
 	rows, err := s.db.Query(`
 		SELECT captured_at, stats_json
 		FROM system_stats_history
@@ -977,16 +925,16 @@ func (s *Store) SystemHistory(resolution string, from, to int64, limit int) (*Hi
 		if err := json.Unmarshal([]byte(raw), &stats); err != nil {
 			return nil, err
 		}
-		items = append(items, HistoryItem[system.Stats]{
+		items = append(items, HistoryRecord[system.Stats]{
 			CapturedAt: capturedAt,
 			Stats:      stats,
 		})
 	}
-	return &HistoryResponse[system.Stats]{Resolution: resolution, Items: items}, rows.Err()
+	return items, rows.Err()
 }
 
-func (s *Store) ContainerHistory(resolution string, from, to int64, limit int) (*HistoryResponse[[]container.Stats], error) {
-	items := []HistoryItem[[]container.Stats]{}
+func (s *Store) ContainerHistory(resolution string, from, to int64, limit int) ([]HistoryRecord[[]container.Stats], error) {
+	items := []HistoryRecord[[]container.Stats]{}
 	rows, err := s.db.Query(`
 		SELECT captured_at, stats_json
 		FROM container_stats_history
@@ -1011,12 +959,12 @@ func (s *Store) ContainerHistory(resolution string, from, to int64, limit int) (
 		if err := json.Unmarshal([]byte(raw), &stats); err != nil {
 			return nil, err
 		}
-		items = append(items, HistoryItem[[]container.Stats]{
+		items = append(items, HistoryRecord[[]container.Stats]{
 			CapturedAt: capturedAt,
 			Stats:      stats,
 		})
 	}
-	return &HistoryResponse[[]container.Stats]{Resolution: resolution, Items: items}, rows.Err()
+	return items, rows.Err()
 }
 
 func (s *Store) currentCapturedAt() (int64, error) {
@@ -1025,26 +973,26 @@ func (s *Store) currentCapturedAt() (int64, error) {
 	return capturedAt, err
 }
 
-func currentSingleton[T any](s *Store, table string) (*CurrentDataResponse[T], error) {
+func currentSingleton[T any](s *Store, table string) (int64, T, error) {
 	capturedAt, err := s.currentCapturedAt()
+	var data T
 	if err != nil {
-		return nil, err
+		return 0, data, err
 	}
 
-	var data T
 	var raw string
 	query := fmt.Sprintf("SELECT data_json FROM %s WHERE singleton = 1", table)
 	err = s.db.QueryRow(query).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
-		return &CurrentDataResponse[T]{CapturedAt: capturedAt, Data: data}, nil
+		return capturedAt, data, nil
 	}
 	if err != nil {
-		return nil, err
+		return 0, data, err
 	}
 	if err := json.Unmarshal([]byte(raw), &data); err != nil {
-		return nil, err
+		return 0, data, err
 	}
-	return &CurrentDataResponse[T]{CapturedAt: capturedAt, Data: data}, nil
+	return capturedAt, data, nil
 }
 
 func marshalJSON(v any) (string, error) {
