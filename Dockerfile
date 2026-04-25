@@ -24,11 +24,9 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
 		-X github.com/mordilloSan/go-monitoring/internal/version.BuildTime=${BUILD_TIME}" \
 	./cmd/go-monitoring
 
-FROM debian:bookworm-slim
+FROM alpine:3.23
 
-RUN apt-get update \
-	&& apt-get install -y --no-install-recommends ca-certificates curl smartmontools \
-	&& rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache ca-certificates smartmontools
 
 COPY --from=build /out/go-monitoring /usr/local/bin/go-monitoring
 
@@ -41,6 +39,6 @@ EXPOSE 45876
 VOLUME ["/var/lib/go-monitoring"]
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-	CMD ["curl", "-fsS", "http://localhost:45876/healthz"]
+	CMD ["/usr/local/bin/go-monitoring", "health"]
 
 ENTRYPOINT ["/usr/local/bin/go-monitoring"]
