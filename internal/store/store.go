@@ -1,4 +1,6 @@
-package agent
+// Package store persists collected metrics to a local SQLite database and
+// serves history/current snapshot reads back to API consumers.
+package store
 
 import (
 	"database/sql"
@@ -15,7 +17,6 @@ import (
 	"github.com/mordilloSan/go-monitoring/internal/model/smart"
 	"github.com/mordilloSan/go-monitoring/internal/model/system"
 	"github.com/mordilloSan/go-monitoring/internal/model/systemd"
-	"github.com/mordilloSan/go-monitoring/internal/version"
 	_ "modernc.org/sqlite"
 )
 
@@ -1054,31 +1055,17 @@ func marshalJSON(v any) (string, error) {
 	return string(raw), nil
 }
 
-func validResolution(resolution string) bool {
+func ValidResolution(resolution string) bool {
 	_, ok := historyRetention[resolution]
 	return ok
 }
 
-func retentionStrings() map[string]string {
+// RetentionStrings returns history retention windows keyed by resolution,
+// with each duration formatted via time.Duration.String.
+func RetentionStrings() map[string]string {
 	out := make(map[string]string, len(historyRetention))
 	for resolution, duration := range historyRetention {
 		out[resolution] = duration.String()
 	}
 	return out
-}
-
-func defaultMetaResponse(a *Agent, collectorInterval time.Duration) MetaResponse {
-	smartRefreshInterval := ""
-	if a.smartManager != nil {
-		smartRefreshInterval = a.smartManager.refreshInterval.String()
-	}
-	return MetaResponse{
-		Version:              version.Version,
-		DataDir:              a.dataDir,
-		DBPath:               a.store.Path(),
-		ListenAddr:           a.ListenAddr(),
-		CollectorInterval:    collectorInterval.String(),
-		SmartRefreshInterval: smartRefreshInterval,
-		Retention:            retentionStrings(),
-	}
 }

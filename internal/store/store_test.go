@@ -1,4 +1,4 @@
-package agent
+package store
 
 import (
 	"os"
@@ -6,85 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mordilloSan/go-monitoring/internal/model/container"
-	modelnet "github.com/mordilloSan/go-monitoring/internal/model/network"
-	procmodel "github.com/mordilloSan/go-monitoring/internal/model/process"
 	"github.com/mordilloSan/go-monitoring/internal/model/smart"
-	"github.com/mordilloSan/go-monitoring/internal/model/system"
 	"github.com/mordilloSan/go-monitoring/internal/model/systemd"
+	"github.com/mordilloSan/go-monitoring/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func sampleCombinedData(cpu float64) *system.CombinedData {
-	return &system.CombinedData{
-		Stats: system.Stats{
-			Cpu:       cpu,
-			Mem:       16,
-			MemUsed:   8,
-			MemPct:    50,
-			DiskTotal: 100,
-			DiskUsed:  40,
-			DiskPct:   40,
-			LoadAvg:   [3]float64{1, 2, 3},
-			Bandwidth: [2]uint64{1000, 2000},
-		},
-		Info: system.Info{
-			Uptime:       100,
-			Cpu:          cpu,
-			MemPct:       50,
-			DiskPct:      40,
-			AgentVersion: "test",
-		},
-		Containers: []*container.Stats{
-			{
-				Id:        "c1",
-				Name:      "web",
-				Image:     "nginx",
-				Status:    "running",
-				Health:    container.DockerHealthHealthy,
-				Cpu:       cpu / 2,
-				Mem:       1,
-				Bandwidth: [2]uint64{200, 100},
-			},
-		},
-		SystemdServices: []*systemd.Service{
-			{
-				Name:  "nginx.service",
-				State: systemd.StatusActive,
-				Sub:   systemd.SubStateRunning,
-				Cpu:   cpu / 4,
-				Mem:   1024,
-			},
-		},
-		ProcessCount: &procmodel.Count{Total: 2, Running: 1, Sleeping: 1, Thread: 4, PIDMax: 4194304},
-		Processes: []procmodel.Process{
-			{PID: 10, Name: "nginx", Status: "running", CPUPercent: cpu, MemoryPercent: 1.25, NumThreads: 2},
-		},
-		Programs: []procmodel.Program{
-			{Name: "nginx", Count: 1, CPUPercent: cpu, MemoryPercent: 1.25, MemoryRSSBytes: 1024, PIDs: []int32{10}},
-		},
-		Connections: &modelnet.ConnectionStats{
-			NetConnectionsEnabled: true,
-			NFConntrackEnabled:    true,
-			Total:                 3,
-			TCP:                   2,
-			UDP:                   1,
-			Listen:                1,
-			NFConntrackCount:      7,
-			NFConntrackMax:        100,
-			NFConntrackPercent:    7,
-		},
-		IRQs: []modelnet.IRQStat{
-			{IRQ: "0", Total: 42, CPUCounts: []uint64{40, 2}, Description: "timer"},
-		},
-		Details: &system.Details{
-			Hostname:    "host-a",
-			CpuModel:    "cpu",
-			MemoryTotal: 16 * 1024 * 1024 * 1024,
-		},
-	}
-}
 
 func TestStoreSnapshotAndCurrentQueries(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -93,7 +20,7 @@ func TestStoreSnapshotAndCurrentQueries(t *testing.T) {
 	defer store.Close()
 
 	capturedAt := time.Now().UTC().UnixMilli()
-	require.NoError(t, store.WriteSnapshot(capturedAt, sampleCombinedData(42)))
+	require.NoError(t, store.WriteSnapshot(capturedAt, storetest.SampleCombinedData(42)))
 	require.NoError(t, store.WriteSmartDevices(capturedAt, map[string]smart.SmartData{
 		"/dev/sda": {
 			ModelName:   "disk-a",
@@ -162,10 +89,10 @@ func TestStoreMaintenanceCreatesRollupsAndDeletesExpiredRows(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Minute)
 	for i := range 9 {
 		capturedAt := now.Add(-time.Duration(9-i) * time.Minute).UnixMilli()
-		require.NoError(t, store.WriteSnapshot(capturedAt, sampleCombinedData(float64((i+1)*10))))
+		require.NoError(t, store.WriteSnapshot(capturedAt, storetest.SampleCombinedData(float64((i+1)*10))))
 	}
 	oldCapturedAt := now.Add(-2 * time.Hour).UnixMilli()
-	require.NoError(t, store.WriteSnapshot(oldCapturedAt, sampleCombinedData(5)))
+	require.NoError(t, store.WriteSnapshot(oldCapturedAt, storetest.SampleCombinedData(5)))
 
 	require.NoError(t, store.RunMaintenance(now))
 
@@ -189,7 +116,7 @@ func TestStoreMaintenanceAppliesRetentionToAllHistoryTables(t *testing.T) {
 	defer store.Close()
 
 	now := time.Now().UTC().Truncate(time.Minute)
-	data := sampleCombinedData(42)
+	data := storetest.SampleCombinedData(42)
 	systemStatsJSON, err := marshalJSON(data.Stats)
 	require.NoError(t, err)
 	containerStatsJSON, err := marshalJSON(data.Containers)

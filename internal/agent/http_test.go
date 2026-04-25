@@ -11,6 +11,8 @@ import (
 
 	healthpkg "github.com/mordilloSan/go-monitoring/internal/health"
 	"github.com/mordilloSan/go-monitoring/internal/model/smart"
+	storepkg "github.com/mordilloSan/go-monitoring/internal/store"
+	"github.com/mordilloSan/go-monitoring/internal/store/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,12 +21,12 @@ func newHTTPTestAgent(t *testing.T) *Agent {
 	t.Helper()
 
 	tmpDir := t.TempDir()
-	store, err := OpenStore(tmpDir)
+	store, err := storepkg.OpenStore(tmpDir)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
 	capturedAt := time.Now().UTC().UnixMilli()
-	require.NoError(t, store.WriteSnapshot(capturedAt, sampleCombinedData(55)))
+	require.NoError(t, store.WriteSnapshot(capturedAt, storetest.SampleCombinedData(55)))
 	require.NoError(t, store.WriteSmartDevices(capturedAt, map[string]smart.SmartData{
 		"/dev/sdb": {
 			ModelName:   "disk-b",

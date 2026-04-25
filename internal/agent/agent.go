@@ -10,6 +10,7 @@ import (
 
 	"github.com/mordilloSan/go-monitoring/internal/common"
 	"github.com/mordilloSan/go-monitoring/internal/model/system"
+	"github.com/mordilloSan/go-monitoring/internal/store"
 	"github.com/mordilloSan/go-monitoring/internal/utils"
 	"github.com/mordilloSan/go-monitoring/internal/version"
 )
@@ -33,7 +34,7 @@ type Agent struct {
 	connectionType    system.ConnectionType // Connection type reported in summaries
 	processManager    *processManager       // Manages per-process CPU state
 	requestLogging    bool                  // Whether HTTP API requests are logged
-	store             *Store                // Persistent local store
+	store             *store.Store          // Persistent local store
 	httpRuntime       *httpRuntime          // HTTP server + effective listen address (nil before Start)
 }
 
@@ -48,7 +49,7 @@ func NewAgent(dataDir ...string) (agent *Agent, err error) {
 		cache:             NewSystemDataCache(),
 	}
 
-	agent.dataDir, err = GetDataDir(dataDir...)
+	agent.dataDir, err = store.GetDataDir(dataDir...)
 	if err != nil {
 		slog.Warn("Data directory not found")
 	} else {

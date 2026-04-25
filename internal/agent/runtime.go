@@ -17,6 +17,7 @@ import (
 	"github.com/mordilloSan/go-monitoring/internal/common"
 	"github.com/mordilloSan/go-monitoring/internal/health"
 	"github.com/mordilloSan/go-monitoring/internal/model/smart"
+	"github.com/mordilloSan/go-monitoring/internal/store"
 )
 
 const defaultCollectorInterval = time.Minute
@@ -54,11 +55,11 @@ func (a *Agent) StartContext(ctx context.Context, opts RunOptions) error {
 		return errors.New("listen address is required")
 	}
 
-	store, err := OpenStore(a.dataDir)
+	persistentStore, err := store.OpenStore(a.dataDir)
 	if err != nil {
 		return err
 	}
-	a.store = store
+	a.store = persistentStore
 	defer func() {
 		_ = a.store.Close()
 		a.store = nil

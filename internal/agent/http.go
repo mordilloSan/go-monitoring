@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/mordilloSan/go-monitoring/internal/health"
+	"github.com/mordilloSan/go-monitoring/internal/store"
 	"github.com/mordilloSan/go-monitoring/internal/utils"
+	"github.com/mordilloSan/go-monitoring/internal/version"
 )
 
 const maxHistoryLimit = 1000
@@ -128,7 +130,23 @@ func (a *Agent) handleMeta(collectorInterval time.Duration) http.HandlerFunc {
 			writeMethodNotAllowed(w, http.MethodGet)
 			return
 		}
-		writeJSON(w, http.StatusOK, defaultMetaResponse(a, collectorInterval))
+		writeJSON(w, http.StatusOK, a.metaResponse(collectorInterval))
+	}
+}
+
+func (a *Agent) metaResponse(collectorInterval time.Duration) store.MetaResponse {
+	smartRefreshInterval := ""
+	if a.smartManager != nil {
+		smartRefreshInterval = a.smartManager.refreshInterval.String()
+	}
+	return store.MetaResponse{
+		Version:              version.Version,
+		DataDir:              a.dataDir,
+		DBPath:               a.store.Path(),
+		ListenAddr:           a.ListenAddr(),
+		CollectorInterval:    collectorInterval.String(),
+		SmartRefreshInterval: smartRefreshInterval,
+		Retention:            store.RetentionStrings(),
 	}
 }
 
@@ -303,7 +321,7 @@ func (a *Agent) handleSmartRefresh(w http.ResponseWriter, r *http.Request) {
 func parseHistoryQuery(w http.ResponseWriter, r *http.Request) (resolution string, from int64, to int64, limit int, ok bool) {
 	query := r.URL.Query()
 	resolution = query.Get("resolution")
-	if !validResolution(resolution) {
+	if !store.ValidResolution(resolution) {
 		writeError(w, http.StatusBadRequest, errors.New("invalid resolution"))
 		return "", 0, 0, 0, false
 	}
