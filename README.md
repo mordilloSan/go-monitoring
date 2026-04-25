@@ -92,13 +92,13 @@ The Docker setup avoids `--privileged` by using targeted host access:
 - `systempaths=unconfined` so Docker does not mask host `/proc/interrupts` for IRQ counters.
 - `CAP_SYS_RAWIO`, `CAP_SYS_ADMIN`, and explicit `/dev/...` device mappings for SMART data.
 
-Compose cannot discover host devices dynamically, so `make docker-up` first writes a local `docker-compose.override.yml` with discovered SMART devices. You can inspect what will be used with:
+Compose cannot discover host devices dynamically, so `make docker-up` first writes a local `docker/docker-compose.override.yml` with discovered SMART devices. You can inspect what will be used with:
 
 ```sh
 make docker-smart-devices
 ```
 
-If SMART detection chooses the wrong device, edit `docker-compose.override.yml` or set `SMART_DEVICES` manually. Use controller devices such as `/dev/nvme0` or `/dev/sda`, not partitions such as `/dev/nvme0n1p2`.
+If SMART detection chooses the wrong device, edit `docker/docker-compose.override.yml` or set `SMART_DEVICES` manually. Use controller devices such as `/dev/nvme0` or `/dev/sda`, not partitions such as `/dev/nvme0n1p2`.
 
 ## HTTP API
 

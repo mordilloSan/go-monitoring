@@ -74,6 +74,9 @@ endif
 
 IMAGE ?= go-monitoring:local
 CONTAINER ?= go-monitoring
+DOCKER_DIR := docker
+DOCKER_COMPOSE_FILE := $(DOCKER_DIR)/docker-compose.yml
+DOCKER_COMPOSE_OVERRIDE := $(DOCKER_DIR)/docker-compose.override.yml
 
 golint:
 	@echo "🔎 Linting Go module in: $(BACKEND_DIR)"
@@ -104,21 +107,21 @@ build:
 	@( cd "$(BACKEND_DIR)" && GOOS=$(OS) GOARCH=$(ARCH) $(GO_CMD_ENV) "$(GO_BIN)" build $(AGENT_GO_TAGS) -o "$(BUILD_OUTPUT)" -ldflags "$(LDFLAGS)" $(AGENT_PKG) )
 
 docker-build:
-	docker build -t "$(IMAGE)" .
+	docker build -f "$(DOCKER_DIR)/Dockerfile" -t "$(IMAGE)" .
 
 docker-smart-devices:
-	@./scripts/discover-smart-devices.sh summary
+	@./$(DOCKER_DIR)/discover-smart-devices.sh summary
 
 docker-compose-override:
-	@./scripts/discover-smart-devices.sh compose > docker-compose.override.yml
-	@echo "Generated docker-compose.override.yml"
+	@./$(DOCKER_DIR)/discover-smart-devices.sh compose > "$(DOCKER_COMPOSE_OVERRIDE)"
+	@echo "Generated $(DOCKER_COMPOSE_OVERRIDE)"
 
 docker-up: docker-compose-override
-	docker compose down --remove-orphans
-	docker compose up --build
+	docker compose -f "$(DOCKER_COMPOSE_FILE)" -f "$(DOCKER_COMPOSE_OVERRIDE)" down --remove-orphans
+	docker compose -f "$(DOCKER_COMPOSE_FILE)" -f "$(DOCKER_COMPOSE_OVERRIDE)" up --build
 
 docker-down:
-	docker compose down
+	docker compose -f "$(DOCKER_COMPOSE_FILE)" down
 
 dev:
 	@if command -v entr >/dev/null 2>&1; then \

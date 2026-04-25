@@ -7,7 +7,7 @@
 /dist/
 /data/
 /temp/
-/docker-compose.override.yml
+/docker/docker-compose.override.yml
 
 *.test
 *.bak

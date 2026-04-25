@@ -15,6 +15,6 @@ temp
 *timestamp*
 __debug_*
 
-Dockerfile
-docker-compose.yml
-docker-compose.override.yml
+docker/Dockerfile
+docker/docker-compose.yml
+docker/docker-compose.override.yml

@@ -1,7 +1,10 @@
+name: go-monitoring
+
 services:
   go-monitoring:
     build:
-      context: .
+      context: ..
+      dockerfile: docker/Dockerfile
     image: go-monitoring:local
     container_name: go-monitoring
     restart: unless-stopped
