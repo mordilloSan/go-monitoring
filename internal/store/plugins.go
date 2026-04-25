@@ -298,6 +298,7 @@ func parseHistoryPlugins(raw string, explicit bool, envValue func(string) (strin
 	return out, nil
 }
 
+//nolint:gocognit // Complexity comes from the number of plugin cases, not logical nesting.
 func aggregatePluginHistoryJSON(plugin string, items []string) (string, error) {
 	if len(items) == 0 {
 		return "", errors.New("no history items to aggregate")
@@ -464,6 +465,7 @@ func averagePluginViaSystemStats(
 	return marshalJSON(extract(*averaged))
 }
 
+//nolint:gocognit // Complexity comes from the number of plugin cases, not logical nesting.
 func applyPluginPayload(plugin string, raw []byte, data *system.CombinedData) error {
 	switch plugin {
 	case PluginCPU:

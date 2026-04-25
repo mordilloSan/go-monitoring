@@ -259,17 +259,8 @@ func (s *Store) writeSnapshotPluginRows(tx *sql.Tx, capturedAt int64, data *syst
 		if !ok {
 			continue
 		}
-		raw, err := marshalJSON(payload)
-		if err != nil {
+		if err := writePluginSnapshot(tx, plugin, capturedAt, payload, s.HistoryEnabled(plugin)); err != nil {
 			return err
-		}
-		if err := replacePluginCurrent(tx, plugin, capturedAt, raw); err != nil {
-			return err
-		}
-		if s.HistoryEnabled(plugin) {
-			if err := insertPluginHistory(tx, plugin, resolution1m, capturedAt, raw); err != nil {
-				return err
-			}
 		}
 	}
 
@@ -288,6 +279,20 @@ func (s *Store) writeSnapshotPluginRows(tx *sql.Tx, capturedAt int64, data *syst
 		if err := upsertMeta(tx, "last_details_json", detailsJSON); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func writePluginSnapshot(tx *sql.Tx, plugin string, capturedAt int64, payload any, historyEnabled bool) error {
+	raw, err := marshalJSON(payload)
+	if err != nil {
+		return err
+	}
+	if err := replacePluginCurrent(tx, plugin, capturedAt, raw); err != nil {
+		return err
+	}
+	if historyEnabled {
+		return insertPluginHistory(tx, plugin, resolution1m, capturedAt, raw)
 	}
 	return nil
 }

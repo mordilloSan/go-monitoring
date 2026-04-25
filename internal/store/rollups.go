@@ -24,46 +24,53 @@ func (s *Store) RunMaintenance(now time.Time) error {
 	}()
 
 	for _, plugin := range s.historyPluginNames() {
-		table := pluginHistoryTable(plugin)
-		for _, step := range rollupSteps {
-			if step.longer != resolution10m {
-				existsAfter := now.Add(-step.window + time.Minute).UnixMilli()
-				exists, err := historyExistsSince(tx, table, step.longer, existsAfter)
-				if err != nil {
-					return err
-				}
-				if exists {
-					continue
-				}
-			}
-
-			from := now.Add(-step.window).UnixMilli()
-			historyJSON, err := loadHistoryJSON(tx, table, step.shorter, from)
-			if err != nil {
-				return err
-			}
-			if len(historyJSON) < step.minShorterRows {
-				continue
-			}
-
-			rolledRaw, err := aggregatePluginHistoryJSON(plugin, historyJSON)
-			if err != nil {
-				return err
-			}
-			if err := insertPluginHistory(tx, plugin, step.longer, now.UnixMilli(), rolledRaw); err != nil {
-				return err
-			}
-		}
-
-		if err := deleteOldHistory(tx, table, now); err != nil {
+		if err = rollupPlugin(tx, plugin, now); err != nil {
 			return err
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err = tx.Commit(); err != nil {
 		return err
 	}
 	return nil
+}
+
+func rollupPlugin(tx *sql.Tx, plugin string, now time.Time) error {
+	table := pluginHistoryTable(plugin)
+	for _, step := range rollupSteps {
+		if err := applyRollupStep(tx, plugin, table, step, now); err != nil {
+			return err
+		}
+	}
+	return deleteOldHistory(tx, table, now)
+}
+
+func applyRollupStep(tx *sql.Tx, plugin, table string, step rollupStep, now time.Time) error {
+	if step.longer != resolution10m {
+		existsAfter := now.Add(-step.window + time.Minute).UnixMilli()
+		exists, err := historyExistsSince(tx, table, step.longer, existsAfter)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return nil
+		}
+	}
+
+	from := now.Add(-step.window).UnixMilli()
+	historyJSON, err := loadHistoryJSON(tx, table, step.shorter, from)
+	if err != nil {
+		return err
+	}
+	if len(historyJSON) < step.minShorterRows {
+		return nil
+	}
+
+	rolledRaw, err := aggregatePluginHistoryJSON(plugin, historyJSON)
+	if err != nil {
+		return err
+	}
+	return insertPluginHistory(tx, plugin, step.longer, now.UnixMilli(), rolledRaw)
 }
 
 func historyExistsSince(tx *sql.Tx, table, resolution string, capturedAfter int64) (bool, error) {
