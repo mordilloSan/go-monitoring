@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"sync"
 	"syscall"
 	"time"
@@ -177,6 +178,9 @@ func (a *Agent) collectAndPersist(now time.Time) error {
 	if err := a.store.RunMaintenance(now); err != nil {
 		return fmt.Errorf("maintenance failed: %w", err)
 	}
+	// Collection builds large transient process/network snapshots; release them
+	// after the minute-scale tick so the agent's RSS stays close to baseline.
+	debug.FreeOSMemory()
 	return nil
 }
 

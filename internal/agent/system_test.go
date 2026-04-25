@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/mordilloSan/go-monitoring/internal/common"
+	modelnet "github.com/mordilloSan/go-monitoring/internal/model/network"
+	procmodel "github.com/mordilloSan/go-monitoring/internal/model/process"
 	"github.com/mordilloSan/go-monitoring/internal/model/system"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -58,4 +60,29 @@ func TestUpdateSystemDetailsMarksDetailsDirty(t *testing.T) {
 	assert.True(t, response.Details.Podman)
 	assert.False(t, agent.detailsDirty)
 	assert.Nil(t, original.Details)
+}
+
+func TestCacheableStatsDataDropsCurrentOnlyPayloads(t *testing.T) {
+	original := &system.CombinedData{
+		ProcessCount: &procmodel.Count{Total: 1},
+		Processes:    []procmodel.Process{{PID: 123}},
+		Programs:     []procmodel.Program{{Name: "go-monitoring"}},
+		Connections:  &modelnet.ConnectionStats{Total: 2},
+		IRQs:         []modelnet.IRQStat{{IRQ: "1"}},
+	}
+
+	cached := cacheableStatsData(original)
+
+	require.NotNil(t, cached)
+	assert.NotSame(t, original, cached)
+	assert.Nil(t, cached.ProcessCount)
+	assert.Nil(t, cached.Processes)
+	assert.Nil(t, cached.Programs)
+	assert.Nil(t, cached.Connections)
+	assert.Nil(t, cached.IRQs)
+	assert.NotNil(t, original.ProcessCount)
+	assert.NotNil(t, original.Processes)
+	assert.NotNil(t, original.Programs)
+	assert.NotNil(t, original.Connections)
+	assert.NotNil(t, original.IRQs)
 }

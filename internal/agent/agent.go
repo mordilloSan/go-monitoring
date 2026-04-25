@@ -214,7 +214,20 @@ func (a *Agent) gatherStats(options common.DataRequestOptions) *system.CombinedD
 	}
 	slog.Debug("Extra FS", "data", data.Stats.ExtraFs)
 
-	a.cache.Set(data, cacheTimeMs)
+	a.cache.Set(cacheableStatsData(data), cacheTimeMs)
 
 	return a.attachSystemDetails(data, cacheTimeMs, options.IncludeDetails)
+}
+
+func cacheableStatsData(data *system.CombinedData) *system.CombinedData {
+	if data == nil {
+		return nil
+	}
+	cached := *data
+	cached.ProcessCount = nil
+	cached.Processes = nil
+	cached.Programs = nil
+	cached.Connections = nil
+	cached.IRQs = nil
+	return &cached
 }
