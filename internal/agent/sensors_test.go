@@ -472,7 +472,7 @@ func TestScaleTemperatureLogic(t *testing.T) {
 
 func TestGetTempsWithPanicRecovery(t *testing.T) {
 	agent := &Agent{
-		systemInfo: system.Info{},
+		systemInfoManager: &systemInfoManager{systemInfo: system.Info{}},
 		sensorConfig: &SensorConfig{
 			context: context.Background(),
 		},
@@ -595,7 +595,7 @@ func TestGetTempsWithTimeout(t *testing.T) {
 
 func TestUpdateTemperaturesSkipsOnTimeout(t *testing.T) {
 	agent := &Agent{
-		systemInfo: system.Info{DashboardTemp: 99},
+		systemInfoManager: &systemInfoManager{systemInfo: system.Info{DashboardTemp: 99}},
 		sensorConfig: &SensorConfig{
 			context: context.Background(),
 			timeout: 10 * time.Millisecond,
@@ -616,6 +616,6 @@ func TestUpdateTemperaturesSkipsOnTimeout(t *testing.T) {
 
 	agent.updateTemperatures(stats)
 
-	assert.Equal(t, 0.0, agent.systemInfo.DashboardTemp)
+	assert.Equal(t, 0.0, agent.systemInfoManager.systemInfo.DashboardTemp)
 	assert.Equal(t, map[string]float64{}, stats.Temperatures)
 }

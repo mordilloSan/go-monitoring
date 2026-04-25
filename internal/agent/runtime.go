@@ -21,6 +21,14 @@ import (
 
 const defaultCollectorInterval = time.Minute
 
+// httpRuntime groups the HTTP server with its effective listen address. The
+// effective address differs from the requested one when the caller asks for
+// an ephemeral port (":0") and needs to discover what the kernel chose.
+type httpRuntime struct {
+	server     *http.Server
+	listenAddr string
+}
+
 type RunOptions struct {
 	Addr              string
 	CollectorInterval time.Duration
@@ -79,16 +87,18 @@ func (a *Agent) StartContext(ctx context.Context, opts RunOptions) error {
 	}
 	defer listener.Close()
 
-	a.listenAddr = listener.Addr().String()
-	a.httpServer = &http.Server{
-		Addr:              opts.Addr,
-		Handler:           a.routes(opts.CollectorInterval),
-		ReadHeaderTimeout: 5 * time.Second,
+	a.httpRuntime = &httpRuntime{
+		listenAddr: listener.Addr().String(),
+		server: &http.Server{
+			Addr:              opts.Addr,
+			Handler:           a.routes(opts.CollectorInterval),
+			ReadHeaderTimeout: 5 * time.Second,
+		},
 	}
 
 	serverErr := make(chan error, 1)
 	go func() {
-		if err := a.httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := a.httpRuntime.server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- err
 		}
 	}()
@@ -112,7 +122,7 @@ func (a *Agent) StartContext(ctx context.Context, opts RunOptions) error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := a.httpServer.Shutdown(shutdownCtx); err != nil {
+	if err := a.httpRuntime.server.Shutdown(shutdownCtx); err != nil {
 		return err
 	}
 	if err := health.CleanUp(); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -190,7 +200,7 @@ func (a *Agent) refreshSmartIfDue(now time.Time) error {
 	}
 
 	a.Lock()
-	shouldRefresh := a.lastSmartRefresh.IsZero() || now.Sub(a.lastSmartRefresh) >= a.smartRefreshInterval
+	shouldRefresh := a.smartManager.lastRefresh.IsZero() || now.Sub(a.smartManager.lastRefresh) >= a.smartManager.refreshInterval
 	a.Unlock()
 	if !shouldRefresh {
 		return nil
@@ -220,24 +230,30 @@ func (a *Agent) refreshSmart(now time.Time, forceScan bool) error {
 	}
 
 	a.Lock()
-	a.lastSmartRefresh = now
+	a.smartManager.lastRefresh = now
 	a.Unlock()
 	return nil
 }
 
 func (a *Agent) ListenAddr() string {
-	return a.listenAddr
+	if a.httpRuntime == nil {
+		return ""
+	}
+	return a.httpRuntime.listenAddr
 }
 
 func (a *Agent) logSmartRefreshResult(err error) {
+	if a.smartManager == nil {
+		return
+	}
 	currentError := ""
 	if err != nil {
 		currentError = err.Error()
 	}
 
 	a.Lock()
-	previousError := a.lastSmartRefreshError
-	a.lastSmartRefreshError = currentError
+	previousError := a.smartManager.lastRefreshError
+	a.smartManager.lastRefreshError = currentError
 	a.Unlock()
 
 	switch {

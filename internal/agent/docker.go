@@ -785,7 +785,7 @@ func (dm *dockerManager) setIsPodman() {
 	// keep system details updated - this may be detected after startup if the
 	// container runtime is not ready yet.
 	if dm.agent != nil {
-		dm.agent.updateSystemDetails(func(details *system.Details) {
+		dm.agent.systemInfoManager.updateSystemDetails(func(details *system.Details) {
 			details.Podman = true
 		})
 	}

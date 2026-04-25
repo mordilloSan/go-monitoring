@@ -13,9 +13,11 @@ import (
 
 func TestGatherStatsDoesNotAttachDetailsToCachedRequests(t *testing.T) {
 	agent := &Agent{
-		cache:         NewSystemDataCache(),
-		systemDetails: system.Details{Hostname: "updated-host", Podman: true},
-		detailsDirty:  true,
+		cache: NewSystemDataCache(),
+		systemInfoManager: &systemInfoManager{
+			systemDetails: system.Details{Hostname: "updated-host", Podman: true},
+			detailsDirty:  true,
+		},
 	}
 	cached := &system.CombinedData{
 		Info: system.Info{Hostname: "cached-host"},
@@ -26,7 +28,7 @@ func TestGatherStatsDoesNotAttachDetailsToCachedRequests(t *testing.T) {
 
 	assert.Same(t, cached, response)
 	assert.Nil(t, response.Details)
-	assert.True(t, agent.detailsDirty)
+	assert.True(t, agent.systemInfoManager.detailsDirty)
 	assert.Equal(t, "cached-host", response.Info.Hostname)
 	assert.Nil(t, cached.Details)
 
@@ -36,29 +38,29 @@ func TestGatherStatsDoesNotAttachDetailsToCachedRequests(t *testing.T) {
 }
 
 func TestUpdateSystemDetailsMarksDetailsDirty(t *testing.T) {
-	agent := &Agent{}
+	m := &systemInfoManager{}
 
-	agent.updateSystemDetails(func(details *system.Details) {
+	m.updateSystemDetails(func(details *system.Details) {
 		details.Hostname = "updated-host"
 		details.Podman = true
 	})
 
-	assert.True(t, agent.detailsDirty)
-	assert.Equal(t, "updated-host", agent.systemDetails.Hostname)
-	assert.True(t, agent.systemDetails.Podman)
+	assert.True(t, m.detailsDirty)
+	assert.Equal(t, "updated-host", m.systemDetails.Hostname)
+	assert.True(t, m.systemDetails.Podman)
 
 	original := &system.CombinedData{}
-	realTimeResponse := agent.attachSystemDetails(original, 1000, true)
+	realTimeResponse := m.attachSystemDetails(original, 1000, true)
 	assert.Same(t, original, realTimeResponse)
 	assert.Nil(t, realTimeResponse.Details)
-	assert.True(t, agent.detailsDirty)
+	assert.True(t, m.detailsDirty)
 
-	response := agent.attachSystemDetails(original, defaultDataCacheTimeMs, false)
+	response := m.attachSystemDetails(original, defaultDataCacheTimeMs, false)
 	require.NotNil(t, response.Details)
 	assert.NotSame(t, original, response)
 	assert.Equal(t, "updated-host", response.Details.Hostname)
 	assert.True(t, response.Details.Podman)
-	assert.False(t, agent.detailsDirty)
+	assert.False(t, m.detailsDirty)
 	assert.Nil(t, original.Details)
 }
 

@@ -30,6 +30,9 @@ type SmartManager struct {
 	darwinNvmeOnce     sync.Once
 	darwinNvmeCapacity map[string]uint64      // serial → bytes cache, written once via darwinNvmeOnce
 	darwinNvmeProvider func() ([]byte, error) // overridable for testing
+	refreshInterval    time.Duration          // Interval between automatic SMART refreshes
+	lastRefresh        time.Time              // Last successful SMART refresh
+	lastRefreshError   string                 // Last SMART refresh error to avoid repeating identical warnings
 }
 
 type scanOutput struct {
@@ -1186,7 +1189,8 @@ func isNvmeControllerPath(path string) bool {
 // NewSmartManager creates and initializes a new SmartManager
 func NewSmartManager() (*SmartManager, error) {
 	sm := &SmartManager{
-		SmartDataMap: make(map[string]*smart.SmartData),
+		SmartDataMap:    make(map[string]*smart.SmartData),
+		refreshInterval: time.Hour,
 	}
 	sm.refreshExcludedDevices()
 	path, err := sm.detectSmartctl()

@@ -4,7 +4,6 @@ package agent
 
 import (
 	"log/slog"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -18,41 +17,35 @@ import (
 const defaultDataCacheTimeMs uint16 = 60_000
 
 type Agent struct {
-	sync.Mutex                                     // Used to lock agent while collecting data
-	debug                 bool                     // true if LOG_LEVEL is set to debug
-	zfs                   bool                     // true if system has arcstats
-	memCalc               string                   // Memory calculation formula
-	fsManager             *fsManager               // Manages filesystem and disk I/O state
-	networkManager        *networkManager          // Manages network interface and bandwidth state
-	dockerManager         *dockerManager           // Manages Docker API requests
-	sensorConfig          *SensorConfig            // Sensors config
-	systemInfo            system.Info              // Host system info (dynamic)
-	systemDetails         system.Details           // Host system details (static, once-per-connection)
-	detailsDirty          bool                     // Whether system details have changed and need to be resent
-	gpuManager            *GPUManager              // Manages GPU data
-	cache                 *systemDataCache         // Cache for system stats based on cache time
-	dataDir               string                   // Directory for persisting data
-	smartManager          *SmartManager            // Manages SMART data
-	systemdManager        *systemdManager          // Manages systemd services
-	connectionType        system.ConnectionType    // Connection type reported in summaries
-	smartRefreshInterval  time.Duration            // Interval used for SMART refresh
-	lastSmartRefresh      time.Time                // Last successful SMART refresh
-	lastSmartRefreshError string                   // Last SMART refresh error to avoid repeating identical warnings
-	processCPUPrev        map[int32]prevProcessCPU // Previous per-process CPU counters
-	requestLogging        bool                     // Whether HTTP API requests are logged
-	store                 *Store                   // Persistent local store
-	httpServer            *http.Server             // Standalone HTTP server
-	listenAddr            string                   // Effective listen address
+	sync.Mutex                              // Used to lock agent while collecting data
+	debug             bool                  // true if LOG_LEVEL is set to debug
+	memCalc           string                // Memory calculation formula
+	fsManager         *fsManager            // Manages filesystem and disk I/O state
+	networkManager    *networkManager       // Manages network interface and bandwidth state
+	dockerManager     *dockerManager        // Manages Docker API requests
+	sensorConfig      *SensorConfig         // Sensors config
+	systemInfoManager *systemInfoManager    // Manages host info, details, and ZFS capability
+	gpuManager        *GPUManager           // Manages GPU data
+	cache             *systemDataCache      // Cache for system stats based on cache time
+	dataDir           string                // Directory for persisting data
+	smartManager      *SmartManager         // Manages SMART data
+	systemdManager    *systemdManager       // Manages systemd services
+	connectionType    system.ConnectionType // Connection type reported in summaries
+	processManager    *processManager       // Manages per-process CPU state
+	requestLogging    bool                  // Whether HTTP API requests are logged
+	store             *Store                // Persistent local store
+	httpRuntime       *httpRuntime          // HTTP server + effective listen address (nil before Start)
 }
 
 // NewAgent creates a new agent with the given data directory for persisting data.
 // If the data directory is not set, it will attempt to find the optimal directory.
 func NewAgent(dataDir ...string) (agent *Agent, err error) {
 	agent = &Agent{
-		fsManager:      newFsManager(),
-		networkManager: newNetworkManager(),
-		processCPUPrev: make(map[int32]prevProcessCPU),
-		cache:          NewSystemDataCache(),
+		fsManager:         newFsManager(),
+		networkManager:    newNetworkManager(),
+		processManager:    newProcessManager(),
+		systemInfoManager: newSystemInfoManager(),
+		cache:             NewSystemDataCache(),
 	}
 
 	agent.dataDir, err = GetDataDir(dataDir...)
@@ -85,19 +78,7 @@ func NewAgent(dataDir ...string) (agent *Agent, err error) {
 	agent.dockerManager = newDockerManager(agent)
 
 	// initialize system info
-	agent.refreshSystemDetails()
-
-	// SMART_INTERVAL env var to update smart data at this interval
-	agent.smartRefreshInterval = time.Hour
-	if smartIntervalEnv, exists := utils.GetEnv("SMART_INTERVAL"); exists {
-		if duration, parseErr := time.ParseDuration(smartIntervalEnv); parseErr == nil && duration > 0 {
-			agent.systemDetails.SmartInterval = duration
-			agent.smartRefreshInterval = duration
-			slog.Info("SMART_INTERVAL", "duration", duration)
-		} else {
-			slog.Warn("Invalid SMART_INTERVAL", "err", parseErr)
-		}
-	}
+	agent.systemInfoManager.refreshSystemDetails(agent.dockerManager)
 
 	// initialize disk info
 	agent.fsManager.initializeDiskInfo()
@@ -113,6 +94,21 @@ func NewAgent(dataDir ...string) (agent *Agent, err error) {
 	agent.smartManager, err = NewSmartManager()
 	if err != nil {
 		slog.Debug("SMART", "err", err)
+	}
+
+	// SMART_INTERVAL env var overrides the SmartManager default refresh cadence.
+	// SmartManager may be nil when smartctl is unavailable; the value is still
+	// reported in systemDetails for diagnostic visibility.
+	if smartIntervalEnv, exists := utils.GetEnv("SMART_INTERVAL"); exists {
+		if duration, parseErr := time.ParseDuration(smartIntervalEnv); parseErr == nil && duration > 0 {
+			agent.systemInfoManager.systemDetails.SmartInterval = duration
+			if agent.smartManager != nil {
+				agent.smartManager.refreshInterval = duration
+			}
+			slog.Info("SMART_INTERVAL", "duration", duration)
+		} else {
+			slog.Warn("Invalid SMART_INTERVAL", "err", parseErr)
+		}
 	}
 
 	// initialize GPU manager
@@ -142,7 +138,7 @@ func (a *Agent) gatherStats(options common.DataRequestOptions) *system.CombinedD
 
 	*data = system.CombinedData{
 		Stats: a.getSystemStats(cacheTimeMs),
-		Info:  a.systemInfo,
+		Info:  a.systemInfoManager.systemInfo,
 	}
 
 	// slog.Info("System data", "data", data, "cacheTimeMs", cacheTimeMs)
@@ -168,7 +164,7 @@ func (a *Agent) gatherStats(options common.DataRequestOptions) *system.CombinedD
 	}
 
 	if cacheTimeMs == defaultDataCacheTimeMs {
-		data.ProcessCount, data.Processes, data.Programs = a.collectProcessStats()
+		data.ProcessCount, data.Processes, data.Programs = a.processManager.collectProcessStats()
 		data.Connections = collectConnectionStats()
 		data.IRQs = collectIRQStats()
 	}
@@ -194,7 +190,7 @@ func (a *Agent) gatherStats(options common.DataRequestOptions) *system.CombinedD
 
 	a.cache.Set(cacheableStatsData(data), cacheTimeMs)
 
-	return a.attachSystemDetails(data, cacheTimeMs, options.IncludeDetails)
+	return a.systemInfoManager.attachSystemDetails(data, cacheTimeMs, options.IncludeDetails)
 }
 
 func cacheableStatsData(data *system.CombinedData) *system.CombinedData {

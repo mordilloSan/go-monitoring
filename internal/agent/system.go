@@ -22,60 +22,74 @@ import (
 	"github.com/shirou/gopsutil/v4/mem"
 )
 
+// systemInfoManager owns dynamic host info, mostly-static host details, the dirty
+// flag for incremental detail propagation, and the ZFS capability bit detected at
+// startup.
+type systemInfoManager struct {
+	systemInfo    system.Info    // Host system info (dynamic)
+	systemDetails system.Details // Host system details (static, once-per-connection)
+	detailsDirty  bool           // Whether system details have changed and need to be resent
+	zfs           bool           // true if system has arcstats
+}
+
+func newSystemInfoManager() *systemInfoManager {
+	return &systemInfoManager{}
+}
+
 // Sets initial / non-changing values about the host system
 //
 //nolint:gocognit // System detail refresh merges several platform-specific discovery paths.
-func (a *Agent) refreshSystemDetails() {
-	a.systemInfo.AgentVersion = version.Version
+func (m *systemInfoManager) refreshSystemDetails(dockerManager *dockerManager) {
+	m.systemInfo.AgentVersion = version.Version
 
 	// get host info from Docker if available
 	var hostInfo container.HostInfo
 
-	if a.dockerManager != nil {
-		a.systemDetails.Podman = a.dockerManager.IsPodman()
-		hostInfo, _ = a.dockerManager.GetHostInfo()
+	if dockerManager != nil {
+		m.systemDetails.Podman = dockerManager.IsPodman()
+		hostInfo, _ = dockerManager.GetHostInfo()
 	}
 
-	a.systemDetails.Hostname, _ = os.Hostname()
+	m.systemDetails.Hostname, _ = os.Hostname()
 	if arch, err := host.KernelArch(); err == nil {
-		a.systemDetails.Arch = arch
+		m.systemDetails.Arch = arch
 	} else {
-		a.systemDetails.Arch = runtime.GOARCH
+		m.systemDetails.Arch = runtime.GOARCH
 	}
 
 	platform, _, version, _ := host.PlatformInformation()
 
 	switch platform {
 	case "darwin":
-		a.systemDetails.Os = system.Darwin
-		a.systemDetails.OsName = fmt.Sprintf("macOS %s", version)
+		m.systemDetails.Os = system.Darwin
+		m.systemDetails.OsName = fmt.Sprintf("macOS %s", version)
 	case "freebsd":
-		a.systemDetails.Os = system.Freebsd
-		a.systemDetails.Kernel, _ = host.KernelVersion()
+		m.systemDetails.Os = system.Freebsd
+		m.systemDetails.Kernel, _ = host.KernelVersion()
 		if prettyName, err := getOsPrettyName(); err == nil {
-			a.systemDetails.OsName = prettyName
+			m.systemDetails.OsName = prettyName
 		} else {
-			a.systemDetails.OsName = "FreeBSD"
+			m.systemDetails.OsName = "FreeBSD"
 		}
 	default:
-		a.systemDetails.Os = system.Linux
-		a.systemDetails.OsName = hostInfo.OperatingSystem
-		if a.systemDetails.OsName == "" {
+		m.systemDetails.Os = system.Linux
+		m.systemDetails.OsName = hostInfo.OperatingSystem
+		if m.systemDetails.OsName == "" {
 			if prettyName, err := getOsPrettyName(); err == nil {
-				a.systemDetails.OsName = prettyName
+				m.systemDetails.OsName = prettyName
 			} else {
-				a.systemDetails.OsName = platform
+				m.systemDetails.OsName = platform
 			}
 		}
-		a.systemDetails.Kernel = hostInfo.KernelVersion
-		if a.systemDetails.Kernel == "" {
-			a.systemDetails.Kernel, _ = host.KernelVersion()
+		m.systemDetails.Kernel = hostInfo.KernelVersion
+		if m.systemDetails.Kernel == "" {
+			m.systemDetails.Kernel, _ = host.KernelVersion()
 		}
 	}
 
 	// cpu model
 	if info, err := cpu.Info(); err == nil && len(info) > 0 {
-		a.systemDetails.CpuModel = info[0].ModelName
+		m.systemDetails.CpuModel = info[0].ModelName
 	}
 	// cores / threads
 	cores, _ := cpu.Counts(false)
@@ -87,14 +101,14 @@ func (a *Agent) refreshSystemDetails() {
 	if threads > 0 && threads < cores {
 		cores = threads
 	}
-	a.systemDetails.Cores = cores
-	a.systemDetails.Threads = threads
+	m.systemDetails.Cores = cores
+	m.systemDetails.Threads = threads
 
 	// total memory
-	a.systemDetails.MemoryTotal = hostInfo.MemTotal
-	if a.systemDetails.MemoryTotal == 0 {
+	m.systemDetails.MemoryTotal = hostInfo.MemTotal
+	if m.systemDetails.MemoryTotal == 0 {
 		if v, err := mem.VirtualMemory(); err == nil {
-			a.systemDetails.MemoryTotal = v.Total
+			m.systemDetails.MemoryTotal = v.Total
 		}
 	}
 
@@ -102,28 +116,28 @@ func (a *Agent) refreshSystemDetails() {
 	if _, err := zfs.ARCSize(); err != nil {
 		slog.Debug("Not monitoring ZFS ARC", "err", err)
 	} else {
-		a.zfs = true
+		m.zfs = true
 	}
 }
 
 // attachSystemDetails returns details only for fresh default-interval responses.
-func (a *Agent) attachSystemDetails(data *system.CombinedData, cacheTimeMs uint16, includeRequested bool) *system.CombinedData {
-	if cacheTimeMs != defaultDataCacheTimeMs || (!includeRequested && !a.detailsDirty) {
+func (m *systemInfoManager) attachSystemDetails(data *system.CombinedData, cacheTimeMs uint16, includeRequested bool) *system.CombinedData {
+	if cacheTimeMs != defaultDataCacheTimeMs || (!includeRequested && !m.detailsDirty) {
 		return data
 	}
 
 	// copy data to avoid adding details to the original cached struct
 	response := *data
-	response.Details = &a.systemDetails
-	a.detailsDirty = false
+	response.Details = &m.systemDetails
+	m.detailsDirty = false
 	return &response
 }
 
 // updateSystemDetails applies a mutation to the static details payload and marks
 // it for inclusion on the next fresh default-interval response.
-func (a *Agent) updateSystemDetails(updateFunc func(details *system.Details)) {
-	updateFunc(&a.systemDetails)
-	a.detailsDirty = true
+func (m *systemInfoManager) updateSystemDetails(updateFunc func(details *system.Details)) {
+	updateFunc(&m.systemDetails)
+	m.detailsDirty = true
 }
 
 // Returns current info, stats about the host system
@@ -191,7 +205,7 @@ func (a *Agent) getSystemStats(cacheTimeMs uint16) system.Stats {
 		// 	v.UsedPercent = float64(v.Used) / float64(v.Total) * 100.0
 		// }
 		// subtract ZFS ARC size from used memory and add as its own category
-		if a.zfs {
+		if a.systemInfoManager.zfs {
 			if arcSize, _ := zfs.ARCSize(); arcSize > 0 && arcSize < v.Used {
 				v.Used = v.Used - arcSize
 				v.UsedPercent = float64(v.Used) / float64(v.Total) * 100.0
@@ -218,9 +232,10 @@ func (a *Agent) getSystemStats(cacheTimeMs uint16) system.Stats {
 	a.updateTemperatures(&systemStats)
 
 	// GPU data
+	info := &a.systemInfoManager.systemInfo
 	if a.gpuManager != nil {
 		// reset high gpu percent
-		a.systemInfo.GpuPct = 0
+		info.GpuPct = 0
 		// get current GPU data
 		if gpuData := a.gpuManager.GetCurrentData(cacheTimeMs); len(gpuData) > 0 {
 			systemStats.GPUData = gpuData
@@ -234,32 +249,32 @@ func (a *Agent) getSystemStats(cacheTimeMs uint16) system.Stats {
 				if gpu.Temperature > 0 {
 					systemStats.Temperatures[gpu.Name] = gpu.Temperature
 					if a.sensorConfig.primarySensor == gpu.Name {
-						a.systemInfo.DashboardTemp = gpu.Temperature
+						info.DashboardTemp = gpu.Temperature
 					}
 					if gpu.Temperature > highestTemp {
 						highestTemp = gpu.Temperature
 					}
 				}
 				// update high gpu percent for dashboard
-				a.systemInfo.GpuPct = max(a.systemInfo.GpuPct, gpu.Usage)
+				info.GpuPct = max(info.GpuPct, gpu.Usage)
 			}
 			// use highest temp for dashboard temp if dashboard temp is unset
-			if a.systemInfo.DashboardTemp == 0 {
-				a.systemInfo.DashboardTemp = highestTemp
+			if info.DashboardTemp == 0 {
+				info.DashboardTemp = highestTemp
 			}
 		}
 	}
 
 	// update system info
-	a.systemInfo.ConnectionType = a.connectionType
-	a.systemInfo.Cpu = systemStats.Cpu
-	a.systemInfo.LoadAvg = systemStats.LoadAvg
-	a.systemInfo.MemPct = systemStats.MemPct
-	a.systemInfo.DiskPct = systemStats.DiskPct
-	a.systemInfo.Battery = systemStats.Battery
-	a.systemInfo.Uptime, _ = host.Uptime()
-	a.systemInfo.BandwidthBytes = systemStats.Bandwidth[0] + systemStats.Bandwidth[1]
-	a.systemInfo.Threads = a.systemDetails.Threads
+	info.ConnectionType = a.connectionType
+	info.Cpu = systemStats.Cpu
+	info.LoadAvg = systemStats.LoadAvg
+	info.MemPct = systemStats.MemPct
+	info.DiskPct = systemStats.DiskPct
+	info.Battery = systemStats.Battery
+	info.Uptime, _ = host.Uptime()
+	info.BandwidthBytes = systemStats.Bandwidth[0] + systemStats.Bandwidth[1]
+	info.Threads = a.systemInfoManager.systemDetails.Threads
 
 	return systemStats
 }

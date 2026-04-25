@@ -22,7 +22,18 @@ type prevProcessCPU struct {
 	readTime   time.Time
 }
 
-func (a *Agent) collectProcessStats() (*procmodel.Count, []procmodel.Process, []procmodel.Program) {
+// processManager owns per-process CPU state used to compute CPU percentages between collection cycles.
+type processManager struct {
+	processCPUPrev map[int32]prevProcessCPU
+}
+
+func newProcessManager() *processManager {
+	return &processManager{
+		processCPUPrev: make(map[int32]prevProcessCPU),
+	}
+}
+
+func (m *processManager) collectProcessStats() (*procmodel.Count, []procmodel.Process, []procmodel.Program) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -41,14 +52,14 @@ func (a *Agent) collectProcessStats() (*procmodel.Count, []procmodel.Process, []
 		if proc == nil {
 			continue
 		}
-		item, ok := a.collectOneProcess(ctx, proc, now, count)
+		item, ok := m.collectOneProcess(ctx, proc, now, count)
 		if !ok {
 			continue
 		}
 		items = append(items, item)
 		seen[item.PID] = struct{}{}
 	}
-	a.pruneProcessCPUCache(seen)
+	m.pruneProcessCPUCache(seen)
 
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].CPUPercent != items[j].CPUPercent {
@@ -64,7 +75,7 @@ func (a *Agent) collectProcessStats() (*procmodel.Count, []procmodel.Process, []
 	return count, items, programs
 }
 
-func (a *Agent) collectOneProcess(ctx context.Context, proc *psutilProcess.Process, now time.Time, count *procmodel.Count) (procmodel.Process, bool) {
+func (m *processManager) collectOneProcess(ctx context.Context, proc *psutilProcess.Process, now time.Time, count *procmodel.Count) (procmodel.Process, bool) {
 	item := procmodel.Process{PID: proc.Pid}
 	createTime, err := proc.CreateTimeWithContext(ctx)
 	if err != nil && errors.Is(err, psutilProcess.ErrorProcessNotRunning) {
@@ -122,20 +133,20 @@ func (a *Agent) collectOneProcess(ctx context.Context, proc *psutilProcess.Proce
 		}
 	}
 	if times, err := proc.TimesWithContext(ctx); err == nil && times != nil {
-		item.CPUPercent = utils.TwoDecimals(a.processCPUPercent(proc.Pid, createTime, processTimesTotal(times), now))
+		item.CPUPercent = utils.TwoDecimals(m.processCPUPercent(proc.Pid, createTime, processTimesTotal(times), now))
 	}
 
 	count.Total++
 	return item, true
 }
 
-func (a *Agent) processCPUPercent(pid int32, createTime int64, total float64, now time.Time) float64 {
-	if a.processCPUPrev == nil {
-		a.processCPUPrev = make(map[int32]prevProcessCPU)
+func (m *processManager) processCPUPercent(pid int32, createTime int64, total float64, now time.Time) float64 {
+	if m.processCPUPrev == nil {
+		m.processCPUPrev = make(map[int32]prevProcessCPU)
 	}
 
-	prev, ok := a.processCPUPrev[pid]
-	a.processCPUPrev[pid] = prevProcessCPU{
+	prev, ok := m.processCPUPrev[pid]
+	m.processCPUPrev[pid] = prevProcessCPU{
 		createTime: createTime,
 		total:      total,
 		readTime:   now,
@@ -158,10 +169,10 @@ func (a *Agent) processCPUPercent(pid int32, createTime int64, total float64, no
 	return (total - prev.total) / elapsed * 100
 }
 
-func (a *Agent) pruneProcessCPUCache(seen map[int32]struct{}) {
-	for pid := range a.processCPUPrev {
+func (m *processManager) pruneProcessCPUCache(seen map[int32]struct{}) {
+	for pid := range m.processCPUPrev {
 		if _, ok := seen[pid]; !ok {
-			delete(a.processCPUPrev, pid)
+			delete(m.processCPUPrev, pid)
 		}
 	}
 }

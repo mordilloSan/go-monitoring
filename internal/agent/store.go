@@ -1068,13 +1068,17 @@ func retentionStrings() map[string]string {
 }
 
 func defaultMetaResponse(a *Agent, collectorInterval time.Duration) MetaResponse {
+	smartRefreshInterval := ""
+	if a.smartManager != nil {
+		smartRefreshInterval = a.smartManager.refreshInterval.String()
+	}
 	return MetaResponse{
 		Version:              version.Version,
 		DataDir:              a.dataDir,
 		DBPath:               a.store.Path(),
-		ListenAddr:           a.listenAddr,
+		ListenAddr:           a.ListenAddr(),
 		CollectorInterval:    collectorInterval.String(),
-		SmartRefreshInterval: a.smartRefreshInterval.String(),
+		SmartRefreshInterval: smartRefreshInterval,
 		Retention:            retentionStrings(),
 	}
 }

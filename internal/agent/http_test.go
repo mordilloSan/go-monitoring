@@ -36,10 +36,9 @@ func newHTTPTestAgent(t *testing.T) *Agent {
 	t.Cleanup(func() { _ = healthpkg.CleanUp() })
 
 	return &Agent{
-		dataDir:              tmpDir,
-		store:                store,
-		listenAddr:           ":45876",
-		smartRefreshInterval: time.Hour,
+		dataDir:     tmpDir,
+		store:       store,
+		httpRuntime: &httpRuntime{listenAddr: ":45876"},
 	}
 }
 
