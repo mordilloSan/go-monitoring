@@ -1,7 +1,6 @@
 //go:build linux
 
-// Package zfs provides functions to read ZFS statistics.
-package zfs
+package agent
 
 import (
 	"bufio"

@@ -1,5 +1,4 @@
-// Package battery provides functions to check if the system has a battery and return the charge state and percentage.
-package battery
+package agent
 
 const (
 	stateUnknown uint8 = iota

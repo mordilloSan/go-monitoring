@@ -1,6 +1,6 @@
 //go:build linux
 
-package zfs
+package agent
 
 import (
 	"strings"

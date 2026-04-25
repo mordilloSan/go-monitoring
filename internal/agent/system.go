@@ -9,12 +9,10 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/mordilloSan/go-monitoring/internal/battery"
 	"github.com/mordilloSan/go-monitoring/internal/model/container"
 	"github.com/mordilloSan/go-monitoring/internal/model/system"
 	"github.com/mordilloSan/go-monitoring/internal/utils"
 	"github.com/mordilloSan/go-monitoring/internal/version"
-	"github.com/mordilloSan/go-monitoring/internal/zfs"
 
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/host"
@@ -113,7 +111,7 @@ func (m *systemInfoManager) refreshSystemDetails(dockerManager *dockerManager) {
 	}
 
 	// zfs
-	if _, err := zfs.ARCSize(); err != nil {
+	if _, err := ARCSize(); err != nil {
 		slog.Debug("Not monitoring ZFS ARC", "err", err)
 	} else {
 		m.zfs = true
@@ -147,7 +145,7 @@ func (a *Agent) getSystemStats(cacheTimeMs uint16) system.Stats {
 	var systemStats system.Stats
 
 	// battery
-	if batteryPercent, batteryState, err := battery.GetBatteryStats(); err == nil {
+	if batteryPercent, batteryState, err := GetBatteryStats(); err == nil {
 		systemStats.Battery[0] = batteryPercent
 		systemStats.Battery[1] = batteryState
 	}
@@ -206,7 +204,7 @@ func (a *Agent) getSystemStats(cacheTimeMs uint16) system.Stats {
 		// }
 		// subtract ZFS ARC size from used memory and add as its own category
 		if a.systemInfoManager.zfs {
-			if arcSize, _ := zfs.ARCSize(); arcSize > 0 && arcSize < v.Used {
+			if arcSize, _ := ARCSize(); arcSize > 0 && arcSize < v.Used {
 				v.Used = v.Used - arcSize
 				v.UsedPercent = float64(v.Used) / float64(v.Total) * 100.0
 				systemStats.MemZfsArc = utils.BytesToGigabytes(arcSize)

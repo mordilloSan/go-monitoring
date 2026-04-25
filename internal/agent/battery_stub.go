@@ -1,6 +1,6 @@
 //go:build !darwin && !linux
 
-package battery
+package agent
 
 import "errors"
 

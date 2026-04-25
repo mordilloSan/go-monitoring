@@ -1,6 +1,6 @@
 //go:build freebsd
 
-package zfs
+package agent
 
 import (
 	"golang.org/x/sys/unix"

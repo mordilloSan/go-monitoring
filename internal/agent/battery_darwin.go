@@ -1,6 +1,6 @@
 //go:build darwin
 
-package battery
+package agent
 
 import (
 	"errors"
