@@ -37,6 +37,8 @@ make clean
 
 NVML (NVIDIA GPU) support is enabled automatically on `linux/amd64` glibc hosts. Override with `NVML=true` or `NVML=false`. Cross-compile with `OS=... ARCH=...`.
 
+`amd64` builds default to `GOAMD64=v3` for x86-64-v3 CPUs. Use `GOAMD64=v1 make build` or `docker build --build-arg GOAMD64=v1 ...` for maximum amd64 compatibility.
+
 ## Run
 
 ```sh

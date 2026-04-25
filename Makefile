@@ -34,6 +34,13 @@ MODERNIZE_VERSION     ?= latest
 # Default OS/ARCH values
 OS ?= $(shell $(GO_CMD_ENV) "$(GO_BIN)" env GOOS 2>/dev/null)
 ARCH ?= $(shell $(GO_CMD_ENV) "$(GO_BIN)" env GOARCH 2>/dev/null)
+# GOAMD64 controls x86-64 microarchitecture tuning for amd64 builds.
+# v3 targets x86-64-v3 CPUs; set GOAMD64=v1 for maximum amd64 compatibility.
+GOAMD64 ?= v3
+GOAMD64_ENV :=
+ifeq ($(ARCH),amd64)
+GOAMD64_ENV := GOAMD64=$(GOAMD64)
+endif
 # Controls NVML/glibc agent build tag behavior:
 # - auto (default): enable on linux/amd64 glibc hosts
 # - true: always enable
@@ -104,7 +111,7 @@ test:
 	@( cd "$(BACKEND_DIR)" && $(GO_CMD_ENV) "$(GO_BIN)" test ./... )
 
 build:
-	@( cd "$(BACKEND_DIR)" && GOOS=$(OS) GOARCH=$(ARCH) $(GO_CMD_ENV) "$(GO_BIN)" build $(AGENT_GO_TAGS) -o "$(BUILD_OUTPUT)" -ldflags "$(LDFLAGS)" $(AGENT_PKG) )
+	@( cd "$(BACKEND_DIR)" && GOOS=$(OS) GOARCH=$(ARCH) $(GOAMD64_ENV) $(GO_CMD_ENV) "$(GO_BIN)" build $(AGENT_GO_TAGS) -o "$(BUILD_OUTPUT)" -ldflags "$(LDFLAGS)" $(AGENT_PKG) )
 
 docker-build:
 	docker build -f "$(DOCKER_DIR)/Dockerfile" -t "$(IMAGE)" .

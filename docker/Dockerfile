@@ -11,11 +11,13 @@ COPY . .
 
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
+ARG GOAMD64=v3
 ARG VERSION=container
 ARG COMMIT_SHA=
 ARG BUILD_TIME=
 
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+RUN if [ "${TARGETARCH}" = "amd64" ]; then export GOAMD64="${GOAMD64}"; fi; \
+	CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
 	-buildvcs=false \
 	-o /out/go-monitoring \
 	-ldflags "-w -s \
