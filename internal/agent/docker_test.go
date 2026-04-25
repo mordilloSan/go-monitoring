@@ -316,7 +316,6 @@ func TestInitializeCpuTracking(t *testing.T) {
 	dm := &dockerManager{
 		lastCpuContainer: make(map[uint16]map[string]uint64),
 		lastCpuSystem:    make(map[uint16]map[string]uint64),
-		lastCpuReadTime:  make(map[uint16]map[string]time.Time),
 	}
 
 	cacheTimeMs := uint16(30000)
@@ -327,7 +326,6 @@ func TestInitializeCpuTracking(t *testing.T) {
 	// Check that maps were created
 	assert.NotNil(t, dm.lastCpuContainer[cacheTimeMs])
 	assert.NotNil(t, dm.lastCpuSystem[cacheTimeMs])
-	assert.NotNil(t, dm.lastCpuReadTime[cacheTimeMs])
 	assert.Empty(t, dm.lastCpuContainer[cacheTimeMs])
 	assert.Empty(t, dm.lastCpuSystem[cacheTimeMs])
 
@@ -508,7 +506,6 @@ func TestDockerManagerCreation(t *testing.T) {
 	dm := &dockerManager{
 		lastCpuContainer:    make(map[uint16]map[string]uint64),
 		lastCpuSystem:       make(map[uint16]map[string]uint64),
-		lastCpuReadTime:     make(map[uint16]map[string]time.Time),
 		networkSentTrackers: make(map[uint16]*deltatracker.DeltaTracker[string, uint64]),
 		networkRecvTrackers: make(map[uint16]*deltatracker.DeltaTracker[string, uint64]),
 		lastNetworkReadTime: make(map[uint16]map[string]time.Time),
@@ -650,7 +647,6 @@ func newDockerManagerForVersionTest(server *httptest.Server) *dockerManager {
 		containerStatsMap:   make(map[string]*container.Stats),
 		lastCpuContainer:    make(map[uint16]map[string]uint64),
 		lastCpuSystem:       make(map[uint16]map[string]uint64),
-		lastCpuReadTime:     make(map[uint16]map[string]time.Time),
 		networkSentTrackers: make(map[uint16]*deltatracker.DeltaTracker[string, uint64]),
 		networkRecvTrackers: make(map[uint16]*deltatracker.DeltaTracker[string, uint64]),
 		lastNetworkReadTime: make(map[uint16]map[string]time.Time),
@@ -797,9 +793,6 @@ func TestCycleCpuDeltas(t *testing.T) {
 		lastCpuSystem: map[uint16]map[string]uint64{
 			30000: {"container1": 150, "container2": 250},
 		},
-		lastCpuReadTime: map[uint16]map[string]time.Time{
-			30000: {"container1": time.Now()},
-		},
 	}
 
 	cacheTimeMs := uint16(30000)
@@ -814,8 +807,6 @@ func TestCycleCpuDeltas(t *testing.T) {
 	// Verify values are cleared
 	assert.Empty(t, dm.lastCpuContainer[cacheTimeMs])
 	assert.Empty(t, dm.lastCpuSystem[cacheTimeMs])
-	// lastCpuReadTime is not affected by cycleCpuDeltas
-	assert.NotEmpty(t, dm.lastCpuReadTime[cacheTimeMs])
 }
 
 func TestCycleNetworkDeltas(t *testing.T) {
@@ -857,7 +848,6 @@ func TestDockerStatsWithMockData(t *testing.T) {
 	dm := &dockerManager{
 		lastCpuContainer:    make(map[uint16]map[string]uint64),
 		lastCpuSystem:       make(map[uint16]map[string]uint64),
-		lastCpuReadTime:     make(map[uint16]map[string]time.Time),
 		networkSentTrackers: make(map[uint16]*deltatracker.DeltaTracker[string, uint64]),
 		networkRecvTrackers: make(map[uint16]*deltatracker.DeltaTracker[string, uint64]),
 		lastNetworkReadTime: make(map[uint16]map[string]time.Time),
@@ -951,7 +941,7 @@ func TestCalculateMemoryUsageWithRealData(t *testing.T) {
 	require.NoError(t, err)
 
 	// Test memory calculation with real data
-	usedMemory, err := calculateMemoryUsage(&apiStats, false)
+	usedMemory, err := calculateMemoryUsage(&apiStats)
 	require.NoError(t, err)
 
 	// From the real data: usage - inactive_file = 507400192 - 165130240 = 342269952
@@ -1058,7 +1048,6 @@ func TestContainerStatsEndToEndWithRealData(t *testing.T) {
 	dm := &dockerManager{
 		lastCpuContainer:    make(map[uint16]map[string]uint64),
 		lastCpuSystem:       make(map[uint16]map[string]uint64),
-		lastCpuReadTime:     make(map[uint16]map[string]time.Time),
 		networkSentTrackers: make(map[uint16]*deltatracker.DeltaTracker[string, uint64]),
 		networkRecvTrackers: make(map[uint16]*deltatracker.DeltaTracker[string, uint64]),
 		lastNetworkReadTime: make(map[uint16]map[string]time.Time),
@@ -1079,7 +1068,7 @@ func TestContainerStatsEndToEndWithRealData(t *testing.T) {
 	dm.containerStatsMap[ctr.IdShort] = stats
 
 	// Test individual components that we can verify
-	usedMemory, memErr := calculateMemoryUsage(&apiStats, false)
+	usedMemory, memErr := calculateMemoryUsage(&apiStats)
 	assert.NoError(t, memErr)
 	assert.Greater(t, usedMemory, uint64(0))
 
@@ -1161,7 +1150,7 @@ func TestEdgeCasesWithRealData(t *testing.T) {
 	}
 
 	// Test memory calculation with zero cache/inactive
-	usedMemory, err := calculateMemoryUsage(minimalStats, false)
+	usedMemory, err := calculateMemoryUsage(minimalStats)
 	assert.NoError(t, err)
 	assert.Equal(t, uint64(1000000), usedMemory) // Should equal usage when no cache
 
@@ -1440,7 +1429,6 @@ func TestUpdateContainerStatsUsesPodmanInspectHealthFallback(t *testing.T) {
 		usingPodman:         true,
 		lastCpuContainer:    make(map[uint16]map[string]uint64),
 		lastCpuSystem:       make(map[uint16]map[string]uint64),
-		lastCpuReadTime:     make(map[uint16]map[string]time.Time),
 		networkSentTrackers: make(map[uint16]*deltatracker.DeltaTracker[string, uint64]),
 		networkRecvTrackers: make(map[uint16]*deltatracker.DeltaTracker[string, uint64]),
 		lastNetworkReadTime: make(map[uint16]map[string]time.Time),
