@@ -25,7 +25,7 @@ type Status struct {
 }
 
 func getHealthFilePath() string {
-	filename := "beszel_health"
+	filename := "go_monitoring_health"
 	if runtime.GOOS == "linux" {
 		fullPath := filepath.Join("/dev/shm", filename)
 		if err := updateHealthFile(fullPath); err == nil {

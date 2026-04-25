@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"bytes"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -75,6 +77,84 @@ func TestHTTPRoutes(t *testing.T) {
 			assert.Contains(t, rec.Body.String(), tt.body)
 		})
 	}
+}
+
+func TestRequestLoggingEnabled(t *testing.T) {
+	tests := []struct {
+		name  string
+		env   string
+		set   bool
+		want  bool
+		alias bool
+	}{
+		{name: "default", want: true},
+		{name: "true", env: "true", set: true, want: true},
+		{name: "one", env: "1", set: true, want: true},
+		{name: "false", env: "false", set: true, want: false},
+		{name: "zero", env: "0", set: true, want: false},
+		{name: "alias false", env: "off", set: true, want: false, alias: true},
+		{name: "invalid defaults true", env: "sometimes", set: true, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.set {
+				if tt.alias {
+					t.Setenv("REQUEST_LOG", tt.env)
+				} else {
+					t.Setenv("HTTP_LOG", tt.env)
+				}
+			}
+
+			assert.Equal(t, tt.want, requestLoggingEnabled())
+		})
+	}
+}
+
+func TestLogRequestsWritesRequestLog(t *testing.T) {
+	var buf bytes.Buffer
+	originalLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(originalLogger) })
+
+	handler := logRequests(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("created"))
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/smart/refresh?force=true", nil)
+	req.Header.Set("User-Agent", "test-agent")
+	req.Header.Set("X-Forwarded-For", "203.0.113.10, 10.0.0.2")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	logLine := buf.String()
+	assert.Equal(t, http.StatusCreated, rec.Code)
+	assert.Contains(t, logLine, "msg=\"HTTP request\"")
+	assert.Contains(t, logLine, "method=POST")
+	assert.Contains(t, logLine, "path=\"/api/v1/smart/refresh?force=true\"")
+	assert.Contains(t, logLine, "status=201")
+	assert.Contains(t, logLine, "bytes=7")
+	assert.Contains(t, logLine, "remote=203.0.113.10")
+	assert.Contains(t, logLine, "user_agent=test-agent")
+}
+
+func TestRoutesCanDisableRequestLogging(t *testing.T) {
+	var buf bytes.Buffer
+	originalLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(originalLogger) })
+
+	a := newHTTPTestAgent(t)
+	a.requestLogging = false
+	handler := a.routes(time.Minute)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/meta", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.NotContains(t, buf.String(), "HTTP request")
 }
 
 func TestHealthRouteReturnsServiceUnavailableWhenPersistIsStale(t *testing.T) {

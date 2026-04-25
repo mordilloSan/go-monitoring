@@ -22,9 +22,9 @@ func GetDataDir(dataDirs ...string) (string, error) {
 		dataDirs = append(dataDirs, dataDir)
 	}
 
-	dataDirs = append(dataDirs, "/var/lib/beszel-agent")
+	dataDirs = append(dataDirs, "/var/lib/go-monitoring")
 	if homeDir, err := os.UserHomeDir(); err == nil {
-		dataDirs = append(dataDirs, filepath.Join(homeDir, ".config", "beszel"))
+		dataDirs = append(dataDirs, filepath.Join(homeDir, ".config", "go-monitoring"))
 	}
 	return testDataDirs(dataDirs)
 }

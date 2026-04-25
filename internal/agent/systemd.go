@@ -61,7 +61,7 @@ func newSystemdManager() (*systemdManager, error) {
 
 	conn, err := dbus.NewSystemConnectionContext(context.Background())
 	if err != nil {
-		slog.Debug("Error connecting to systemd", "err", err, "ref", "https://beszel.dev/guide/systemd")
+		slog.Debug("Error connecting to systemd", "err", err)
 		return nil, err
 	}
 

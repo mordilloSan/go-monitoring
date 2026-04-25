@@ -117,6 +117,7 @@ docker-run: docker-build
 		$$smart_args \
 		-e LISTEN=:45876 \
 		-e DATA_DIR=/var/lib/go-monitoring \
+		-e HTTP_LOG=$${HTTP_LOG:-true} \
 		-e SKIP_GPU=true \
 		-v go-monitoring-data:/var/lib/go-monitoring \
 		-v /var/run/docker.sock:/var/run/docker.sock:ro \

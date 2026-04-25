@@ -4,11 +4,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mordilloSan/go-monitoring/internal/health"
+	"github.com/mordilloSan/go-monitoring/internal/utils"
 )
 
 const maxHistoryLimit = 1000
@@ -24,7 +27,86 @@ func (a *Agent) routes(collectorInterval time.Duration) http.Handler {
 	mux.HandleFunc("/api/v1/systemd", a.handleSystemd)
 	mux.HandleFunc("/api/v1/smart", a.handleSmart)
 	mux.HandleFunc("/api/v1/smart/refresh", a.handleSmartRefresh)
+	if a.requestLogging {
+		return logRequests(mux)
+	}
 	return mux
+}
+
+func requestLoggingEnabled() bool {
+	value, exists := utils.GetEnv("HTTP_LOG")
+	if !exists {
+		value, exists = utils.GetEnv("REQUEST_LOG")
+	}
+	if !exists {
+		return true
+	}
+
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		slog.Warn("Invalid HTTP_LOG value; defaulting to enabled", "value", value)
+		return true
+	}
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	if r.status != 0 {
+		return
+	}
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(data []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	n, err := r.ResponseWriter.Write(data)
+	r.bytes += n
+	return n, err
+}
+
+func logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w}
+		next.ServeHTTP(rec, r)
+		if rec.status == 0 {
+			rec.status = http.StatusOK
+		}
+
+		slog.Info("HTTP request",
+			"method", r.Method,
+			"path", r.URL.RequestURI(),
+			"status", rec.status,
+			"bytes", rec.bytes,
+			"duration", time.Since(start),
+			"remote", clientIP(r),
+			"user_agent", r.UserAgent(),
+		)
+	})
+}
+
+func clientIP(r *http.Request) string {
+	if forwardedFor := r.Header.Get("X-Forwarded-For"); forwardedFor != "" {
+		if ip := strings.TrimSpace(strings.Split(forwardedFor, ",")[0]); ip != "" {
+			return ip
+		}
+	}
+	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+		return realIP
+	}
+	return r.RemoteAddr
 }
 
 func (a *Agent) handleHealth(w http.ResponseWriter, r *http.Request) {

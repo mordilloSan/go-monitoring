@@ -45,6 +45,7 @@ type Agent struct {
 	smartRefreshInterval      time.Duration                                         // Interval used for SMART refresh
 	lastSmartRefresh          time.Time                                             // Last successful SMART refresh
 	lastSmartRefreshError     string                                                // Last SMART refresh error to avoid repeating identical warnings
+	requestLogging            bool                                                  // Whether HTTP API requests are logged
 	store                     *Store                                                // Persistent local store
 	httpServer                *http.Server                                          // Standalone HTTP server
 	listenAddr                string                                                // Effective listen address
@@ -72,6 +73,7 @@ func NewAgent(dataDir ...string) (agent *Agent, err error) {
 	}
 
 	agent.memCalc, _ = utils.GetEnv("MEM_CALC")
+	agent.requestLogging = requestLoggingEnabled()
 	agent.sensorConfig = agent.newSensorConfig()
 
 	// Parse disk usage cache duration (e.g., "15m", "1h") to avoid waking sleeping disks

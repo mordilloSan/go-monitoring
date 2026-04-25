@@ -1448,9 +1448,9 @@ func TestUpdateContainerStatsUsesPodmanInspectHealthFallback(t *testing.T) {
 
 	ctr := &container.ApiInfo{
 		IdShort: "0123456789ab",
-		Names:   []string{"/beszel"},
+		Names:   []string{"/go-monitoring"},
 		Status:  "Up 2 minutes",
-		Image:   "beszel:latest",
+		Image:   "go-monitoring:latest",
 	}
 
 	err := dm.updateContainerStats(ctr, defaultCacheTimeMs)

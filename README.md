@@ -1,7 +1,5 @@
 # go-monitoring
 
-This project is a fork of Beszel, adapted for a different deployment model: a single standalone binary with embedded storage and an HTTP API, without the original hub-agent pattern.
-
 A standalone Go agent that collects local system metrics, persists them to an embedded SQLite store, and exposes them over an HTTP JSON API.
 
 ## Features
@@ -54,6 +52,7 @@ Environment variables:
 - `MEM_CALC` — memory calculation formula
 - `DISK_USAGE_CACHE` — cache duration for disk-usage polling (e.g. `15m`) to avoid waking sleeping disks
 - `LOG_LEVEL` — set to `debug` for verbose logs
+- `HTTP_LOG` / `REQUEST_LOG` — set to `false` to disable HTTP request logs (`true` by default)
 - `GPU_COLLECTOR` — comma-separated collector priority override (for example `nvml`, `amd_sysfs`, `intel_gpu_top`, `nvtop`)
 - `SKIP_GPU` — set to `true` to disable GPU monitoring entirely
 
@@ -111,10 +110,6 @@ Base URL: `http://<listen>`
 - `GET /api/v1/systemd` — systemd unit state
 - `GET /api/v1/smart` — SMART data
 - `POST /api/v1/smart/refresh` — force a SMART refresh
-
-## Acknowledgment
-
-This codebase started from Beszel and still reflects a lot of that upstream work. This fork exists for the narrower use case of running everything as a single binary on one node, with no separate hub service and no hub-agent communication model.
 
 ## License
 
