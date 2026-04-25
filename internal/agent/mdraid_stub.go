@@ -6,6 +6,6 @@ func scanMdraidDevices() []*DeviceInfo {
 	return nil
 }
 
-func (sm *SmartManager) collectMdraidHealth(deviceInfo *DeviceInfo) (bool, error) {
+func (sm *SmartManager) collectMdraidHealth(_ *DeviceInfo) (bool, error) {
 	return false, nil
 }

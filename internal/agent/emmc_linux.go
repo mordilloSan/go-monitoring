@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -198,6 +199,35 @@ func readHexByteFile(path string) (uint8, bool) {
 	}
 	b, ok := parseHexOrDecByte(content)
 	return b, ok
+}
+
+func emmcPreEOLString(preEOL uint8) string {
+	switch preEOL {
+	case 0x01:
+		return "0x01 (normal)"
+	case 0x02:
+		return "0x02 (warning)"
+	case 0x03:
+		return "0x03 (urgent)"
+	default:
+		return fmt.Sprintf("0x%02x", preEOL)
+	}
+}
+
+func emmcLifeTimeString(v uint8) string {
+	// JEDEC eMMC: 0x01..0x0A => 0-100% used in 10% steps, 0x0B => exceeded.
+	switch {
+	case v == 0:
+		return "0x00 (not reported)"
+	case v >= 0x01 && v <= 0x0A:
+		low := int(v-1) * 10
+		high := int(v) * 10
+		return fmt.Sprintf("0x%02x (%d-%d%% used)", v, low, high)
+	case v == 0x0B:
+		return "0x0b (>100% used)"
+	default:
+		return fmt.Sprintf("0x%02x", v)
+	}
 }
 
 func hasEmmcHealthFiles(deviceDir string) bool {

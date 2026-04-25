@@ -8,6 +8,6 @@ func scanEmmcDevices() []*DeviceInfo {
 	return nil
 }
 
-func (sm *SmartManager) collectEmmcHealth(deviceInfo *DeviceInfo) (bool, error) {
+func (sm *SmartManager) collectEmmcHealth(_ *DeviceInfo) (bool, error) {
 	return false, nil
 }
