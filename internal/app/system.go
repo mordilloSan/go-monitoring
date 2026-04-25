@@ -8,8 +8,8 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/mordilloSan/go-monitoring/internal/integration/docker/dockerapi"
 	"github.com/mordilloSan/go-monitoring/internal/domain/system"
+	"github.com/mordilloSan/go-monitoring/internal/integration/docker/dockerapi"
 	"github.com/mordilloSan/go-monitoring/internal/utils"
 	"github.com/mordilloSan/go-monitoring/internal/version"
 

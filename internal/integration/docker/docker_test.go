@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mordilloSan/go-monitoring/internal/integration/docker/dockerapi"
 	"github.com/mordilloSan/go-monitoring/internal/deltatracker"
 	"github.com/mordilloSan/go-monitoring/internal/domain/container"
+	"github.com/mordilloSan/go-monitoring/internal/integration/docker/dockerapi"
 	"github.com/mordilloSan/go-monitoring/internal/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
