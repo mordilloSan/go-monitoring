@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/mordilloSan/go-monitoring/internal/model/container"
+	modelnet "github.com/mordilloSan/go-monitoring/internal/model/network"
+	procmodel "github.com/mordilloSan/go-monitoring/internal/model/process"
 	"github.com/mordilloSan/go-monitoring/internal/model/smart"
 	"github.com/mordilloSan/go-monitoring/internal/model/system"
 	"github.com/mordilloSan/go-monitoring/internal/model/systemd"
@@ -17,7 +19,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const storeSchemaVersion = 2
+const storeSchemaVersion = 3
 
 const (
 	resolution1m   = "1m"
@@ -74,6 +76,11 @@ type CurrentItemsResponse[T any] struct {
 	Items      []T   `json:"items"`
 }
 
+type CurrentDataResponse[T any] struct {
+	CapturedAt int64 `json:"captured_at"`
+	Data       T     `json:"data"`
+}
+
 type ContainerCurrent struct {
 	ID          string                 `json:"id"`
 	Name        string                 `json:"name"`
@@ -92,6 +99,13 @@ type SmartDeviceCurrent struct {
 	ID   string          `json:"id"`
 	Key  string          `json:"key"`
 	Data smart.SmartData `json:"data"`
+}
+
+type snapshotJSONPayload struct {
+	infoJSON             string
+	statsJSON            string
+	containerHistoryJSON string
+	detailsJSON          any
 }
 
 type MetaResponse struct {
@@ -149,6 +163,9 @@ func (s *Store) init() error {
 		if err := s.migrateV2(); err != nil {
 			return err
 		}
+		return s.migrateV3()
+	case 2:
+		return s.migrateV3()
 	case storeSchemaVersion:
 		return nil
 	default:
@@ -207,6 +224,43 @@ func (s *Store) migrateV1() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_smart_devices_current_key
 			ON smart_devices_current (device_key)`,
+		`CREATE TABLE IF NOT EXISTS processes_current (
+			pid INTEGER PRIMARY KEY,
+			name TEXT NOT NULL,
+			cpu_percent REAL NOT NULL,
+			memory_percent REAL NOT NULL,
+			updated INTEGER NOT NULL,
+			data_json TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_processes_current_cpu
+			ON processes_current (cpu_percent DESC, memory_percent DESC)`,
+		`CREATE TABLE IF NOT EXISTS process_count_current (
+			singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+			updated INTEGER NOT NULL,
+			data_json TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS programs_current (
+			name TEXT PRIMARY KEY,
+			cpu_percent REAL NOT NULL,
+			memory_percent REAL NOT NULL,
+			updated INTEGER NOT NULL,
+			data_json TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_programs_current_cpu
+			ON programs_current (cpu_percent DESC, memory_percent DESC)`,
+		`CREATE TABLE IF NOT EXISTS connections_current (
+			singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+			updated INTEGER NOT NULL,
+			data_json TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS irq_current (
+			irq TEXT PRIMARY KEY,
+			total INTEGER NOT NULL,
+			updated INTEGER NOT NULL,
+			data_json TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_irq_current_total
+			ON irq_current (total DESC)`,
 		fmt.Sprintf("PRAGMA user_version = %d", storeSchemaVersion),
 	}
 	for _, stmt := range statements {
@@ -221,6 +275,55 @@ func (s *Store) migrateV2() error {
 	statements := []string{
 		"DELETE FROM containers_current",
 		"DELETE FROM container_stats_history",
+		"PRAGMA user_version = 2",
+	}
+	for _, stmt := range statements {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) migrateV3() error {
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS processes_current (
+			pid INTEGER PRIMARY KEY,
+			name TEXT NOT NULL,
+			cpu_percent REAL NOT NULL,
+			memory_percent REAL NOT NULL,
+			updated INTEGER NOT NULL,
+			data_json TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_processes_current_cpu
+			ON processes_current (cpu_percent DESC, memory_percent DESC)`,
+		`CREATE TABLE IF NOT EXISTS process_count_current (
+			singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+			updated INTEGER NOT NULL,
+			data_json TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS programs_current (
+			name TEXT PRIMARY KEY,
+			cpu_percent REAL NOT NULL,
+			memory_percent REAL NOT NULL,
+			updated INTEGER NOT NULL,
+			data_json TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_programs_current_cpu
+			ON programs_current (cpu_percent DESC, memory_percent DESC)`,
+		`CREATE TABLE IF NOT EXISTS connections_current (
+			singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+			updated INTEGER NOT NULL,
+			data_json TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS irq_current (
+			irq TEXT PRIMARY KEY,
+			total INTEGER NOT NULL,
+			updated INTEGER NOT NULL,
+			data_json TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_irq_current_total
+			ON irq_current (total DESC)`,
 		fmt.Sprintf("PRAGMA user_version = %d", storeSchemaVersion),
 	}
 	for _, stmt := range statements {
@@ -242,31 +345,14 @@ func (s *Store) Path() string {
 	return s.path
 }
 
-func (s *Store) WriteSnapshot(capturedAt int64, data *system.CombinedData) error {
+func (s *Store) WriteSnapshot(capturedAt int64, data *system.CombinedData) (err error) {
 	if data == nil {
 		return errors.New("snapshot data is nil")
 	}
 
-	infoJSON, err := marshalJSON(data.Info)
+	payload, err := buildSnapshotJSONPayload(data)
 	if err != nil {
 		return err
-	}
-	statsJSON, err := marshalJSON(data.Stats)
-	if err != nil {
-		return err
-	}
-	containerHistoryJSON, err := marshalJSON(data.Containers)
-	if err != nil {
-		return err
-	}
-
-	var detailsJSON any
-	if data.Details != nil {
-		rawDetails, marshalErr := marshalJSON(data.Details)
-		if marshalErr != nil {
-			return marshalErr
-		}
-		detailsJSON = rawDetails
 	}
 
 	tx, err := s.db.Begin()
@@ -279,6 +365,45 @@ func (s *Store) WriteSnapshot(capturedAt int64, data *system.CombinedData) error
 		}
 	}()
 
+	if err = writeSnapshotRows(tx, capturedAt, payload); err != nil {
+		return err
+	}
+	if err = replaceCurrentSnapshotTables(tx, capturedAt, data); err != nil {
+		return err
+	}
+	if err = upsertMeta(tx, "last_persisted_at", strconv.FormatInt(capturedAt, 10)); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func buildSnapshotJSONPayload(data *system.CombinedData) (snapshotJSONPayload, error) {
+	var payload snapshotJSONPayload
+	var err error
+
+	payload.infoJSON, err = marshalJSON(data.Info)
+	if err != nil {
+		return payload, err
+	}
+	payload.statsJSON, err = marshalJSON(data.Stats)
+	if err != nil {
+		return payload, err
+	}
+	payload.containerHistoryJSON, err = marshalJSON(data.Containers)
+	if err != nil {
+		return payload, err
+	}
+	if data.Details != nil {
+		payload.detailsJSON, err = marshalJSON(data.Details)
+	}
+	return payload, err
+}
+
+func writeSnapshotRows(tx *sql.Tx, capturedAt int64, payload snapshotJSONPayload) error {
+	var err error
 	if _, err = tx.Exec(`
 		INSERT INTO system_current (singleton, captured_at, info_json, stats_json, details_json)
 		VALUES (1, ?, ?, ?, ?)
@@ -287,38 +412,46 @@ func (s *Store) WriteSnapshot(capturedAt int64, data *system.CombinedData) error
 			info_json = excluded.info_json,
 			stats_json = excluded.stats_json,
 			details_json = COALESCE(excluded.details_json, system_current.details_json)
-	`, capturedAt, infoJSON, statsJSON, detailsJSON); err != nil {
+	`, capturedAt, payload.infoJSON, payload.statsJSON, payload.detailsJSON); err != nil {
 		return err
 	}
 
 	if _, err = tx.Exec(`
 		INSERT INTO system_stats_history (resolution, captured_at, stats_json)
 		VALUES (?, ?, ?)
-	`, resolution1m, capturedAt, statsJSON); err != nil {
+	`, resolution1m, capturedAt, payload.statsJSON); err != nil {
 		return err
 	}
 
 	if _, err = tx.Exec(`
 		INSERT INTO container_stats_history (resolution, captured_at, stats_json)
 		VALUES (?, ?, ?)
-	`, resolution1m, capturedAt, containerHistoryJSON); err != nil {
-		return err
-	}
-
-	if err = replaceCurrentContainers(tx, capturedAt, data.Containers); err != nil {
-		return err
-	}
-	if err = replaceCurrentSystemd(tx, capturedAt, data.SystemdServices); err != nil {
-		return err
-	}
-	if err = upsertMeta(tx, "last_persisted_at", strconv.FormatInt(capturedAt, 10)); err != nil {
-		return err
-	}
-
-	if err = tx.Commit(); err != nil {
+	`, resolution1m, capturedAt, payload.containerHistoryJSON); err != nil {
 		return err
 	}
 	return nil
+}
+
+func replaceCurrentSnapshotTables(tx *sql.Tx, capturedAt int64, data *system.CombinedData) error {
+	if err := replaceCurrentContainers(tx, capturedAt, data.Containers); err != nil {
+		return err
+	}
+	if err := replaceCurrentSystemd(tx, capturedAt, data.SystemdServices); err != nil {
+		return err
+	}
+	if err := replaceCurrentProcessCount(tx, capturedAt, data.ProcessCount); err != nil {
+		return err
+	}
+	if err := replaceCurrentProcesses(tx, capturedAt, data.Processes); err != nil {
+		return err
+	}
+	if err := replaceCurrentPrograms(tx, capturedAt, data.Programs); err != nil {
+		return err
+	}
+	if err := replaceCurrentConnections(tx, capturedAt, data.Connections); err != nil {
+		return err
+	}
+	return replaceCurrentIRQ(tx, capturedAt, data.IRQs)
 }
 
 func replaceCurrentContainers(tx *sql.Tx, capturedAt int64, items []*container.Stats) error {
@@ -384,6 +517,111 @@ func replaceCurrentSystemd(tx *sql.Tx, capturedAt int64, items []*systemd.Servic
 			return err
 		}
 		if _, err := stmt.Exec(item.Name, capturedAt, raw); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func replaceCurrentProcessCount(tx *sql.Tx, capturedAt int64, item *procmodel.Count) error {
+	if _, err := tx.Exec("DELETE FROM process_count_current"); err != nil {
+		return err
+	}
+	if item == nil {
+		return nil
+	}
+	raw, err := marshalJSON(item)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec("INSERT INTO process_count_current (singleton, updated, data_json) VALUES (1, ?, ?)", capturedAt, raw)
+	return err
+}
+
+func replaceCurrentProcesses(tx *sql.Tx, capturedAt int64, items []procmodel.Process) error {
+	if _, err := tx.Exec("DELETE FROM processes_current"); err != nil {
+		return err
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	stmt, err := tx.Prepare("INSERT INTO processes_current (pid, name, cpu_percent, memory_percent, updated, data_json) VALUES (?, ?, ?, ?, ?, ?)")
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, item := range items {
+		raw, err := marshalJSON(item)
+		if err != nil {
+			return err
+		}
+		if _, err := stmt.Exec(item.PID, item.Name, item.CPUPercent, item.MemoryPercent, capturedAt, raw); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func replaceCurrentPrograms(tx *sql.Tx, capturedAt int64, items []procmodel.Program) error {
+	if _, err := tx.Exec("DELETE FROM programs_current"); err != nil {
+		return err
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	stmt, err := tx.Prepare("INSERT INTO programs_current (name, cpu_percent, memory_percent, updated, data_json) VALUES (?, ?, ?, ?, ?)")
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, item := range items {
+		raw, err := marshalJSON(item)
+		if err != nil {
+			return err
+		}
+		if _, err := stmt.Exec(item.Name, item.CPUPercent, item.MemoryPercent, capturedAt, raw); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func replaceCurrentConnections(tx *sql.Tx, capturedAt int64, item *modelnet.ConnectionStats) error {
+	if _, err := tx.Exec("DELETE FROM connections_current"); err != nil {
+		return err
+	}
+	if item == nil {
+		return nil
+	}
+	raw, err := marshalJSON(item)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec("INSERT INTO connections_current (singleton, updated, data_json) VALUES (1, ?, ?)", capturedAt, raw)
+	return err
+}
+
+func replaceCurrentIRQ(tx *sql.Tx, capturedAt int64, items []modelnet.IRQStat) error {
+	if _, err := tx.Exec("DELETE FROM irq_current"); err != nil {
+		return err
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	stmt, err := tx.Prepare("INSERT INTO irq_current (irq, total, updated, data_json) VALUES (?, ?, ?, ?)")
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, item := range items {
+		raw, err := marshalJSON(item)
+		if err != nil {
+			return err
+		}
+		if _, err := stmt.Exec(item.IRQ, item.Total, capturedAt, raw); err != nil {
 			return err
 		}
 	}
@@ -586,6 +824,95 @@ func (s *Store) CurrentSystemdItems() ([]*systemd.Service, error) {
 	return items, rows.Err()
 }
 
+func (s *Store) CurrentProcessCount() (*CurrentDataResponse[procmodel.Count], error) {
+	return currentSingleton[procmodel.Count](s, "process_count_current")
+}
+
+func (s *Store) CurrentProcesses() (*CurrentItemsResponse[procmodel.Process], error) {
+	capturedAt, err := s.currentCapturedAt()
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := s.db.Query("SELECT data_json FROM processes_current ORDER BY cpu_percent DESC, memory_percent DESC, pid ASC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	resp := &CurrentItemsResponse[procmodel.Process]{CapturedAt: capturedAt, Items: []procmodel.Process{}}
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var current procmodel.Process
+		if err := json.Unmarshal([]byte(raw), &current); err != nil {
+			return nil, err
+		}
+		resp.Items = append(resp.Items, current)
+	}
+	return resp, rows.Err()
+}
+
+func (s *Store) CurrentPrograms() (*CurrentItemsResponse[procmodel.Program], error) {
+	capturedAt, err := s.currentCapturedAt()
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := s.db.Query("SELECT data_json FROM programs_current ORDER BY cpu_percent DESC, memory_percent DESC, name ASC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	resp := &CurrentItemsResponse[procmodel.Program]{CapturedAt: capturedAt, Items: []procmodel.Program{}}
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var current procmodel.Program
+		if err := json.Unmarshal([]byte(raw), &current); err != nil {
+			return nil, err
+		}
+		resp.Items = append(resp.Items, current)
+	}
+	return resp, rows.Err()
+}
+
+func (s *Store) CurrentConnections() (*CurrentDataResponse[modelnet.ConnectionStats], error) {
+	return currentSingleton[modelnet.ConnectionStats](s, "connections_current")
+}
+
+func (s *Store) CurrentIRQ() (*CurrentItemsResponse[modelnet.IRQStat], error) {
+	capturedAt, err := s.currentCapturedAt()
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := s.db.Query("SELECT data_json FROM irq_current ORDER BY total DESC, irq ASC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	resp := &CurrentItemsResponse[modelnet.IRQStat]{CapturedAt: capturedAt, Items: []modelnet.IRQStat{}}
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var current modelnet.IRQStat
+		if err := json.Unmarshal([]byte(raw), &current); err != nil {
+			return nil, err
+		}
+		resp.Items = append(resp.Items, current)
+	}
+	return resp, rows.Err()
+}
+
 func (s *Store) CurrentSmartDevices() (*CurrentItemsResponse[SmartDeviceCurrent], error) {
 	var capturedAt int64
 	if err := s.db.QueryRow(`
@@ -695,6 +1022,28 @@ func (s *Store) currentCapturedAt() (int64, error) {
 	var capturedAt int64
 	err := s.db.QueryRow("SELECT captured_at FROM system_current WHERE singleton = 1").Scan(&capturedAt)
 	return capturedAt, err
+}
+
+func currentSingleton[T any](s *Store, table string) (*CurrentDataResponse[T], error) {
+	capturedAt, err := s.currentCapturedAt()
+	if err != nil {
+		return nil, err
+	}
+
+	var data T
+	var raw string
+	query := fmt.Sprintf("SELECT data_json FROM %s WHERE singleton = 1", table)
+	err = s.db.QueryRow(query).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return &CurrentDataResponse[T]{CapturedAt: capturedAt, Data: data}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		return nil, err
+	}
+	return &CurrentDataResponse[T]{CapturedAt: capturedAt, Data: data}, nil
 }
 
 func marshalJSON(v any) (string, error) {

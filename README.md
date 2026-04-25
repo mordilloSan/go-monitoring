@@ -85,9 +85,11 @@ curl http://localhost:45876/api/v1/summary
 The Docker setup avoids `--privileged` by using targeted host access:
 
 - `network_mode: host` so host network interfaces are visible.
+- `pid: host` so host processes and process-owned sockets are visible.
 - `/var/run/docker.sock` read-only for container metrics.
 - `/var/run/dbus/system_bus_socket` read-only for systemd state.
 - `apparmor=unconfined` so the container can query host systemd over DBus.
+- `systempaths=unconfined` so Docker does not mask host `/proc/interrupts` for IRQ counters.
 - `CAP_SYS_RAWIO`, `CAP_SYS_ADMIN`, and explicit `/dev/...` device mappings for SMART data.
 
 Compose cannot discover host devices dynamically, so `make docker-up` first writes a local `docker-compose.override.yml` with discovered SMART devices. You can inspect what will be used with:
@@ -109,6 +111,11 @@ Base URL: `http://<listen>`
 - `GET /api/v1/history/containers` — container history
 - `GET /api/v1/containers` — current container list
 - `GET /api/v1/systemd` — systemd unit state
+- `GET /api/v1/processlist` — current process list
+- `GET /api/v1/processcount` — process counts by state
+- `GET /api/v1/programlist` — process list grouped by program name
+- `GET /api/v1/connections` — network connection and conntrack counts
+- `GET /api/v1/irq` — IRQ counters
 - `GET /api/v1/smart` — SMART data
 - `POST /api/v1/smart/refresh` — force a SMART refresh
 

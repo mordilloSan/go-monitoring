@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/mordilloSan/go-monitoring/internal/model/container"
+	modelnet "github.com/mordilloSan/go-monitoring/internal/model/network"
+	procmodel "github.com/mordilloSan/go-monitoring/internal/model/process"
 	"github.com/mordilloSan/go-monitoring/internal/model/systemd"
 )
 
@@ -174,9 +176,14 @@ type Details struct {
 
 // Final data structure returned by the collector.
 type CombinedData struct {
-	Stats           Stats              `json:"stats" cbor:"0,keyasint"`
-	Info            Info               `json:"info" cbor:"1,keyasint"`
-	Containers      []*container.Stats `json:"containers" cbor:"2,keyasint"`
-	SystemdServices []*systemd.Service `json:"systemd_services,omitempty" cbor:"3,keyasint,omitempty"`
-	Details         *Details           `json:"details,omitempty" cbor:"4,keyasint,omitempty"`
+	Stats           Stats                     `json:"stats" cbor:"0,keyasint"`
+	Info            Info                      `json:"info" cbor:"1,keyasint"`
+	Containers      []*container.Stats        `json:"containers" cbor:"2,keyasint"`
+	SystemdServices []*systemd.Service        `json:"systemd_services,omitempty" cbor:"3,keyasint,omitempty"`
+	Details         *Details                  `json:"details,omitempty" cbor:"4,keyasint,omitempty"`
+	ProcessCount    *procmodel.Count          `json:"process_count,omitempty" cbor:"-"`
+	Processes       []procmodel.Process       `json:"processes,omitempty" cbor:"-"`
+	Programs        []procmodel.Program       `json:"programs,omitempty" cbor:"-"`
+	Connections     *modelnet.ConnectionStats `json:"connections,omitempty" cbor:"-"`
+	IRQs            []modelnet.IRQStat        `json:"irq,omitempty" cbor:"-"`
 }

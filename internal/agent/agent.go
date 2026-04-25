@@ -45,6 +45,7 @@ type Agent struct {
 	smartRefreshInterval      time.Duration                                         // Interval used for SMART refresh
 	lastSmartRefresh          time.Time                                             // Last successful SMART refresh
 	lastSmartRefreshError     string                                                // Last SMART refresh error to avoid repeating identical warnings
+	processCPUPrev            map[int32]prevProcessCPU                              // Previous per-process CPU counters
 	requestLogging            bool                                                  // Whether HTTP API requests are logged
 	store                     *Store                                                // Persistent local store
 	httpServer                *http.Server                                          // Standalone HTTP server
@@ -55,8 +56,9 @@ type Agent struct {
 // If the data directory is not set, it will attempt to find the optimal directory.
 func NewAgent(dataDir ...string) (agent *Agent, err error) {
 	agent = &Agent{
-		fsStats: make(map[string]*system.FsStats),
-		cache:   NewSystemDataCache(),
+		fsStats:        make(map[string]*system.FsStats),
+		processCPUPrev: make(map[int32]prevProcessCPU),
+		cache:          NewSystemDataCache(),
 	}
 
 	// Initialize disk I/O previous counters storage
@@ -185,6 +187,12 @@ func (a *Agent) gatherStats(options common.DataRequestOptions) *system.CombinedD
 			data.Info.Services = []uint16{totalCount, numFailed}
 		}
 		data.SystemdServices = services
+	}
+
+	if cacheTimeMs == defaultDataCacheTimeMs {
+		data.ProcessCount, data.Processes, data.Programs = a.collectProcessStats()
+		data.Connections = collectConnectionStats()
+		data.IRQs = collectIRQStats()
 	}
 
 	data.Stats.ExtraFs = make(map[string]*system.FsStats)

@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/mordilloSan/go-monitoring/internal/model/container"
+	modelnet "github.com/mordilloSan/go-monitoring/internal/model/network"
+	procmodel "github.com/mordilloSan/go-monitoring/internal/model/process"
 	"github.com/mordilloSan/go-monitoring/internal/model/smart"
 	"github.com/mordilloSan/go-monitoring/internal/model/system"
 	"github.com/mordilloSan/go-monitoring/internal/model/systemd"
@@ -55,6 +57,27 @@ func sampleCombinedData(cpu float64) *system.CombinedData {
 				Mem:   1024,
 			},
 		},
+		ProcessCount: &procmodel.Count{Total: 2, Running: 1, Sleeping: 1, Thread: 4, PIDMax: 4194304},
+		Processes: []procmodel.Process{
+			{PID: 10, Name: "nginx", Status: "running", CPUPercent: cpu, MemoryPercent: 1.25, NumThreads: 2},
+		},
+		Programs: []procmodel.Program{
+			{Name: "nginx", Count: 1, CPUPercent: cpu, MemoryPercent: 1.25, MemoryRSSBytes: 1024, PIDs: []int32{10}},
+		},
+		Connections: &modelnet.ConnectionStats{
+			NetConnectionsEnabled: true,
+			NFConntrackEnabled:    true,
+			Total:                 3,
+			TCP:                   2,
+			UDP:                   1,
+			Listen:                1,
+			NFConntrackCount:      7,
+			NFConntrackMax:        100,
+			NFConntrackPercent:    7,
+		},
+		IRQs: []modelnet.IRQStat{
+			{IRQ: "0", Total: 42, CPUCounts: []uint64{40, 2}, Description: "timer"},
+		},
 		Details: &system.Details{
 			Hostname:    "host-a",
 			CpuModel:    "cpu",
@@ -97,6 +120,29 @@ func TestStoreSnapshotAndCurrentQueries(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, systemdResp.Items, 1)
 	assert.Equal(t, systemd.StatusActive, systemdResp.Items[0].State)
+
+	processCount, err := store.CurrentProcessCount()
+	require.NoError(t, err)
+	assert.Equal(t, 2, processCount.Data.Total)
+
+	processes, err := store.CurrentProcesses()
+	require.NoError(t, err)
+	require.Len(t, processes.Items, 1)
+	assert.Equal(t, int32(10), processes.Items[0].PID)
+
+	programs, err := store.CurrentPrograms()
+	require.NoError(t, err)
+	require.Len(t, programs.Items, 1)
+	assert.Equal(t, "nginx", programs.Items[0].Name)
+
+	connections, err := store.CurrentConnections()
+	require.NoError(t, err)
+	assert.Equal(t, 3, connections.Data.Total)
+
+	irq, err := store.CurrentIRQ()
+	require.NoError(t, err)
+	require.Len(t, irq.Items, 1)
+	assert.Equal(t, uint64(42), irq.Items[0].Total)
 
 	smartResp, err := store.CurrentSmartDevices()
 	require.NoError(t, err)

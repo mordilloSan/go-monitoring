@@ -25,6 +25,11 @@ func (a *Agent) routes(collectorInterval time.Duration) http.Handler {
 	mux.HandleFunc("/api/v1/history/containers", a.handleContainerHistory)
 	mux.HandleFunc("/api/v1/containers", a.handleContainers)
 	mux.HandleFunc("/api/v1/systemd", a.handleSystemd)
+	mux.HandleFunc("/api/v1/processlist", a.handleProcessList)
+	mux.HandleFunc("/api/v1/processcount", a.handleProcessCount)
+	mux.HandleFunc("/api/v1/programlist", a.handleProgramList)
+	mux.HandleFunc("/api/v1/connections", a.handleConnections)
+	mux.HandleFunc("/api/v1/irq", a.handleIRQ)
 	mux.HandleFunc("/api/v1/smart", a.handleSmart)
 	mux.HandleFunc("/api/v1/smart/refresh", a.handleSmartRefresh)
 	if a.requestLogging {
@@ -193,6 +198,71 @@ func (a *Agent) handleSystemd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp, err := a.store.CurrentSystemd()
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (a *Agent) handleProcessList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	resp, err := a.store.CurrentProcesses()
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (a *Agent) handleProcessCount(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	resp, err := a.store.CurrentProcessCount()
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (a *Agent) handleProgramList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	resp, err := a.store.CurrentPrograms()
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (a *Agent) handleConnections(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	resp, err := a.store.CurrentConnections()
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (a *Agent) handleIRQ(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	resp, err := a.store.CurrentIRQ()
 	if err != nil {
 		writeStoreError(w, err)
 		return
