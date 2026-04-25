@@ -14,7 +14,7 @@ import (
 )
 
 func TestParseSmartForScsi(t *testing.T) {
-	fixturePath := filepath.Join("test-data", "smart", "scsi.json")
+	fixturePath := filepath.Join("testdata", "smart", "scsi.json")
 	data, err := os.ReadFile(fixturePath)
 	if err != nil {
 		t.Fatalf("failed reading fixture: %v", err)
@@ -61,7 +61,7 @@ func TestParseSmartForScsi(t *testing.T) {
 }
 
 func TestParseSmartForSata(t *testing.T) {
-	fixturePath := filepath.Join("test-data", "smart", "sda.json")
+	fixturePath := filepath.Join("testdata", "smart", "sda.json")
 	data, err := os.ReadFile(fixturePath)
 	require.NoError(t, err)
 
@@ -237,7 +237,7 @@ func TestParseSmartForSataParentheticalRawValue(t *testing.T) {
 }
 
 func TestParseSmartForNvme(t *testing.T) {
-	fixturePath := filepath.Join("test-data", "smart", "nvme0.json")
+	fixturePath := filepath.Join("testdata", "smart", "nvme0.json")
 	data, err := os.ReadFile(fixturePath)
 	require.NoError(t, err)
 
@@ -653,7 +653,7 @@ func TestUpdateSmartDevicesPreservesRAIDDrives(t *testing.T) {
 }
 
 func TestParseSmartOutputMarksVerified(t *testing.T) {
-	fixturePath := filepath.Join("test-data", "smart", "nvme0.json")
+	fixturePath := filepath.Join("testdata", "smart", "nvme0.json")
 	data, err := os.ReadFile(fixturePath)
 	require.NoError(t, err)
 
@@ -667,7 +667,7 @@ func TestParseSmartOutputMarksVerified(t *testing.T) {
 }
 
 func TestParseSmartOutputKeepsCustomType(t *testing.T) {
-	fixturePath := filepath.Join("test-data", "smart", "sda.json")
+	fixturePath := filepath.Join("testdata", "smart", "sda.json")
 	data, err := os.ReadFile(fixturePath)
 	require.NoError(t, err)
 

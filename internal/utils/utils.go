@@ -30,11 +30,6 @@ func TwoDecimals(value float64) float64 {
 	return math.Round(value*100) / 100
 }
 
-// func RoundFloat(val float64, precision uint) float64 {
-//     ratio := math.Pow(10, float64(precision))
-//     return math.Round(val*ratio) / ratio
-// }
-
 // ReadStringFile returns trimmed file contents or empty string on error.
 func ReadStringFile(path string) string {
 	content, _ := ReadStringFileOK(path)
