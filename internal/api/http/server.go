@@ -12,11 +12,6 @@ import (
 	"time"
 
 	apimodel "github.com/mordilloSan/go-monitoring/internal/api/model"
-	"github.com/mordilloSan/go-monitoring/internal/domain/container"
-	modelnet "github.com/mordilloSan/go-monitoring/internal/domain/network"
-	procmodel "github.com/mordilloSan/go-monitoring/internal/domain/process"
-	"github.com/mordilloSan/go-monitoring/internal/domain/system"
-	"github.com/mordilloSan/go-monitoring/internal/domain/systemd"
 	"github.com/mordilloSan/go-monitoring/internal/health"
 	"github.com/mordilloSan/go-monitoring/internal/store"
 	"github.com/mordilloSan/go-monitoring/internal/utils"
@@ -27,17 +22,9 @@ const maxHistoryLimit = 1000
 
 type MetricsReader interface {
 	Path() string
-	Summary() (int64, *system.CombinedData, error)
-	SystemHistory(resolution string, from, to int64, limit int) ([]store.HistoryRecord[system.Stats], error)
-	ContainerHistory(resolution string, from, to int64, limit int) ([]store.HistoryRecord[[]container.Stats], error)
-	CurrentContainers() (int64, []*container.Stats, error)
-	CurrentSystemd() (int64, []*systemd.Service, error)
-	CurrentProcesses() (int64, []procmodel.Process, error)
-	CurrentProcessCount() (int64, procmodel.Count, error)
-	CurrentPrograms() (int64, []procmodel.Program, error)
-	CurrentConnections() (int64, modelnet.ConnectionStats, error)
-	CurrentIRQ() (int64, []modelnet.IRQStat, error)
-	CurrentSmartDevices() (int64, []store.SmartDeviceRecord, error)
+	CurrentPlugin(plugin string) (int64, json.RawMessage, error)
+	PluginHistory(plugin, resolution string, from, to int64, limit int) ([]store.HistoryRecord[json.RawMessage], error)
+	HistoryEnabled(plugin string) bool
 }
 
 type SmartRefresher interface {
@@ -77,18 +64,7 @@ func (s *Server) Handler(collectorInterval time.Duration) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/api/v1/meta", s.handleMeta(collectorInterval))
-	mux.HandleFunc("/api/v1/summary", s.handleSummary)
-	mux.HandleFunc("/api/v1/history/system", s.handleSystemHistory)
-	mux.HandleFunc("/api/v1/history/containers", s.handleContainerHistory)
-	mux.HandleFunc("/api/v1/containers", s.handleContainers)
-	mux.HandleFunc("/api/v1/systemd", s.handleSystemd)
-	mux.HandleFunc("/api/v1/processlist", s.handleProcessList)
-	mux.HandleFunc("/api/v1/processcount", s.handleProcessCount)
-	mux.HandleFunc("/api/v1/programlist", s.handleProgramList)
-	mux.HandleFunc("/api/v1/connections", s.handleConnections)
-	mux.HandleFunc("/api/v1/irq", s.handleIRQ)
-	mux.HandleFunc("/api/v1/smart", s.handleSmart)
-	mux.HandleFunc("/api/v1/smart/refresh", s.handleSmartRefresh)
+	NewRegistry(s.metrics, s.smartRefresher).Mount(mux, "/api/v1/")
 	if s.requestLogging {
 		return logRequests(mux)
 	}
@@ -194,260 +170,19 @@ func (s *Server) metaResponse(collectorInterval time.Duration) apimodel.MetaResp
 	if s.smartRefreshInterval != nil {
 		smartRefreshInterval = s.smartRefreshInterval()
 	}
+	listenAddr := ""
+	if s.listenAddr != nil {
+		listenAddr = s.listenAddr()
+	}
 	return apimodel.MetaResponse{
 		Version:              version.Version,
 		DataDir:              s.dataDir,
 		DBPath:               s.metrics.Path(),
-		ListenAddr:           s.listenAddr(),
+		ListenAddr:           listenAddr,
 		CollectorInterval:    collectorInterval.String(),
 		SmartRefreshInterval: smartRefreshInterval,
 		Retention:            store.RetentionStrings(),
 	}
-}
-
-func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeMethodNotAllowed(w, http.MethodGet)
-		return
-	}
-	capturedAt, summary, err := s.metrics.Summary()
-	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, apimodel.SummaryResponse{
-		CapturedAt:   capturedAt,
-		CombinedData: *summary,
-	})
-}
-
-func (s *Server) handleSystemHistory(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeMethodNotAllowed(w, http.MethodGet)
-		return
-	}
-	resolution, from, to, limit, ok := parseHistoryQuery(w, r)
-	if !ok {
-		return
-	}
-	items, err := s.metrics.SystemHistory(resolution, from, to, limit)
-	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	history := historyResponse(resolution, items)
-	writeJSON(w, http.StatusOK, history)
-}
-
-func (s *Server) handleContainerHistory(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeMethodNotAllowed(w, http.MethodGet)
-		return
-	}
-	resolution, from, to, limit, ok := parseHistoryQuery(w, r)
-	if !ok {
-		return
-	}
-	items, err := s.metrics.ContainerHistory(resolution, from, to, limit)
-	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	history := historyResponse(resolution, items)
-	writeJSON(w, http.StatusOK, history)
-}
-
-func (s *Server) handleContainers(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeMethodNotAllowed(w, http.MethodGet)
-		return
-	}
-	capturedAt, containers, err := s.metrics.CurrentContainers()
-	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, apimodel.CurrentItemsResponse[apimodel.ContainerCurrent]{
-		CapturedAt: capturedAt,
-		Items:      containerCurrentItems(containers),
-	})
-}
-
-func (s *Server) handleSystemd(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeMethodNotAllowed(w, http.MethodGet)
-		return
-	}
-	capturedAt, items, err := s.metrics.CurrentSystemd()
-	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, currentItemsResponse(capturedAt, items))
-}
-
-func (s *Server) handleProcessList(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeMethodNotAllowed(w, http.MethodGet)
-		return
-	}
-	capturedAt, items, err := s.metrics.CurrentProcesses()
-	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, currentItemsResponse(capturedAt, items))
-}
-
-func (s *Server) handleProcessCount(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeMethodNotAllowed(w, http.MethodGet)
-		return
-	}
-	capturedAt, data, err := s.metrics.CurrentProcessCount()
-	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, currentDataResponse(capturedAt, data))
-}
-
-func (s *Server) handleProgramList(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeMethodNotAllowed(w, http.MethodGet)
-		return
-	}
-	capturedAt, items, err := s.metrics.CurrentPrograms()
-	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, currentItemsResponse(capturedAt, items))
-}
-
-func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeMethodNotAllowed(w, http.MethodGet)
-		return
-	}
-	capturedAt, data, err := s.metrics.CurrentConnections()
-	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, currentDataResponse(capturedAt, data))
-}
-
-func (s *Server) handleIRQ(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeMethodNotAllowed(w, http.MethodGet)
-		return
-	}
-	capturedAt, items, err := s.metrics.CurrentIRQ()
-	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, currentItemsResponse(capturedAt, items))
-}
-
-func (s *Server) handleSmart(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeMethodNotAllowed(w, http.MethodGet)
-		return
-	}
-	capturedAt, items, err := s.metrics.CurrentSmartDevices()
-	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, apimodel.CurrentItemsResponse[apimodel.SmartDeviceCurrent]{
-		CapturedAt: capturedAt,
-		Items:      smartDeviceCurrentItems(items),
-	})
-}
-
-func (s *Server) handleSmartRefresh(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeMethodNotAllowed(w, http.MethodPost)
-		return
-	}
-	if err := s.smartRefresher.RefreshSmartNow(); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	capturedAt, items, err := s.metrics.CurrentSmartDevices()
-	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, apimodel.CurrentItemsResponse[apimodel.SmartDeviceCurrent]{
-		CapturedAt: capturedAt,
-		Items:      smartDeviceCurrentItems(items),
-	})
-}
-
-func historyResponse[T any](resolution string, records []store.HistoryRecord[T]) apimodel.HistoryResponse[T] {
-	items := make([]apimodel.HistoryItem[T], 0, len(records))
-	for _, record := range records {
-		items = append(items, apimodel.HistoryItem[T]{
-			CapturedAt: record.CapturedAt,
-			Stats:      record.Stats,
-		})
-	}
-	return apimodel.HistoryResponse[T]{
-		Resolution: resolution,
-		Items:      items,
-	}
-}
-
-func currentItemsResponse[T any](capturedAt int64, items []T) apimodel.CurrentItemsResponse[T] {
-	return apimodel.CurrentItemsResponse[T]{
-		CapturedAt: capturedAt,
-		Items:      items,
-	}
-}
-
-func currentDataResponse[T any](capturedAt int64, data T) apimodel.CurrentDataResponse[T] {
-	return apimodel.CurrentDataResponse[T]{
-		CapturedAt: capturedAt,
-		Data:       data,
-	}
-}
-
-func containerCurrentItems(items []*container.Stats) []apimodel.ContainerCurrent {
-	out := make([]apimodel.ContainerCurrent, 0, len(items))
-	for _, item := range items {
-		if item == nil {
-			continue
-		}
-		out = append(out, apimodel.ContainerCurrent{
-			ID:          item.Id,
-			Name:        item.Name,
-			Image:       item.Image,
-			Ports:       item.Ports,
-			Status:      item.Status,
-			Health:      item.Health,
-			Cpu:         item.Cpu,
-			Mem:         item.Mem,
-			NetworkSent: item.NetworkSent,
-			NetworkRecv: item.NetworkRecv,
-			Bandwidth:   item.Bandwidth,
-		})
-	}
-	return out
-}
-
-func smartDeviceCurrentItems(items []store.SmartDeviceRecord) []apimodel.SmartDeviceCurrent {
-	out := make([]apimodel.SmartDeviceCurrent, 0, len(items))
-	for _, item := range items {
-		out = append(out, apimodel.SmartDeviceCurrent{
-			ID:   item.ID,
-			Key:  item.Key,
-			Data: item.Data,
-		})
-	}
-	return out
 }
 
 func parseHistoryQuery(w http.ResponseWriter, r *http.Request) (resolution string, from int64, to int64, limit int, ok bool) {

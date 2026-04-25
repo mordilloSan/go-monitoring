@@ -33,7 +33,8 @@ RUN apk add --no-cache ca-certificates smartmontools
 COPY --from=build /out/go-monitoring /usr/local/bin/go-monitoring
 
 ENV DATA_DIR=/var/lib/go-monitoring \
-	LISTEN=:45876
+	LISTEN=:45876 \
+	HISTORY=cpu,mem,diskio,network,containers
 
 RUN mkdir -p /var/lib/go-monitoring
 

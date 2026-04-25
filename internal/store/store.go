@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -17,10 +18,11 @@ import (
 	"github.com/mordilloSan/go-monitoring/internal/domain/smart"
 	"github.com/mordilloSan/go-monitoring/internal/domain/system"
 	"github.com/mordilloSan/go-monitoring/internal/domain/systemd"
+	"github.com/mordilloSan/go-monitoring/internal/utils"
 	_ "modernc.org/sqlite"
 )
 
-const storeSchemaVersion = 3
+const storeSchemaVersion = 4
 
 const (
 	resolution1m   = "1m"
@@ -53,15 +55,9 @@ var rollupSteps = []rollupStep{
 }
 
 type Store struct {
-	db   *sql.DB
-	path string
-}
-
-type snapshotJSONPayload struct {
-	infoJSON             string
-	statsJSON            string
-	containerHistoryJSON string
-	detailsJSON          any
+	db             *sql.DB
+	path           string
+	historyPlugins map[string]struct{}
 }
 
 type HistoryRecord[T any] struct {
@@ -89,7 +85,11 @@ type containerCurrentRecord struct {
 	Bandwidth   [2]uint64              `json:"bandwidth_bytes,omitempty,omitzero"`
 }
 
-func OpenStore(dataDir string) (*Store, error) {
+type Options struct {
+	HistoryPlugins []string
+}
+
+func OpenStore(dataDir string, options ...Options) (*Store, error) {
 	dbPath := filepath.Join(dataDir, "metrics.db")
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -97,15 +97,24 @@ func OpenStore(dataDir string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 
+	historyPlugins := DefaultHistoryPluginNames()
+	if len(options) > 0 {
+		historyPlugins = options[0].HistoryPlugins
+	}
 	store := &Store{
-		db:   db,
-		path: dbPath,
+		db:             db,
+		path:           dbPath,
+		historyPlugins: historyPluginSet(historyPlugins),
 	}
 	if err := store.init(); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	return store, nil
+}
+
+func ParseHistoryPlugins(raw string, explicit bool) ([]string, error) {
+	return parseHistoryPlugins(raw, explicit, utils.GetEnv)
 }
 
 func (s *Store) init() error {
@@ -127,113 +136,52 @@ func (s *Store) init() error {
 	}
 	switch version {
 	case 0:
-		if err := s.migrateV1(); err != nil {
-			return err
-		}
-	case 1:
-		if err := s.migrateV2(); err != nil {
-			return err
-		}
-		return s.migrateV3()
-	case 2:
-		return s.migrateV3()
+		return s.createSchema()
 	case storeSchemaVersion:
-		return nil
+		return s.createSchema()
+	case 1, 2, 3:
+		slog.Warn("Resetting metrics.db for plugin storage schema", "from_version", version, "to_version", storeSchemaVersion)
+		return s.resetSchema()
 	default:
 		return fmt.Errorf("unsupported store schema version %d", version)
 	}
-	return nil
 }
 
-func (s *Store) migrateV1() error {
+func (s *Store) resetSchema() error {
+	for _, table := range knownStoreTables() {
+		if _, err := s.db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", table)); err != nil {
+			return err
+		}
+	}
+	return s.createSchema()
+}
+
+func (s *Store) createSchema() error {
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS meta (
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS system_current (
-			singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-			captured_at INTEGER NOT NULL,
-			info_json TEXT NOT NULL,
-			stats_json TEXT NOT NULL,
-			details_json TEXT
-		)`,
-		`CREATE TABLE IF NOT EXISTS system_stats_history (
-			resolution TEXT NOT NULL,
-			captured_at INTEGER NOT NULL,
-			stats_json TEXT NOT NULL,
-			PRIMARY KEY (resolution, captured_at)
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_system_stats_history_captured_at
-			ON system_stats_history (captured_at)`,
-		`CREATE TABLE IF NOT EXISTS container_stats_history (
-			resolution TEXT NOT NULL,
-			captured_at INTEGER NOT NULL,
-			stats_json TEXT NOT NULL,
-			PRIMARY KEY (resolution, captured_at)
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_container_stats_history_captured_at
-			ON container_stats_history (captured_at)`,
-		`CREATE TABLE IF NOT EXISTS containers_current (
-			id TEXT PRIMARY KEY,
-			name TEXT NOT NULL,
-			updated INTEGER NOT NULL,
-			data_json TEXT NOT NULL
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_containers_current_name
-			ON containers_current (name)`,
-		`CREATE TABLE IF NOT EXISTS systemd_services_current (
-			name TEXT PRIMARY KEY,
-			updated INTEGER NOT NULL,
-			data_json TEXT NOT NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS smart_devices_current (
-			id TEXT PRIMARY KEY,
-			device_key TEXT NOT NULL,
-			updated INTEGER NOT NULL,
-			data_json TEXT NOT NULL
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_smart_devices_current_key
-			ON smart_devices_current (device_key)`,
-		`CREATE TABLE IF NOT EXISTS processes_current (
-			pid INTEGER PRIMARY KEY,
-			name TEXT NOT NULL,
-			cpu_percent REAL NOT NULL,
-			memory_percent REAL NOT NULL,
-			updated INTEGER NOT NULL,
-			data_json TEXT NOT NULL
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_processes_current_cpu
-			ON processes_current (cpu_percent DESC, memory_percent DESC)`,
-		`CREATE TABLE IF NOT EXISTS process_count_current (
-			singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-			updated INTEGER NOT NULL,
-			data_json TEXT NOT NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS programs_current (
-			name TEXT PRIMARY KEY,
-			cpu_percent REAL NOT NULL,
-			memory_percent REAL NOT NULL,
-			updated INTEGER NOT NULL,
-			data_json TEXT NOT NULL
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_programs_current_cpu
-			ON programs_current (cpu_percent DESC, memory_percent DESC)`,
-		`CREATE TABLE IF NOT EXISTS connections_current (
-			singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-			updated INTEGER NOT NULL,
-			data_json TEXT NOT NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS irq_current (
-			irq TEXT PRIMARY KEY,
-			total INTEGER NOT NULL,
-			updated INTEGER NOT NULL,
-			data_json TEXT NOT NULL
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_irq_current_total
-			ON irq_current (total DESC)`,
-		fmt.Sprintf("PRAGMA user_version = %d", storeSchemaVersion),
 	}
+	for _, plugin := range pluginNames {
+		statements = append(statements,
+			fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+				singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+				captured_at INTEGER NOT NULL,
+				data_json TEXT NOT NULL
+			)`, pluginCurrentTable(plugin)),
+			fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+				resolution TEXT NOT NULL,
+				captured_at INTEGER NOT NULL,
+				stats_json TEXT NOT NULL,
+				PRIMARY KEY (resolution, captured_at)
+			)`, pluginHistoryTable(plugin)),
+			fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_%s_captured_at
+				ON %s (captured_at)`, pluginHistoryTable(plugin), pluginHistoryTable(plugin)),
+		)
+	}
+	statements = append(statements, fmt.Sprintf("PRAGMA user_version = %d", storeSchemaVersion))
+
 	for _, stmt := range statements {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return err
@@ -242,67 +190,25 @@ func (s *Store) migrateV1() error {
 	return nil
 }
 
-func (s *Store) migrateV2() error {
-	statements := []string{
-		"DELETE FROM containers_current",
-		"DELETE FROM container_stats_history",
-		"PRAGMA user_version = 2",
+func knownStoreTables() []string {
+	tables := []string{
+		"meta",
+		"system_current",
+		"system_stats_history",
+		"container_stats_history",
+		"containers_current",
+		"systemd_services_current",
+		"smart_devices_current",
+		"processes_current",
+		"process_count_current",
+		"programs_current",
+		"connections_current",
+		"irq_current",
 	}
-	for _, stmt := range statements {
-		if _, err := s.db.Exec(stmt); err != nil {
-			return err
-		}
+	for _, plugin := range pluginNames {
+		tables = append(tables, pluginCurrentTable(plugin), pluginHistoryTable(plugin))
 	}
-	return nil
-}
-
-func (s *Store) migrateV3() error {
-	statements := []string{
-		`CREATE TABLE IF NOT EXISTS processes_current (
-			pid INTEGER PRIMARY KEY,
-			name TEXT NOT NULL,
-			cpu_percent REAL NOT NULL,
-			memory_percent REAL NOT NULL,
-			updated INTEGER NOT NULL,
-			data_json TEXT NOT NULL
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_processes_current_cpu
-			ON processes_current (cpu_percent DESC, memory_percent DESC)`,
-		`CREATE TABLE IF NOT EXISTS process_count_current (
-			singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-			updated INTEGER NOT NULL,
-			data_json TEXT NOT NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS programs_current (
-			name TEXT PRIMARY KEY,
-			cpu_percent REAL NOT NULL,
-			memory_percent REAL NOT NULL,
-			updated INTEGER NOT NULL,
-			data_json TEXT NOT NULL
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_programs_current_cpu
-			ON programs_current (cpu_percent DESC, memory_percent DESC)`,
-		`CREATE TABLE IF NOT EXISTS connections_current (
-			singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-			updated INTEGER NOT NULL,
-			data_json TEXT NOT NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS irq_current (
-			irq TEXT PRIMARY KEY,
-			total INTEGER NOT NULL,
-			updated INTEGER NOT NULL,
-			data_json TEXT NOT NULL
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_irq_current_total
-			ON irq_current (total DESC)`,
-		fmt.Sprintf("PRAGMA user_version = %d", storeSchemaVersion),
-	}
-	for _, stmt := range statements {
-		if _, err := s.db.Exec(stmt); err != nil {
-			return err
-		}
-	}
-	return nil
+	return tables
 }
 
 func (s *Store) Close() error {
@@ -321,11 +227,6 @@ func (s *Store) WriteSnapshot(capturedAt int64, data *system.CombinedData) (err 
 		return errors.New("snapshot data is nil")
 	}
 
-	payload, err := buildSnapshotJSONPayload(data)
-	if err != nil {
-		return err
-	}
-
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -336,10 +237,7 @@ func (s *Store) WriteSnapshot(capturedAt int64, data *system.CombinedData) (err 
 		}
 	}()
 
-	if err = writeSnapshotRows(tx, capturedAt, payload); err != nil {
-		return err
-	}
-	if err = replaceCurrentSnapshotTables(tx, capturedAt, data); err != nil {
+	if err = s.writeSnapshotPluginRows(tx, capturedAt, data); err != nil {
 		return err
 	}
 	if err = upsertMeta(tx, "last_persisted_at", strconv.FormatInt(capturedAt, 10)); err != nil {
@@ -351,252 +249,66 @@ func (s *Store) WriteSnapshot(capturedAt int64, data *system.CombinedData) (err 
 	return nil
 }
 
-func buildSnapshotJSONPayload(data *system.CombinedData) (snapshotJSONPayload, error) {
-	var payload snapshotJSONPayload
-	var err error
+func (s *Store) writeSnapshotPluginRows(tx *sql.Tx, capturedAt int64, data *system.CombinedData) error {
+	payloads := snapshotPluginPayloads(data)
+	for _, plugin := range pluginNames {
+		if plugin == PluginSmart {
+			continue
+		}
+		payload, ok := payloads[plugin]
+		if !ok {
+			continue
+		}
+		raw, err := marshalJSON(payload)
+		if err != nil {
+			return err
+		}
+		if err := replacePluginCurrent(tx, plugin, capturedAt, raw); err != nil {
+			return err
+		}
+		if s.HistoryEnabled(plugin) {
+			if err := insertPluginHistory(tx, plugin, resolution1m, capturedAt, raw); err != nil {
+				return err
+			}
+		}
+	}
 
-	payload.infoJSON, err = marshalJSON(data.Info)
+	infoJSON, err := marshalJSON(data.Info)
 	if err != nil {
-		return payload, err
+		return err
 	}
-	payload.statsJSON, err = marshalJSON(data.Stats)
-	if err != nil {
-		return payload, err
-	}
-	payload.containerHistoryJSON, err = marshalJSON(data.Containers)
-	if err != nil {
-		return payload, err
+	if err := upsertMeta(tx, "last_info_json", infoJSON); err != nil {
+		return err
 	}
 	if data.Details != nil {
-		payload.detailsJSON, err = marshalJSON(data.Details)
+		detailsJSON, err := marshalJSON(data.Details)
+		if err != nil {
+			return err
+		}
+		if err := upsertMeta(tx, "last_details_json", detailsJSON); err != nil {
+			return err
+		}
 	}
-	return payload, err
+	return nil
 }
 
-func writeSnapshotRows(tx *sql.Tx, capturedAt int64, payload snapshotJSONPayload) error {
-	var err error
-	if _, err = tx.Exec(`
-		INSERT INTO system_current (singleton, captured_at, info_json, stats_json, details_json)
-		VALUES (1, ?, ?, ?, ?)
+func replacePluginCurrent(tx *sql.Tx, plugin string, capturedAt int64, raw string) error {
+	_, err := tx.Exec(fmt.Sprintf(`
+		INSERT INTO %s (singleton, captured_at, data_json)
+		VALUES (1, ?, ?)
 		ON CONFLICT(singleton) DO UPDATE SET
 			captured_at = excluded.captured_at,
-			info_json = excluded.info_json,
-			stats_json = excluded.stats_json,
-			details_json = COALESCE(excluded.details_json, system_current.details_json)
-	`, capturedAt, payload.infoJSON, payload.statsJSON, payload.detailsJSON); err != nil {
-		return err
-	}
-
-	if _, err = tx.Exec(`
-		INSERT INTO system_stats_history (resolution, captured_at, stats_json)
-		VALUES (?, ?, ?)
-	`, resolution1m, capturedAt, payload.statsJSON); err != nil {
-		return err
-	}
-
-	if _, err = tx.Exec(`
-		INSERT INTO container_stats_history (resolution, captured_at, stats_json)
-		VALUES (?, ?, ?)
-	`, resolution1m, capturedAt, payload.containerHistoryJSON); err != nil {
-		return err
-	}
-	return nil
-}
-
-func replaceCurrentSnapshotTables(tx *sql.Tx, capturedAt int64, data *system.CombinedData) error {
-	if err := replaceCurrentContainers(tx, capturedAt, data.Containers); err != nil {
-		return err
-	}
-	if err := replaceCurrentSystemd(tx, capturedAt, data.SystemdServices); err != nil {
-		return err
-	}
-	if err := replaceCurrentProcessCount(tx, capturedAt, data.ProcessCount); err != nil {
-		return err
-	}
-	if err := replaceCurrentProcesses(tx, capturedAt, data.Processes); err != nil {
-		return err
-	}
-	if err := replaceCurrentPrograms(tx, capturedAt, data.Programs); err != nil {
-		return err
-	}
-	if err := replaceCurrentConnections(tx, capturedAt, data.Connections); err != nil {
-		return err
-	}
-	return replaceCurrentIRQ(tx, capturedAt, data.IRQs)
-}
-
-func replaceCurrentContainers(tx *sql.Tx, capturedAt int64, items []*container.Stats) error {
-	if _, err := tx.Exec("DELETE FROM containers_current"); err != nil {
-		return err
-	}
-	if len(items) == 0 {
-		return nil
-	}
-	stmt, err := tx.Prepare("INSERT INTO containers_current (id, name, updated, data_json) VALUES (?, ?, ?, ?)")
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-
-	for _, item := range items {
-		if item == nil {
-			continue
-		}
-		current := containerCurrentRecord{
-			ID:          item.Id,
-			Name:        item.Name,
-			Image:       item.Image,
-			Ports:       item.Ports,
-			Status:      item.Status,
-			Health:      item.Health,
-			Cpu:         item.Cpu,
-			Mem:         item.Mem,
-			NetworkSent: item.NetworkSent,
-			NetworkRecv: item.NetworkRecv,
-			Bandwidth:   item.Bandwidth,
-		}
-		raw, err := marshalJSON(current)
-		if err != nil {
-			return err
-		}
-		if _, err := stmt.Exec(current.ID, current.Name, capturedAt, raw); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func replaceCurrentSystemd(tx *sql.Tx, capturedAt int64, items []*systemd.Service) error {
-	if _, err := tx.Exec("DELETE FROM systemd_services_current"); err != nil {
-		return err
-	}
-	if len(items) == 0 {
-		return nil
-	}
-	stmt, err := tx.Prepare("INSERT INTO systemd_services_current (name, updated, data_json) VALUES (?, ?, ?)")
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-
-	for _, item := range items {
-		if item == nil {
-			continue
-		}
-		raw, err := marshalJSON(item)
-		if err != nil {
-			return err
-		}
-		if _, err := stmt.Exec(item.Name, capturedAt, raw); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func replaceCurrentProcessCount(tx *sql.Tx, capturedAt int64, item *procmodel.Count) error {
-	if _, err := tx.Exec("DELETE FROM process_count_current"); err != nil {
-		return err
-	}
-	if item == nil {
-		return nil
-	}
-	raw, err := marshalJSON(item)
-	if err != nil {
-		return err
-	}
-	_, err = tx.Exec("INSERT INTO process_count_current (singleton, updated, data_json) VALUES (1, ?, ?)", capturedAt, raw)
+			data_json = excluded.data_json
+	`, pluginCurrentTable(plugin)), capturedAt, raw)
 	return err
 }
 
-func replaceCurrentProcesses(tx *sql.Tx, capturedAt int64, items []procmodel.Process) error {
-	if _, err := tx.Exec("DELETE FROM processes_current"); err != nil {
-		return err
-	}
-	if len(items) == 0 {
-		return nil
-	}
-	stmt, err := tx.Prepare("INSERT INTO processes_current (pid, name, cpu_percent, memory_percent, updated, data_json) VALUES (?, ?, ?, ?, ?, ?)")
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-
-	for _, item := range items {
-		raw, err := marshalJSON(item)
-		if err != nil {
-			return err
-		}
-		if _, err := stmt.Exec(item.PID, item.Name, item.CPUPercent, item.MemoryPercent, capturedAt, raw); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func replaceCurrentPrograms(tx *sql.Tx, capturedAt int64, items []procmodel.Program) error {
-	if _, err := tx.Exec("DELETE FROM programs_current"); err != nil {
-		return err
-	}
-	if len(items) == 0 {
-		return nil
-	}
-	stmt, err := tx.Prepare("INSERT INTO programs_current (name, cpu_percent, memory_percent, updated, data_json) VALUES (?, ?, ?, ?, ?)")
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-
-	for _, item := range items {
-		raw, err := marshalJSON(item)
-		if err != nil {
-			return err
-		}
-		if _, err := stmt.Exec(item.Name, item.CPUPercent, item.MemoryPercent, capturedAt, raw); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func replaceCurrentConnections(tx *sql.Tx, capturedAt int64, item *modelnet.ConnectionStats) error {
-	if _, err := tx.Exec("DELETE FROM connections_current"); err != nil {
-		return err
-	}
-	if item == nil {
-		return nil
-	}
-	raw, err := marshalJSON(item)
-	if err != nil {
-		return err
-	}
-	_, err = tx.Exec("INSERT INTO connections_current (singleton, updated, data_json) VALUES (1, ?, ?)", capturedAt, raw)
+func insertPluginHistory(tx *sql.Tx, plugin, resolution string, capturedAt int64, raw string) error {
+	_, err := tx.Exec(fmt.Sprintf(`
+		INSERT OR REPLACE INTO %s (resolution, captured_at, stats_json)
+		VALUES (?, ?, ?)
+	`, pluginHistoryTable(plugin)), resolution, capturedAt, raw)
 	return err
-}
-
-func replaceCurrentIRQ(tx *sql.Tx, capturedAt int64, items []modelnet.IRQStat) error {
-	if _, err := tx.Exec("DELETE FROM irq_current"); err != nil {
-		return err
-	}
-	if len(items) == 0 {
-		return nil
-	}
-	stmt, err := tx.Prepare("INSERT INTO irq_current (irq, total, updated, data_json) VALUES (?, ?, ?, ?)")
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-
-	for _, item := range items {
-		raw, err := marshalJSON(item)
-		if err != nil {
-			return err
-		}
-		if _, err := stmt.Exec(item.IRQ, item.Total, capturedAt, raw); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (s *Store) WriteSmartDevices(capturedAt int64, items map[string]smart.SmartData) error {
@@ -610,32 +322,29 @@ func (s *Store) WriteSmartDevices(capturedAt int64, items map[string]smart.Smart
 		}
 	}()
 
-	if _, err = tx.Exec("DELETE FROM smart_devices_current"); err != nil {
-		return err
+	currentItems := make([]SmartDeviceRecord, 0, len(items))
+	for key, item := range items {
+		id := key
+		if item.DiskName != "" {
+			id = item.DiskName
+		}
+		currentItems = append(currentItems, SmartDeviceRecord{
+			ID:   id,
+			Key:  key,
+			Data: item,
+		})
 	}
 
-	if len(items) > 0 {
-		stmt, prepErr := tx.Prepare(`
-			INSERT INTO smart_devices_current (id, device_key, updated, data_json)
-			VALUES (?, ?, ?, ?)
-		`)
-		if prepErr != nil {
-			return prepErr
-		}
-		defer stmt.Close()
-
-		for key, item := range items {
-			raw, marshalErr := marshalJSON(item)
-			if marshalErr != nil {
-				return marshalErr
-			}
-			id := key
-			if item.DiskName != "" {
-				id = item.DiskName
-			}
-			if _, execErr := stmt.Exec(id, key, capturedAt, raw); execErr != nil {
-				return execErr
-			}
+	raw, err := marshalJSON(currentItems)
+	if err != nil {
+		return err
+	}
+	if err = replacePluginCurrent(tx, PluginSmart, capturedAt, raw); err != nil {
+		return err
+	}
+	if s.HistoryEnabled(PluginSmart) {
+		if err = insertPluginHistory(tx, PluginSmart, resolution1m, capturedAt, raw); err != nil {
+			return err
 		}
 	}
 
@@ -659,60 +368,54 @@ func upsertMeta(tx *sql.Tx, key, value string) error {
 }
 
 func (s *Store) Summary() (int64, *system.CombinedData, error) {
-	var (
-		capturedAt int64
-		infoJSON   string
-		statsJSON  string
-		detailsRaw sql.NullString
-	)
-	err := s.db.QueryRow(`
-		SELECT captured_at, info_json, stats_json, details_json
-		FROM system_current
-		WHERE singleton = 1
-	`).Scan(&capturedAt, &infoJSON, &statsJSON, &detailsRaw)
+	capturedAt, err := s.currentCapturedAt()
 	if err != nil {
 		return 0, nil, err
 	}
 
 	var summary system.CombinedData
-	if unmarshalErr := json.Unmarshal([]byte(infoJSON), &summary.Info); unmarshalErr != nil {
-		return 0, nil, unmarshalErr
-	}
-	if unmarshalErr := json.Unmarshal([]byte(statsJSON), &summary.Stats); unmarshalErr != nil {
-		return 0, nil, unmarshalErr
-	}
-	if detailsRaw.Valid && detailsRaw.String != "" {
-		summary.Details = &system.Details{}
-		if unmarshalErr := json.Unmarshal([]byte(detailsRaw.String), summary.Details); unmarshalErr != nil {
-			return 0, nil, unmarshalErr
+	if infoRaw, ok, err := s.metaValue("last_info_json"); err != nil {
+		return 0, nil, err
+	} else if ok {
+		if err := json.Unmarshal([]byte(infoRaw), &summary.Info); err != nil {
+			return 0, nil, err
 		}
 	}
-	if summary.Containers, err = s.currentContainerStats(); err != nil {
+	if detailsRaw, ok, err := s.metaValue("last_details_json"); err != nil {
 		return 0, nil, err
+	} else if ok && detailsRaw != "" {
+		summary.Details = &system.Details{}
+		if err := json.Unmarshal([]byte(detailsRaw), summary.Details); err != nil {
+			return 0, nil, err
+		}
 	}
-	if summary.SystemdServices, err = s.CurrentSystemdItems(); err != nil {
-		return 0, nil, err
+
+	for _, plugin := range pluginNames {
+		if plugin == PluginSmart {
+			continue
+		}
+		_, raw, err := s.CurrentPlugin(plugin)
+		if err != nil {
+			return 0, nil, err
+		}
+		if err := applyPluginPayload(plugin, raw, &summary); err != nil {
+			return 0, nil, err
+		}
 	}
 	return capturedAt, &summary, nil
 }
 
 func (s *Store) currentContainerStats() ([]*container.Stats, error) {
-	rows, err := s.db.Query("SELECT data_json FROM containers_current ORDER BY name ASC")
+	currentItems := []containerCurrentRecord{}
+	_, raw, err := s.CurrentPlugin(PluginContainers)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	items := []*container.Stats{}
-	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			return nil, err
-		}
-		var current containerCurrentRecord
-		if err := json.Unmarshal([]byte(raw), &current); err != nil {
-			return nil, err
-		}
+	if err := json.Unmarshal(raw, &currentItems); err != nil {
+		return nil, err
+	}
+	items := make([]*container.Stats, 0, len(currentItems))
+	for _, current := range currentItems {
 		items = append(items, &container.Stats{
 			Id:          current.ID,
 			Name:        current.Name,
@@ -727,7 +430,7 @@ func (s *Store) currentContainerStats() ([]*container.Stats, error) {
 			Bandwidth:   current.Bandwidth,
 		})
 	}
-	return items, rows.Err()
+	return items, nil
 }
 
 func (s *Store) CurrentContainers() (int64, []*container.Stats, error) {
@@ -740,259 +443,232 @@ func (s *Store) CurrentContainers() (int64, []*container.Stats, error) {
 }
 
 func (s *Store) CurrentSystemd() (int64, []*systemd.Service, error) {
-	capturedAt, err := s.currentCapturedAt()
+	capturedAt, raw, err := s.CurrentPlugin(PluginSystemd)
 	if err != nil {
 		return 0, nil, err
 	}
-	items, err := s.CurrentSystemdItems()
-	if err != nil {
+	items := []*systemd.Service{}
+	if err := json.Unmarshal(raw, &items); err != nil {
 		return 0, nil, err
 	}
 	return capturedAt, items, nil
 }
 
 func (s *Store) CurrentSystemdItems() ([]*systemd.Service, error) {
-	rows, err := s.db.Query("SELECT data_json FROM systemd_services_current ORDER BY name ASC")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	items := []*systemd.Service{}
-	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			return nil, err
-		}
-		var current systemd.Service
-		if err := json.Unmarshal([]byte(raw), &current); err != nil {
-			return nil, err
-		}
-		items = append(items, &current)
-	}
-	return items, rows.Err()
+	_, items, err := s.CurrentSystemd()
+	return items, err
 }
 
 func (s *Store) CurrentProcessCount() (int64, procmodel.Count, error) {
-	return currentSingleton[procmodel.Count](s, "process_count_current")
+	capturedAt, raw, err := s.CurrentPlugin(PluginProcesses)
+	if err != nil {
+		return 0, procmodel.Count{}, err
+	}
+	var data ProcessesData
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return 0, procmodel.Count{}, err
+	}
+	if data.Count == nil {
+		return capturedAt, procmodel.Count{}, nil
+	}
+	return capturedAt, *data.Count, nil
 }
 
 func (s *Store) CurrentProcesses() (int64, []procmodel.Process, error) {
-	capturedAt, err := s.currentCapturedAt()
+	capturedAt, raw, err := s.CurrentPlugin(PluginProcesses)
 	if err != nil {
 		return 0, nil, err
 	}
-
-	rows, err := s.db.Query("SELECT data_json FROM processes_current ORDER BY cpu_percent DESC, memory_percent DESC, pid ASC")
-	if err != nil {
+	var data ProcessesData
+	if err := json.Unmarshal(raw, &data); err != nil {
 		return 0, nil, err
 	}
-	defer rows.Close()
-
-	items := []procmodel.Process{}
-	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			return 0, nil, err
-		}
-		var current procmodel.Process
-		if err := json.Unmarshal([]byte(raw), &current); err != nil {
-			return 0, nil, err
-		}
-		items = append(items, current)
-	}
-	return capturedAt, items, rows.Err()
+	return capturedAt, data.Items, nil
 }
 
 func (s *Store) CurrentPrograms() (int64, []procmodel.Program, error) {
-	capturedAt, err := s.currentCapturedAt()
+	capturedAt, raw, err := s.CurrentPlugin(PluginPrograms)
 	if err != nil {
 		return 0, nil, err
 	}
-
-	rows, err := s.db.Query("SELECT data_json FROM programs_current ORDER BY cpu_percent DESC, memory_percent DESC, name ASC")
-	if err != nil {
-		return 0, nil, err
-	}
-	defer rows.Close()
-
 	items := []procmodel.Program{}
-	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			return 0, nil, err
-		}
-		var current procmodel.Program
-		if err := json.Unmarshal([]byte(raw), &current); err != nil {
-			return 0, nil, err
-		}
-		items = append(items, current)
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return 0, nil, err
 	}
-	return capturedAt, items, rows.Err()
+	return capturedAt, items, nil
 }
 
 func (s *Store) CurrentConnections() (int64, modelnet.ConnectionStats, error) {
-	return currentSingleton[modelnet.ConnectionStats](s, "connections_current")
-}
-
-func (s *Store) CurrentIRQ() (int64, []modelnet.IRQStat, error) {
-	capturedAt, err := s.currentCapturedAt()
+	capturedAt, raw, err := s.CurrentPlugin(PluginConnections)
 	if err != nil {
-		return 0, nil, err
+		return 0, modelnet.ConnectionStats{}, err
 	}
-
-	rows, err := s.db.Query("SELECT data_json FROM irq_current ORDER BY total DESC, irq ASC")
-	if err != nil {
-		return 0, nil, err
-	}
-	defer rows.Close()
-
-	items := []modelnet.IRQStat{}
-	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			return 0, nil, err
-		}
-		var current modelnet.IRQStat
-		if err := json.Unmarshal([]byte(raw), &current); err != nil {
-			return 0, nil, err
-		}
-		items = append(items, current)
-	}
-	return capturedAt, items, rows.Err()
-}
-
-func (s *Store) CurrentSmartDevices() (int64, []SmartDeviceRecord, error) {
-	var capturedAt int64
-	if err := s.db.QueryRow(`
-		SELECT value FROM meta WHERE key = 'last_smart_refresh_at'
-	`).Scan(&capturedAt); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return 0, nil, err
-	}
-
-	rows, err := s.db.Query(`
-		SELECT id, device_key, data_json
-		FROM smart_devices_current
-		ORDER BY device_key ASC
-	`)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer rows.Close()
-
-	items := []SmartDeviceRecord{}
-	for rows.Next() {
-		var (
-			id  string
-			key string
-			raw string
-		)
-		if err := rows.Scan(&id, &key, &raw); err != nil {
-			return 0, nil, err
-		}
-		item := SmartDeviceRecord{ID: id, Key: key}
-		if err := json.Unmarshal([]byte(raw), &item.Data); err != nil {
-			return 0, nil, err
-		}
-		items = append(items, item)
-	}
-	return capturedAt, items, rows.Err()
-}
-
-func (s *Store) SystemHistory(resolution string, from, to int64, limit int) ([]HistoryRecord[system.Stats], error) {
-	items := []HistoryRecord[system.Stats]{}
-	rows, err := s.db.Query(`
-		SELECT captured_at, stats_json
-		FROM system_stats_history
-		WHERE resolution = ? AND captured_at >= ? AND captured_at <= ?
-		ORDER BY captured_at ASC
-		LIMIT ?
-	`, resolution, from, to, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var (
-			capturedAt int64
-			raw        string
-		)
-		if err := rows.Scan(&capturedAt, &raw); err != nil {
-			return nil, err
-		}
-		var stats system.Stats
-		if err := json.Unmarshal([]byte(raw), &stats); err != nil {
-			return nil, err
-		}
-		items = append(items, HistoryRecord[system.Stats]{
-			CapturedAt: capturedAt,
-			Stats:      stats,
-		})
-	}
-	return items, rows.Err()
-}
-
-func (s *Store) ContainerHistory(resolution string, from, to int64, limit int) ([]HistoryRecord[[]container.Stats], error) {
-	items := []HistoryRecord[[]container.Stats]{}
-	rows, err := s.db.Query(`
-		SELECT captured_at, stats_json
-		FROM container_stats_history
-		WHERE resolution = ? AND captured_at >= ? AND captured_at <= ?
-		ORDER BY captured_at ASC
-		LIMIT ?
-	`, resolution, from, to, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var (
-			capturedAt int64
-			raw        string
-		)
-		if err := rows.Scan(&capturedAt, &raw); err != nil {
-			return nil, err
-		}
-		var stats []container.Stats
-		if err := json.Unmarshal([]byte(raw), &stats); err != nil {
-			return nil, err
-		}
-		items = append(items, HistoryRecord[[]container.Stats]{
-			CapturedAt: capturedAt,
-			Stats:      stats,
-		})
-	}
-	return items, rows.Err()
-}
-
-func (s *Store) currentCapturedAt() (int64, error) {
-	var capturedAt int64
-	err := s.db.QueryRow("SELECT captured_at FROM system_current WHERE singleton = 1").Scan(&capturedAt)
-	return capturedAt, err
-}
-
-func currentSingleton[T any](s *Store, table string) (int64, T, error) {
-	capturedAt, err := s.currentCapturedAt()
-	var data T
-	if err != nil {
-		return 0, data, err
-	}
-
-	var raw string
-	query := fmt.Sprintf("SELECT data_json FROM %s WHERE singleton = 1", table)
-	err = s.db.QueryRow(query).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
+	var data modelnet.ConnectionStats
+	if string(raw) == "null" {
 		return capturedAt, data, nil
 	}
-	if err != nil {
-		return 0, data, err
-	}
-	if err := json.Unmarshal([]byte(raw), &data); err != nil {
+	if err := json.Unmarshal(raw, &data); err != nil {
 		return 0, data, err
 	}
 	return capturedAt, data, nil
+}
+
+func (s *Store) CurrentIRQ() (int64, []modelnet.IRQStat, error) {
+	capturedAt, raw, err := s.CurrentPlugin(PluginIRQ)
+	if err != nil {
+		return 0, nil, err
+	}
+	items := []modelnet.IRQStat{}
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return 0, nil, err
+	}
+	return capturedAt, items, nil
+}
+
+func (s *Store) CurrentSmartDevices() (int64, []SmartDeviceRecord, error) {
+	capturedAt, raw, err := s.CurrentPlugin(PluginSmart)
+	if err != nil {
+		return 0, nil, err
+	}
+	items := []SmartDeviceRecord{}
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return 0, nil, err
+	}
+	return capturedAt, items, nil
+}
+
+func (s *Store) SystemHistory(resolution string, from, to int64, limit int) ([]HistoryRecord[system.Stats], error) {
+	rawItems, err := s.PluginHistory(PluginCPU, resolution, from, to, limit)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]HistoryRecord[system.Stats], 0, len(rawItems))
+	for _, rawItem := range rawItems {
+		data := system.CombinedData{}
+		if err := applyPluginPayload(PluginCPU, rawItem.Stats, &data); err != nil {
+			return nil, err
+		}
+		items = append(items, HistoryRecord[system.Stats]{
+			CapturedAt: rawItem.CapturedAt,
+			Stats:      data.Stats,
+		})
+	}
+	return items, nil
+}
+
+func (s *Store) ContainerHistory(resolution string, from, to int64, limit int) ([]HistoryRecord[[]container.Stats], error) {
+	rawItems, err := s.PluginHistory(PluginContainers, resolution, from, to, limit)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]HistoryRecord[[]container.Stats], 0, len(rawItems))
+	for _, rawItem := range rawItems {
+		var stats []container.Stats
+		if err := json.Unmarshal(rawItem.Stats, &stats); err != nil {
+			return nil, err
+		}
+		items = append(items, HistoryRecord[[]container.Stats]{
+			CapturedAt: rawItem.CapturedAt,
+			Stats:      stats,
+		})
+	}
+	return items, nil
+}
+
+func (s *Store) currentCapturedAt() (int64, error) {
+	raw, ok, err := s.metaValue("last_persisted_at")
+	if err != nil {
+		return 0, err
+	}
+	if !ok {
+		return 0, sql.ErrNoRows
+	}
+	return strconv.ParseInt(raw, 10, 64)
+}
+
+func (s *Store) CurrentPlugin(plugin string) (int64, json.RawMessage, error) {
+	if !IsPluginName(plugin) {
+		return 0, nil, fmt.Errorf("unknown plugin %q", plugin)
+	}
+	var (
+		capturedAt int64
+		raw        string
+	)
+	err := s.db.QueryRow(fmt.Sprintf(`
+		SELECT captured_at, data_json
+		FROM %s
+		WHERE singleton = 1
+	`, pluginCurrentTable(plugin))).Scan(&capturedAt, &raw)
+	if errors.Is(err, sql.ErrNoRows) && plugin == PluginSmart {
+		return 0, json.RawMessage("[]"), nil
+	}
+	if err != nil {
+		return 0, nil, err
+	}
+	return capturedAt, json.RawMessage(raw), nil
+}
+
+func (s *Store) PluginHistory(plugin, resolution string, from, to int64, limit int) ([]HistoryRecord[json.RawMessage], error) {
+	if !IsPluginName(plugin) {
+		return nil, fmt.Errorf("unknown plugin %q", plugin)
+	}
+	if !s.HistoryEnabled(plugin) {
+		return nil, sql.ErrNoRows
+	}
+	items := []HistoryRecord[json.RawMessage]{}
+	rows, err := s.db.Query(fmt.Sprintf(`
+		SELECT captured_at, stats_json
+		FROM %s
+		WHERE resolution = ? AND captured_at >= ? AND captured_at <= ?
+		ORDER BY captured_at ASC
+		LIMIT ?
+	`, pluginHistoryTable(plugin)), resolution, from, to, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			capturedAt int64
+			raw        string
+		)
+		if err := rows.Scan(&capturedAt, &raw); err != nil {
+			return nil, err
+		}
+		items = append(items, HistoryRecord[json.RawMessage]{
+			CapturedAt: capturedAt,
+			Stats:      json.RawMessage(raw),
+		})
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) HistoryEnabled(plugin string) bool {
+	_, ok := s.historyPlugins[plugin]
+	return ok
+}
+
+func (s *Store) historyPluginNames() []string {
+	out := make([]string, 0, len(s.historyPlugins))
+	for _, plugin := range pluginNames {
+		if s.HistoryEnabled(plugin) {
+			out = append(out, plugin)
+		}
+	}
+	return out
+}
+
+func (s *Store) metaValue(key string) (string, bool, error) {
+	var value string
+	err := s.db.QueryRow("SELECT value FROM meta WHERE key = ?", key).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return value, true, nil
 }
 
 func marshalJSON(v any) (string, error) {

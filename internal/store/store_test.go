@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -84,8 +85,108 @@ func TestStoreSnapshotAndCurrentQueries(t *testing.T) {
 	require.Len(t, smartItems, 1)
 	assert.Equal(t, "/dev/sda", smartItems[0].Data.DiskName)
 
+	cpuCapturedAt, cpuRaw, err := store.CurrentPlugin(PluginCPU)
+	require.NoError(t, err)
+	assert.Equal(t, capturedAt, cpuCapturedAt)
+	assert.Contains(t, string(cpuRaw), `"cpu_percent":42`)
+
+	allPlugins := PluginNames()
+	require.Contains(t, allPlugins, PluginCPU)
+	require.Contains(t, allPlugins, PluginSmart)
+
 	_, err = os.Stat(filepath.Join(tmpDir, "metrics.db"))
 	require.NoError(t, err)
+}
+
+func TestStoreResetsOldSchemaToPluginTables(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "metrics.db")
+	db, err := sql.Open("sqlite", dbPath)
+	require.NoError(t, err)
+	_, err = db.Exec(`
+		CREATE TABLE system_current (
+			singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+			captured_at INTEGER NOT NULL,
+			info_json TEXT NOT NULL,
+			stats_json TEXT NOT NULL,
+			details_json TEXT
+		);
+		PRAGMA user_version = 3;
+	`)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	store, err := OpenStore(tmpDir)
+	require.NoError(t, err)
+	defer store.Close()
+
+	var oldTableCount int
+	err = store.db.QueryRow("SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'system_current'").Scan(&oldTableCount)
+	require.NoError(t, err)
+	assert.Zero(t, oldTableCount)
+
+	var newTableCount int
+	err = store.db.QueryRow("SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'cpu_current'").Scan(&newTableCount)
+	require.NoError(t, err)
+	assert.Equal(t, 1, newTableCount)
+
+	var version int
+	require.NoError(t, store.db.QueryRow("PRAGMA user_version").Scan(&version))
+	assert.Equal(t, storeSchemaVersion, version)
+}
+
+func TestStoreWritesHistoryOnlyForAllowlistedPlugins(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := OpenStore(tmpDir, Options{HistoryPlugins: []string{PluginCPU}})
+	require.NoError(t, err)
+	defer store.Close()
+
+	capturedAt := time.Now().UTC().UnixMilli()
+	require.NoError(t, store.WriteSnapshot(capturedAt, storetest.SampleCombinedData(42)))
+
+	var cpuRows int
+	require.NoError(t, store.db.QueryRow("SELECT COUNT(1) FROM cpu_history").Scan(&cpuRows))
+	assert.Equal(t, 1, cpuRows)
+
+	var memRows int
+	require.NoError(t, store.db.QueryRow("SELECT COUNT(1) FROM mem_history").Scan(&memRows))
+	assert.Zero(t, memRows)
+
+	_, err = store.PluginHistory(PluginMem, resolution1m, 0, capturedAt, 10)
+	assert.ErrorIs(t, err, sql.ErrNoRows)
+}
+
+func TestParseHistoryPlugins(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		plugins, err := ParseHistoryPlugins("", false)
+		require.NoError(t, err)
+		assert.Equal(t, DefaultHistoryPluginNames(), plugins)
+	})
+
+	t.Run("env fallback", func(t *testing.T) {
+		t.Setenv("HISTORY", "cpu,swap")
+		plugins, err := ParseHistoryPlugins("", false)
+		require.NoError(t, err)
+		assert.Equal(t, []string{PluginCPU, PluginSwap}, plugins)
+	})
+
+	t.Run("explicit all", func(t *testing.T) {
+		plugins, err := ParseHistoryPlugins("all", true)
+		require.NoError(t, err)
+		assert.Equal(t, PluginNames(), plugins)
+	})
+
+	t.Run("explicit none", func(t *testing.T) {
+		plugins, err := ParseHistoryPlugins("none", true)
+		require.NoError(t, err)
+		assert.Empty(t, plugins)
+	})
+
+	t.Run("invalid plugin", func(t *testing.T) {
+		_, err := ParseHistoryPlugins("cpu,nope", true)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `unknown history plugin "nope"`)
+	})
 }
 
 func TestStoreMaintenanceCreatesRollupsAndDeletesExpiredRows(t *testing.T) {
@@ -119,15 +220,16 @@ func TestStoreMaintenanceCreatesRollupsAndDeletesExpiredRows(t *testing.T) {
 
 func TestStoreMaintenanceAppliesRetentionToAllHistoryTables(t *testing.T) {
 	tmpDir := t.TempDir()
-	store, err := OpenStore(tmpDir)
+	store, err := OpenStore(tmpDir, Options{HistoryPlugins: []string{PluginCPU, PluginContainers}})
 	require.NoError(t, err)
 	defer store.Close()
 
 	now := time.Now().UTC().Truncate(time.Minute)
 	data := storetest.SampleCombinedData(42)
-	systemStatsJSON, err := marshalJSON(data.Stats)
+	payloads := snapshotPluginPayloads(data)
+	cpuJSON, err := marshalJSON(payloads[PluginCPU])
 	require.NoError(t, err)
-	containerStatsJSON, err := marshalJSON(data.Containers)
+	containerJSON, err := marshalJSON(payloads[PluginContainers])
 	require.NoError(t, err)
 
 	for resolution, retention := range historyRetention {
@@ -135,15 +237,15 @@ func TestStoreMaintenanceAppliesRetentionToAllHistoryTables(t *testing.T) {
 		boundaryAt := now.Add(-retention).UnixMilli()
 
 		_, err = store.db.Exec(`
-			INSERT INTO system_stats_history (resolution, captured_at, stats_json)
+			INSERT INTO cpu_history (resolution, captured_at, stats_json)
 			VALUES (?, ?, ?), (?, ?, ?)
-		`, resolution, expiredAt, systemStatsJSON, resolution, boundaryAt, systemStatsJSON)
+		`, resolution, expiredAt, cpuJSON, resolution, boundaryAt, cpuJSON)
 		require.NoError(t, err)
 
 		_, err = store.db.Exec(`
-			INSERT INTO container_stats_history (resolution, captured_at, stats_json)
+			INSERT INTO containers_history (resolution, captured_at, stats_json)
 			VALUES (?, ?, ?), (?, ?, ?)
-		`, resolution, expiredAt, containerStatsJSON, resolution, boundaryAt, containerStatsJSON)
+		`, resolution, expiredAt, containerJSON, resolution, boundaryAt, containerJSON)
 		require.NoError(t, err)
 	}
 
@@ -155,7 +257,7 @@ func TestStoreMaintenanceAppliesRetentionToAllHistoryTables(t *testing.T) {
 		var expiredSystemRows int
 		err = store.db.QueryRow(`
 			SELECT COUNT(1)
-			FROM system_stats_history
+			FROM cpu_history
 			WHERE resolution = ? AND captured_at < ?
 		`, resolution, cutoff).Scan(&expiredSystemRows)
 		require.NoError(t, err)
@@ -164,7 +266,7 @@ func TestStoreMaintenanceAppliesRetentionToAllHistoryTables(t *testing.T) {
 		var expiredContainerRows int
 		err = store.db.QueryRow(`
 			SELECT COUNT(1)
-			FROM container_stats_history
+			FROM containers_history
 			WHERE resolution = ? AND captured_at < ?
 		`, resolution, cutoff).Scan(&expiredContainerRows)
 		require.NoError(t, err)
@@ -173,7 +275,7 @@ func TestStoreMaintenanceAppliesRetentionToAllHistoryTables(t *testing.T) {
 		var keptSystemRows int
 		err = store.db.QueryRow(`
 			SELECT COUNT(1)
-			FROM system_stats_history
+			FROM cpu_history
 			WHERE resolution = ? AND captured_at = ?
 		`, resolution, cutoff).Scan(&keptSystemRows)
 		require.NoError(t, err)
@@ -182,7 +284,7 @@ func TestStoreMaintenanceAppliesRetentionToAllHistoryTables(t *testing.T) {
 		var keptContainerRows int
 		err = store.db.QueryRow(`
 			SELECT COUNT(1)
-			FROM container_stats_history
+			FROM containers_history
 			WHERE resolution = ? AND captured_at = ?
 		`, resolution, cutoff).Scan(&keptContainerRows)
 		require.NoError(t, err)

@@ -14,7 +14,7 @@ services:
       LISTEN: ":45876"
       DATA_DIR: /var/lib/go-monitoring
       HTTP_LOG: "${HTTP_LOG:-true}"
-      SKIP_GPU: "true"
+      HISTORY: "${HISTORY:-cpu,mem,diskio,network,containers}"
     security_opt:
       - apparmor=unconfined
       - systempaths=unconfined

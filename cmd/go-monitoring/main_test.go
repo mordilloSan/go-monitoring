@@ -72,6 +72,11 @@ func TestParseFlags(t *testing.T) {
 			expected: cmdOptions{listen: "8080"},
 		},
 		{
+			name:     "history flag",
+			args:     []string{"cmd", "--history", "cpu,mem"},
+			expected: cmdOptions{history: "cpu,mem", historySet: true},
+		},
+		{
 			name:         "legacy single dash listen",
 			args:         []string{"cmd", "-listen=8080"},
 			expected:     cmdOptions{listen: "8080"},

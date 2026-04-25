@@ -34,6 +34,8 @@ type httpRuntime struct {
 type RunOptions struct {
 	Addr              string
 	CollectorInterval time.Duration
+	History           string
+	HistorySet        bool
 }
 
 func (a *App) Start(opts RunOptions) error {
@@ -56,7 +58,12 @@ func (a *App) StartContext(ctx context.Context, opts RunOptions) error {
 		return errors.New("listen address is required")
 	}
 
-	persistentStore, err := store.OpenStore(a.dataDir)
+	historyPlugins, err := store.ParseHistoryPlugins(opts.History, opts.HistorySet)
+	if err != nil {
+		return err
+	}
+
+	persistentStore, err := store.OpenStore(a.dataDir, store.Options{HistoryPlugins: historyPlugins})
 	if err != nil {
 		return err
 	}

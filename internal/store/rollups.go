@@ -12,7 +12,6 @@ import (
 	"github.com/mordilloSan/go-monitoring/internal/utils"
 )
 
-//nolint:gocognit // Rollup maintenance encodes retention and aggregation policy in a single transaction-oriented flow.
 func (s *Store) RunMaintenance(now time.Time) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -24,69 +23,41 @@ func (s *Store) RunMaintenance(now time.Time) error {
 		}
 	}()
 
-	for _, step := range rollupSteps {
-		if step.longer != resolution10m {
-			existsAfter := now.Add(-step.window + time.Minute).UnixMilli()
-			exists, err := historyExistsSince(tx, "system_stats_history", step.longer, existsAfter)
+	for _, plugin := range s.historyPluginNames() {
+		table := pluginHistoryTable(plugin)
+		for _, step := range rollupSteps {
+			if step.longer != resolution10m {
+				existsAfter := now.Add(-step.window + time.Minute).UnixMilli()
+				exists, err := historyExistsSince(tx, table, step.longer, existsAfter)
+				if err != nil {
+					return err
+				}
+				if exists {
+					continue
+				}
+			}
+
+			from := now.Add(-step.window).UnixMilli()
+			historyJSON, err := loadHistoryJSON(tx, table, step.shorter, from)
 			if err != nil {
 				return err
 			}
-			if exists {
+			if len(historyJSON) < step.minShorterRows {
 				continue
+			}
+
+			rolledRaw, err := aggregatePluginHistoryJSON(plugin, historyJSON)
+			if err != nil {
+				return err
+			}
+			if err := insertPluginHistory(tx, plugin, step.longer, now.UnixMilli(), rolledRaw); err != nil {
+				return err
 			}
 		}
 
-		from := now.Add(-step.window).UnixMilli()
-		systemStatsJSON, err := loadHistoryJSON(tx, "system_stats_history", step.shorter, from)
-		if err != nil {
+		if err := deleteOldHistory(tx, table, now); err != nil {
 			return err
 		}
-		containerStatsJSON, err := loadHistoryJSON(tx, "container_stats_history", step.shorter, from)
-		if err != nil {
-			return err
-		}
-		if len(systemStatsJSON) < step.minShorterRows || len(containerStatsJSON) < step.minShorterRows {
-			continue
-		}
-
-		systemStats, err := averageSystemStatsJSON(systemStatsJSON)
-		if err != nil {
-			return err
-		}
-		containerStats, err := averageContainerStatsJSON(containerStatsJSON)
-		if err != nil {
-			return err
-		}
-
-		systemRaw, err := marshalJSON(systemStats)
-		if err != nil {
-			return err
-		}
-		containerRaw, err := marshalJSON(containerStats)
-		if err != nil {
-			return err
-		}
-
-		capturedAt := now.UnixMilli()
-		if _, err := tx.Exec(`
-			INSERT INTO system_stats_history (resolution, captured_at, stats_json)
-			VALUES (?, ?, ?)
-		`, step.longer, capturedAt, systemRaw); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`
-			INSERT INTO container_stats_history (resolution, captured_at, stats_json)
-			VALUES (?, ?, ?)
-		`, step.longer, capturedAt, containerRaw); err != nil {
-			return err
-		}
-	}
-
-	if err := deleteOldHistory(tx, "system_stats_history", now); err != nil {
-		return err
-	}
-	if err := deleteOldHistory(tx, "container_stats_history", now); err != nil {
-		return err
 	}
 
 	if err := tx.Commit(); err != nil {

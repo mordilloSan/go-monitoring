@@ -13,7 +13,9 @@ import (
 )
 
 type cmdOptions struct {
-	listen string
+	listen     string
+	history    string
+	historySet bool
 }
 
 func (opts *cmdOptions) parse() bool {
@@ -31,6 +33,7 @@ func (opts *cmdOptions) parse() bool {
 	}
 
 	pflag.StringVarP(&opts.listen, "listen", "l", "", "Address or port to listen on")
+	pflag.StringVar(&opts.history, "history", "", "Comma-separated history plugin allowlist, or all/none")
 	version := pflag.BoolP("version", "v", false, "Show version information")
 	help := pflag.BoolP("help", "h", false, "Show this help message")
 
@@ -56,6 +59,7 @@ func (opts *cmdOptions) parse() bool {
 	}
 
 	pflag.Parse()
+	opts.historySet = pflag.Lookup("history").Changed
 
 	switch {
 	case *version:
@@ -81,7 +85,9 @@ func main() {
 	}
 
 	if err := a.Start(app.RunOptions{
-		Addr: app.GetAddress(opts.listen),
+		Addr:       app.GetAddress(opts.listen),
+		History:    opts.history,
+		HistorySet: opts.historySet,
 	}); err != nil {
 		log.Fatal("Failed to start standalone agent: ", err)
 	}

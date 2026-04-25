@@ -53,6 +53,7 @@ NVML (NVIDIA GPU) support is enabled automatically on `linux/amd64` glibc hosts.
 ```sh
 ./go-monitoring                       # listens on :45876 by default
 ./go-monitoring --listen :9000        # custom address/port
+./go-monitoring --history cpu,mem     # store history only for selected plugins
 ./go-monitoring health                # exit 0 if the latest tick is fresh
 ./go-monitoring --version
 ```
@@ -60,6 +61,7 @@ NVML (NVIDIA GPU) support is enabled automatically on `linux/amd64` glibc hosts.
 Environment variables:
 
 - `LISTEN` / `PORT` — fallback listen address if `--listen` is not provided
+- `HISTORY` — comma-separated history plugin allowlist, or `all` / `none` (`cpu,mem,diskio,network,containers` by default)
 - `MEM_CALC` — memory calculation formula
 - `DISK_USAGE_CACHE` — cache duration for disk-usage polling (e.g. `15m`) to avoid waking sleeping disks
 - `LOG_LEVEL` — set to `debug` for verbose logs
@@ -90,7 +92,8 @@ Then test the API:
 ```sh
 curl http://localhost:45876/healthz
 curl http://localhost:45876/api/v1/meta
-curl http://localhost:45876/api/v1/summary
+curl http://localhost:45876/api/v1/plugins
+curl http://localhost:45876/api/v1/all
 ```
 
 The Docker setup avoids `--privileged` by using targeted host access:
@@ -117,18 +120,15 @@ Base URL: `http://<listen>`
 
 - `GET /healthz` — liveness / freshness
 - `GET /api/v1/meta` — agent metadata and collector interval
-- `GET /api/v1/summary` — latest snapshot
-- `GET /api/v1/history/system` — system history (`resolution`, `from`, `to`, `limit`)
-- `GET /api/v1/history/containers` — container history
-- `GET /api/v1/containers` — current container list
-- `GET /api/v1/systemd` — systemd unit state
-- `GET /api/v1/processlist` — current process list
-- `GET /api/v1/processcount` — process counts by state
-- `GET /api/v1/programlist` — process list grouped by program name
-- `GET /api/v1/connections` — network connection and conntrack counts
-- `GET /api/v1/irq` — IRQ counters
-- `GET /api/v1/smart` — SMART data
-- `POST /api/v1/smart/refresh` — force a SMART refresh
+- `GET /api/v1/plugins` — plugin metadata and mounted routes
+- `GET /api/v1/all` — current snapshots keyed by plugin name
+- `GET /api/v1/{plugin}` — current plugin snapshot
+- `GET /api/v1/{plugin}/history` — plugin history when enabled (`resolution`, `from`, `to`, `limit`)
+- `POST /api/v1/{plugin}/refresh` — force a plugin refresh when supported
+
+Plugins: `cpu`, `mem`, `swap`, `load`, `diskio`, `fs`, `network`, `gpu`, `sensors`, `containers`, `systemd`, `processes`, `programs`, `connections`, `irq`, `smart`.
+
+Only history-enabled plugins mount `/{plugin}/history`. By default this is `cpu`, `mem`, `diskio`, `network`, and `containers`; use `--history` or `HISTORY` to change it.
 
 ## License
 

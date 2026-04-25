@@ -38,13 +38,13 @@ func TestStartContextCreatesDatabaseAndServesAPI(t *testing.T) {
 	require.NoError(t, err)
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("http://" + a.ListenAddr() + "/api/v1/summary")
+	resp, err := client.Get("http://" + a.ListenAddr() + "/api/v1/all")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Contains(t, string(body), `"stats":`)
+	assert.Contains(t, string(body), `"cpu":`)
 
 	old := time.Now().Add(-2 * time.Minute)
 	require.NoError(t, os.Chtimes(healthpkg.FilePath(), old, old))
