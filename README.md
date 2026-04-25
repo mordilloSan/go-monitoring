@@ -61,6 +61,43 @@ GPU auto-selection defaults to `tegrastats` on Jetson, `nvidia-smi` with NVML fa
 
 At startup the agent logs which GPU collectors were discovered and which ones were selected. In containers, detection only works against what the runtime actually exposes to the process: device nodes, libraries, capabilities, and helper binaries still need to be present in the container.
 
+## Docker
+
+Build and run the API locally:
+
+```sh
+make docker-run
+```
+
+Or use Compose:
+
+```sh
+make docker-up
+```
+
+Then test the API:
+
+```sh
+curl http://localhost:45876/healthz
+curl http://localhost:45876/api/v1/meta
+curl http://localhost:45876/api/v1/summary
+```
+
+The Docker setup avoids `--privileged` by using targeted host access:
+
+- `network_mode: host` so host network interfaces are visible.
+- `/var/run/docker.sock` read-only for container metrics.
+- `/var/run/dbus/system_bus_socket` read-only for systemd state.
+- `CAP_SYS_RAWIO`, `CAP_SYS_ADMIN`, and explicit `/dev/...` device mappings for SMART data.
+
+Compose cannot discover host devices dynamically, so `make docker-up` first writes a local `docker-compose.override.yml` with discovered SMART devices. You can inspect what will be used with:
+
+```sh
+make docker-smart-devices
+```
+
+If SMART detection chooses the wrong device, edit `docker-compose.override.yml` or set `SMART_DEVICES` manually. Use controller devices such as `/dev/nvme0` or `/dev/sda`, not partitions such as `/dev/nvme0n1p2`.
+
 ## HTTP API
 
 Base URL: `http://<listen>`

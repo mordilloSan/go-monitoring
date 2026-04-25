@@ -135,3 +135,76 @@ func TestStoreMaintenanceCreatesRollupsAndDeletesExpiredRows(t *testing.T) {
 		assert.GreaterOrEqual(t, item.CapturedAt, now.Add(-time.Hour).UnixMilli())
 	}
 }
+
+func TestStoreMaintenanceAppliesRetentionToAllHistoryTables(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := OpenStore(tmpDir)
+	require.NoError(t, err)
+	defer store.Close()
+
+	now := time.Now().UTC().Truncate(time.Minute)
+	data := sampleCombinedData(42)
+	systemStatsJSON, err := marshalJSON(data.Stats)
+	require.NoError(t, err)
+	containerStatsJSON, err := marshalJSON(data.Containers)
+	require.NoError(t, err)
+
+	for resolution, retention := range historyRetention {
+		expiredAt := now.Add(-retention - time.Millisecond).UnixMilli()
+		boundaryAt := now.Add(-retention).UnixMilli()
+
+		_, err = store.db.Exec(`
+			INSERT INTO system_stats_history (resolution, captured_at, stats_json)
+			VALUES (?, ?, ?), (?, ?, ?)
+		`, resolution, expiredAt, systemStatsJSON, resolution, boundaryAt, systemStatsJSON)
+		require.NoError(t, err)
+
+		_, err = store.db.Exec(`
+			INSERT INTO container_stats_history (resolution, captured_at, stats_json)
+			VALUES (?, ?, ?), (?, ?, ?)
+		`, resolution, expiredAt, containerStatsJSON, resolution, boundaryAt, containerStatsJSON)
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, store.RunMaintenance(now))
+
+	for resolution, retention := range historyRetention {
+		cutoff := now.Add(-retention).UnixMilli()
+
+		var expiredSystemRows int
+		err = store.db.QueryRow(`
+			SELECT COUNT(1)
+			FROM system_stats_history
+			WHERE resolution = ? AND captured_at < ?
+		`, resolution, cutoff).Scan(&expiredSystemRows)
+		require.NoError(t, err)
+		assert.Zero(t, expiredSystemRows, "expired system rows should be deleted for %s", resolution)
+
+		var expiredContainerRows int
+		err = store.db.QueryRow(`
+			SELECT COUNT(1)
+			FROM container_stats_history
+			WHERE resolution = ? AND captured_at < ?
+		`, resolution, cutoff).Scan(&expiredContainerRows)
+		require.NoError(t, err)
+		assert.Zero(t, expiredContainerRows, "expired container rows should be deleted for %s", resolution)
+
+		var keptSystemRows int
+		err = store.db.QueryRow(`
+			SELECT COUNT(1)
+			FROM system_stats_history
+			WHERE resolution = ? AND captured_at = ?
+		`, resolution, cutoff).Scan(&keptSystemRows)
+		require.NoError(t, err)
+		assert.Equal(t, 1, keptSystemRows, "boundary system row should be kept for %s", resolution)
+
+		var keptContainerRows int
+		err = store.db.QueryRow(`
+			SELECT COUNT(1)
+			FROM container_stats_history
+			WHERE resolution = ? AND captured_at = ?
+		`, resolution, cutoff).Scan(&keptContainerRows)
+		require.NoError(t, err)
+		assert.Equal(t, 1, keptContainerRows, "boundary container row should be kept for %s", resolution)
+	}
+}

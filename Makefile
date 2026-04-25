@@ -69,8 +69,11 @@ AGENT_GO_TAGS := -tags glibc
 endif
 endif
 
-.PHONY: build clean test dev golint
+.PHONY: build clean test dev golint docker-build docker-run docker-smart-devices docker-compose-override docker-up
 .DEFAULT_GOAL := build
+
+IMAGE ?= go-monitoring:local
+CONTAINER ?= go-monitoring
 
 golint:
 	@echo "🔎 Linting Go module in: $(BACKEND_DIR)"
@@ -99,6 +102,36 @@ test:
 
 build:
 	@( cd "$(BACKEND_DIR)" && GOOS=$(OS) GOARCH=$(ARCH) $(GO_CMD_ENV) "$(GO_BIN)" build $(AGENT_GO_TAGS) -o "$(BUILD_OUTPUT)" -ldflags "$(LDFLAGS)" $(AGENT_PKG) )
+
+docker-build:
+	docker build -t "$(IMAGE)" .
+
+docker-run: docker-build
+	@smart_args="$$(./scripts/discover-smart-devices.sh run-args)"; \
+	dbus_args=""; \
+	if [ -S /var/run/dbus/system_bus_socket ]; then \
+		dbus_args="-v /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro"; \
+	fi; \
+	docker run --rm --name "$(CONTAINER)" \
+		--network host \
+		$$smart_args \
+		-e LISTEN=:45876 \
+		-e DATA_DIR=/var/lib/go-monitoring \
+		-e SKIP_GPU=true \
+		-v go-monitoring-data:/var/lib/go-monitoring \
+		-v /var/run/docker.sock:/var/run/docker.sock:ro \
+		$$dbus_args \
+		"$(IMAGE)"
+
+docker-smart-devices:
+	@./scripts/discover-smart-devices.sh summary
+
+docker-compose-override:
+	@./scripts/discover-smart-devices.sh compose > docker-compose.override.yml
+	@echo "Generated docker-compose.override.yml"
+
+docker-up: docker-compose-override
+	docker compose up --build
 
 dev:
 	@if command -v entr >/dev/null 2>&1; then \
