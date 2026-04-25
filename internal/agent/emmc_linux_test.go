@@ -64,6 +64,7 @@ func TestEmmcMockSysfsScanAndCollect(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatalf("SmartDataMap value nil")
+		return
 	}
 	if got.DiskType != "emmc" || got.DiskName != "/dev/mmcblk0" {
 		t.Fatalf("disk fields = (type=%q name=%q), want (emmc,/dev/mmcblk0)", got.DiskType, got.DiskName)

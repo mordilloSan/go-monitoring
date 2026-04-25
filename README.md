@@ -74,6 +74,13 @@ Or use Compose:
 make docker-up
 ```
 
+`make docker-up` starts the Compose service in the background. Use these helpers to follow logs or stop it:
+
+```sh
+make docker-logs
+make docker-down
+```
+
 Then test the API:
 
 ```sh

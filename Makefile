@@ -69,7 +69,7 @@ AGENT_GO_TAGS := -tags glibc
 endif
 endif
 
-.PHONY: build clean test dev golint docker-build docker-run docker-smart-devices docker-compose-override docker-up
+.PHONY: build clean test dev golint docker-build docker-run docker-smart-devices docker-compose-override docker-up docker-up-foreground docker-logs docker-down
 .DEFAULT_GOAL := build
 
 IMAGE ?= go-monitoring:local
@@ -132,7 +132,18 @@ docker-compose-override:
 	@echo "Generated docker-compose.override.yml"
 
 docker-up: docker-compose-override
+	docker compose down --remove-orphans
+	docker compose up --build -d
+
+docker-up-foreground: docker-compose-override
+	docker compose down --remove-orphans
 	docker compose up --build
+
+docker-logs:
+	docker compose logs -f
+
+docker-down:
+	docker compose down
 
 dev:
 	@if command -v entr >/dev/null 2>&1; then \

@@ -58,8 +58,8 @@ func TestHTTPRoutes(t *testing.T) {
 		{name: "meta", method: http.MethodGet, path: "/api/v1/meta", status: http.StatusOK, body: `"collector_interval":"1m0s"`},
 		{name: "summary", method: http.MethodGet, path: "/api/v1/summary", status: http.StatusOK, body: `"cpu":55`},
 		{name: "system history", method: http.MethodGet, path: "/api/v1/history/system?resolution=1m&from=0&to=9999999999999&limit=10", status: http.StatusOK, body: `"resolution":"1m"`},
-		{name: "container history", method: http.MethodGet, path: "/api/v1/history/containers?resolution=1m&from=0&to=9999999999999&limit=10", status: http.StatusOK, body: `"resolution":"1m"`},
-		{name: "containers", method: http.MethodGet, path: "/api/v1/containers", status: http.StatusOK, body: `"image":"nginx"`},
+		{name: "container history", method: http.MethodGet, path: "/api/v1/history/containers?resolution=1m&from=0&to=9999999999999&limit=10", status: http.StatusOK, body: `"cpu_percent":27.5`},
+		{name: "containers", method: http.MethodGet, path: "/api/v1/containers", status: http.StatusOK, body: `"memory_mb":1`},
 		{name: "systemd", method: http.MethodGet, path: "/api/v1/systemd", status: http.StatusOK, body: `"n":"nginx.service"`},
 		{name: "smart", method: http.MethodGet, path: "/api/v1/smart", status: http.StatusOK, body: `"dn":"/dev/sdb"`},
 		{name: "invalid history", method: http.MethodGet, path: "/api/v1/history/system?resolution=bad", status: http.StatusBadRequest, body: `"error":"invalid resolution"`},
@@ -122,8 +122,6 @@ func TestLogRequestsWritesRequestLog(t *testing.T) {
 		_, _ = w.Write([]byte("created"))
 	}))
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/smart/refresh?force=true", nil)
-	req.Header.Set("User-Agent", "test-agent")
-	req.Header.Set("X-Forwarded-For", "203.0.113.10, 10.0.0.2")
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -135,8 +133,8 @@ func TestLogRequestsWritesRequestLog(t *testing.T) {
 	assert.Contains(t, logLine, "path=\"/api/v1/smart/refresh?force=true\"")
 	assert.Contains(t, logLine, "status=201")
 	assert.Contains(t, logLine, "bytes=7")
-	assert.Contains(t, logLine, "remote=203.0.113.10")
-	assert.Contains(t, logLine, "user_agent=test-agent")
+	assert.NotContains(t, logLine, "remote=")
+	assert.NotContains(t, logLine, "user_agent=")
 }
 
 func TestRoutesCanDisableRequestLogging(t *testing.T) {

@@ -17,7 +17,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const storeSchemaVersion = 1
+const storeSchemaVersion = 2
 
 const (
 	resolution1m   = "1m"
@@ -76,16 +76,16 @@ type CurrentItemsResponse[T any] struct {
 
 type ContainerCurrent struct {
 	ID          string                 `json:"id"`
-	Name        string                 `json:"n"`
+	Name        string                 `json:"name"`
 	Image       string                 `json:"image,omitempty"`
 	Ports       string                 `json:"ports,omitempty"`
 	Status      string                 `json:"status,omitempty"`
 	Health      container.DockerHealth `json:"health,omitempty"`
-	Cpu         float64                `json:"c"`
-	Mem         float64                `json:"m"`
-	NetworkSent float64                `json:"ns,omitzero"`
-	NetworkRecv float64                `json:"nr,omitzero"`
-	Bandwidth   [2]uint64              `json:"b,omitzero"`
+	Cpu         float64                `json:"cpu_percent"`
+	Mem         float64                `json:"memory_mb"`
+	NetworkSent float64                `json:"network_sent_mb,omitempty,omitzero"`
+	NetworkRecv float64                `json:"network_recv_mb,omitempty,omitzero"`
+	Bandwidth   [2]uint64              `json:"bandwidth_bytes,omitempty,omitzero"`
 }
 
 type SmartDeviceCurrent struct {
@@ -143,6 +143,10 @@ func (s *Store) init() error {
 	switch version {
 	case 0:
 		if err := s.migrateV1(); err != nil {
+			return err
+		}
+	case 1:
+		if err := s.migrateV2(); err != nil {
 			return err
 		}
 	case storeSchemaVersion:
@@ -203,6 +207,20 @@ func (s *Store) migrateV1() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_smart_devices_current_key
 			ON smart_devices_current (device_key)`,
+		fmt.Sprintf("PRAGMA user_version = %d", storeSchemaVersion),
+	}
+	for _, stmt := range statements {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) migrateV2() error {
+	statements := []string{
+		"DELETE FROM containers_current",
+		"DELETE FROM container_stats_history",
 		fmt.Sprintf("PRAGMA user_version = %d", storeSchemaVersion),
 	}
 	for _, stmt := range statements {

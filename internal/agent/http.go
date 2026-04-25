@@ -91,22 +91,8 @@ func logRequests(next http.Handler) http.Handler {
 			"status", rec.status,
 			"bytes", rec.bytes,
 			"duration", time.Since(start),
-			"remote", clientIP(r),
-			"user_agent", r.UserAgent(),
 		)
 	})
-}
-
-func clientIP(r *http.Request) string {
-	if forwardedFor := r.Header.Get("X-Forwarded-For"); forwardedFor != "" {
-		if ip := strings.TrimSpace(strings.Split(forwardedFor, ",")[0]); ip != "" {
-			return ip
-		}
-	}
-	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
-		return realIP
-	}
-	return r.RemoteAddr
 }
 
 func (a *Agent) handleHealth(w http.ResponseWriter, r *http.Request) {
