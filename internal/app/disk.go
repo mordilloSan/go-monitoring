@@ -679,7 +679,7 @@ func (m *fsManager) updateDiskIo(cacheTimeMs uint16, systemStats *system.Stats) 
 
 			// Weighted I/O: queue-depth weighted I/O time, normalized to interval (can exceed 100%).
 			// Linux kernel field 11: incremented by iops_in_progress × ms_since_last_update.
-			// Used to display queue depth. Multipled by 100 to increase accuracy of digit truncation (divided by 100 in UI).
+			// Used to display queue depth. Multiplied by 100 to increase accuracy of digit truncation (divided by 100 in UI).
 			diskWeightedIO := utils.TwoDecimals(float64(d.WeightedIO-prev.weightedIO) / float64(msElapsed) * 100)
 
 			// r_await / w_await: average time per read/write operation in milliseconds.
