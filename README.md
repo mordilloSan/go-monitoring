@@ -132,4 +132,4 @@ Only history-enabled plugins mount `/{plugin}/history`. By default this is `cpu`
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+GPL-2.0 — see [LICENSE](LICENSE).
