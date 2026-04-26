@@ -44,12 +44,12 @@ type App struct {
 // If the data directory is not set, it will attempt to find the optimal directory.
 func New(dataDir ...string) (app *App, err error) {
 	app = &App{
-		fsManager:         newFsManager(),
-		networkManager:    newNetworkManager(),
-		processManager:    newProcessManager(),
 		systemInfoManager: newSystemInfoManager(),
 		cache:             NewSystemDataCache(),
 	}
+
+	app.configureLogging()
+	slog.Info("Starting go-monitoring", "version", version.Version)
 
 	app.dataDir, err = store.GetDataDir(dataDir...)
 	if err != nil {
@@ -57,28 +57,16 @@ func New(dataDir ...string) (app *App, err error) {
 	} else {
 		slog.Info("Data directory", "path", app.dataDir)
 	}
-
-	app.memCalc, _ = utils.GetEnv("MEM_CALC")
-	app.requestLogging = httpapi.RequestLoggingEnabled()
-	app.sensorConfig = app.newSensorConfig()
-
-	// Set up slog with a log level determined by the LOG_LEVEL env var
-	if logLevelStr, exists := utils.GetEnv("LOG_LEVEL"); exists {
-		switch strings.ToLower(logLevelStr) {
-		case "debug":
-			app.debug = true
-			slog.SetLogLoggerLevel(slog.LevelDebug)
-		case "warn":
-			slog.SetLogLoggerLevel(slog.LevelWarn)
-		case "error":
-			slog.SetLogLoggerLevel(slog.LevelError)
-		}
-	}
-
-	slog.Debug("Agent version", "version", version.Version)
 	if app.debug {
 		slog.Debug("Debug logging enabled")
 	}
+
+	app.fsManager = newFsManager()
+	app.networkManager = newNetworkManager()
+	app.processManager = newProcessManager()
+	app.memCalc, _ = utils.GetEnv("MEM_CALC")
+	app.requestLogging = httpapi.RequestLoggingEnabled()
+	app.sensorConfig = app.newSensorConfig()
 
 	// initialize docker manager
 	app.dockerManager = dockerintegration.NewManager(func() {
@@ -128,6 +116,20 @@ func New(dataDir ...string) (app *App, err error) {
 	}
 
 	return app, nil
+}
+
+func (app *App) configureLogging() {
+	if logLevelStr, exists := utils.GetEnv("LOG_LEVEL"); exists {
+		switch strings.ToLower(logLevelStr) {
+		case "debug":
+			app.debug = true
+			slog.SetLogLoggerLevel(slog.LevelDebug)
+		case "warn":
+			slog.SetLogLoggerLevel(slog.LevelWarn)
+		case "error":
+			slog.SetLogLoggerLevel(slog.LevelError)
+		}
+	}
 }
 
 func (a *App) gatherStats(options common.DataRequestOptions) *system.CombinedData {

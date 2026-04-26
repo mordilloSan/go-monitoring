@@ -1253,6 +1253,16 @@ func TestGetHostInfo(t *testing.T) {
 	// assert.Equal(t, "27.0.1", info.ServerVersion)
 }
 
+func TestNilManagerRuntimeInfo(t *testing.T) {
+	var dm *Manager
+
+	info, err := dm.GetHostInfo()
+
+	require.NoError(t, err)
+	assert.Equal(t, dockerapi.HostInfo{}, info)
+	assert.False(t, dm.IsPodman())
+}
+
 func TestDeltaTrackerCacheTimeIsolation(t *testing.T) {
 	// Test that different cache times have separate DeltaTracker instances
 	dm := &Manager{

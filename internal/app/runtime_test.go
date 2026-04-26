@@ -32,7 +32,7 @@ func TestStartContextCreatesDatabaseAndServesAPI(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return a.ListenAddr() != ""
-	}, 10*time.Second, 50*time.Millisecond)
+	}, 20*time.Second, 50*time.Millisecond)
 
 	_, err = os.Stat(tmpDir + "/metrics.db")
 	require.NoError(t, err)

@@ -68,6 +68,12 @@ func (a *App) StartContext(ctx context.Context, opts RunOptions) error {
 		return err
 	}
 	a.store = persistentStore
+	slog.Info("Database ready", "path", persistentStore.Path())
+	slog.Info("Collector configured",
+		"interval", opts.CollectorInterval,
+		"history", historyPlugins,
+		"smart_interval", a.smartRefreshIntervalString(),
+	)
 	defer func() {
 		_ = a.store.Close()
 		a.store = nil
@@ -104,6 +110,7 @@ func (a *App) StartContext(ctx context.Context, opts RunOptions) error {
 			ReadHeaderTimeout: 5 * time.Second,
 		},
 	}
+	slog.Info("HTTP server starting", "addr", a.httpRuntime.listenAddr, "request_logging", a.requestLogging)
 
 	serverErr := make(chan error, 1)
 	go func() {

@@ -87,6 +87,7 @@ func (m *systemInfoManager) refreshSystemDetails(dockerManager containerRuntimeI
 	}
 	m.systemDetails.Cores = cores
 	m.systemDetails.Threads = threads
+	slog.Info("Detected CPU", "model", m.systemDetails.CpuModel, "cores", cores, "threads", threads, "arch", m.systemDetails.Arch)
 
 	// total memory
 	m.systemDetails.MemoryTotal = hostInfo.MemTotal
@@ -98,9 +99,10 @@ func (m *systemInfoManager) refreshSystemDetails(dockerManager containerRuntimeI
 
 	// zfs
 	if _, err := ARCSize(); err != nil {
-		slog.Debug("Not monitoring ZFS ARC", "err", err)
+		slog.Debug("Capability check", "capability", "zfs_arc", "available", false, "err", err)
 	} else {
 		m.zfs = true
+		slog.Debug("Capability check", "capability", "zfs_arc", "available", true)
 	}
 }
 

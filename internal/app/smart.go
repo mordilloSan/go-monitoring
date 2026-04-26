@@ -157,7 +157,7 @@ func (sm *SmartManager) ScanDevices(force bool) error {
 	if configuredRaw, ok := utils.GetEnv("SMART_DEVICES"); ok {
 		config := strings.TrimSpace(configuredRaw)
 		if config == "" {
-			slog.Info("No SMART devices detected", "source", "configured", "reason", "SMART_DEVICES is empty")
+			slog.Info("No SMART device candidates discovered", "source", "configured", "reason", "SMART_DEVICES is empty")
 			return errNoValidSmartData
 		}
 
@@ -210,11 +210,11 @@ func (sm *SmartManager) ScanDevices(force bool) error {
 		args := []any{"source", smartDeviceSource(scannedDevices, configuredDevices)}
 		if scanErr != nil {
 			args = append(args, "err", scanErr)
-			slog.Info("No SMART devices detected", args...)
+			slog.Info("No SMART device candidates discovered", args...)
 			slog.Debug("smartctl scan failed", "err", scanErr)
 			return scanErr
 		}
-		slog.Info("No SMART devices detected", args...)
+		slog.Info("No SMART device candidates discovered", args...)
 		return errNoValidSmartData
 	}
 
@@ -1169,12 +1169,12 @@ func NewSmartManager() (*SmartManager, error) {
 		// Fail fast unless this host exposes eMMC or mdraid health via sysfs,
 		// in which case smartctl is optional.
 		if len(scanEmmcDevices()) > 0 || len(scanMdraidDevices()) > 0 {
-			slog.Debug("smartctl not found; using sysfs health collectors", "err", err)
+			slog.Debug("Capability check", "capability", "smartctl", "available", false, "err", err)
 			return sm, nil
 		}
 		return nil, err
 	}
-	slog.Debug("Detected smartctl", "path", path)
+	slog.Debug("Capability check", "capability", "smartctl", "available", true, "path", path)
 	sm.smartctlPath = path
 	return sm, nil
 }

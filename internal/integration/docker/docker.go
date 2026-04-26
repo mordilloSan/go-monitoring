@@ -758,6 +758,9 @@ func getDockerHost() string {
 
 // GetHostInfo fetches the system info from Docker
 func (dm *Manager) GetHostInfo() (info dockerapi.HostInfo, err error) {
+	if dm == nil {
+		return info, nil
+	}
 	resp, err := dm.client.Get("http://localhost/info")
 	if err != nil {
 		return info, err
@@ -772,6 +775,9 @@ func (dm *Manager) GetHostInfo() (info dockerapi.HostInfo, err error) {
 }
 
 func (dm *Manager) IsPodman() bool {
+	if dm == nil {
+		return false
+	}
 	return dm.usingPodman
 }
 

@@ -52,14 +52,16 @@ func isSystemdAvailable() bool {
 // newSystemdManager creates a new systemdManager.
 func newSystemdManager() (*systemdManager, error) {
 	if skipSystemd, _ := utils.GetEnv("SKIP_SYSTEMD"); skipSystemd == "true" {
+		slog.Debug("Capability check", "capability", "systemd", "available", false, "reason", "SKIP_SYSTEMD=true")
 		return nil, nil
 	}
 
 	// Check if systemd is available on the system before attempting connection
 	if !isSystemdAvailable() {
-		slog.Debug("Systemd not available")
+		slog.Debug("Capability check", "capability", "systemd", "available", false)
 		return nil, nil
 	}
+	slog.Debug("Capability check", "capability", "systemd", "available", true)
 
 	manager := &systemdManager{
 		serviceStatsMap: make(map[string]*systemd.Service),
