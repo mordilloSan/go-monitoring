@@ -66,6 +66,10 @@ Environment variables:
 - `DISK_USAGE_CACHE` — cache duration for disk-usage polling (e.g. `15m`) to avoid waking sleeping disks
 - `LOG_LEVEL` — set to `debug` for verbose logs
 - `HTTP_LOG` / `REQUEST_LOG` — set to `false` to disable HTTP request logs (`true` by default)
+- `API_CACHE_DEFAULT` — default TTL for live current API response caches (duration, e.g. `2s`; `0s` disables response caching)
+- `API_CACHE_EXPENSIVE` — TTL for expensive live current plugins (`containers`, `systemd`, `processes`, `programs`, `connections`, `smart`)
+- `API_CACHE_<PLUGIN>` — per-plugin live current TTL override, for example `API_CACHE_PROCESSES=10s`, `API_CACHE_CONTAINERS=5s`, `API_CACHE_SMART=30s`
+- `API_CACHE_SYSTEM_SUMMARY` — TTL for `GET /api/v1/system/summary`
 - `GPU_COLLECTOR` — comma-separated collector priority override (for example `nvml`, `amd_sysfs`, `intel_gpu_top`, `nvtop`)
 - `SKIP_GPU` — set to `true` to disable GPU monitoring entirely
 
@@ -130,6 +134,9 @@ Base URL: `http://<listen>`
 - `GET /api/v1/{plugin}` — current plugin snapshot
 - `GET /api/v1/{plugin}/history` — plugin history when enabled (`resolution`, `from`, `to`, `limit`)
 - `POST /api/v1/{plugin}/refresh` — force a plugin refresh when supported
+
+Current endpoints are served from live providers with small configurable
+in-memory TTL caches. History endpoints are served from SQLite.
 
 Plugins: `cpu`, `mem`, `swap`, `load`, `diskio`, `fs`, `network`, `gpu`, `sensors`, `containers`, `systemd`, `processes`, `programs`, `connections`, `irq`, `smart`.
 

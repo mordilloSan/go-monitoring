@@ -23,9 +23,12 @@ const maxHistoryLimit = 1000
 
 type MetricsReader interface {
 	Path() string
-	CurrentPlugin(plugin string) (int64, json.RawMessage, error)
 	PluginHistory(plugin, resolution string, from, to int64, limit int) ([]store.HistoryRecord[json.RawMessage], error)
 	HistoryEnabled(plugin string) bool
+}
+
+type CurrentReader interface {
+	CurrentPlugin(plugin string) (int64, json.RawMessage, error)
 	SystemSummary() (int64, system.Summary, error)
 }
 
@@ -35,6 +38,7 @@ type SmartRefresher interface {
 
 type Options struct {
 	Metrics              MetricsReader
+	Current              CurrentReader
 	SmartRefresher       SmartRefresher
 	DataDir              string
 	ListenAddr           func() string
@@ -44,6 +48,7 @@ type Options struct {
 
 type Server struct {
 	metrics              MetricsReader
+	current              CurrentReader
 	smartRefresher       SmartRefresher
 	dataDir              string
 	listenAddr           func() string
@@ -52,8 +57,13 @@ type Server struct {
 }
 
 func NewServer(opts Options) *Server {
+	current := opts.Current
+	if current == nil {
+		current = missingCurrentReader{}
+	}
 	return &Server{
 		metrics:              opts.Metrics,
+		current:              current,
 		smartRefresher:       opts.SmartRefresher,
 		dataDir:              opts.DataDir,
 		listenAddr:           opts.ListenAddr,
@@ -68,7 +78,7 @@ func (s *Server) Handler(collectorInterval time.Duration) http.Handler {
 	mux.HandleFunc("/api/v1/meta", s.handleMeta(collectorInterval))
 	mux.HandleFunc("/api/v1/system/summary", s.handleSystemSummary)
 	mux.HandleFunc("/api/v1/benchmark", s.handleBenchmark(mux))
-	NewRegistry(s.metrics, s.smartRefresher).Mount(mux, "/api/v1/")
+	NewRegistry(s.current, s.metrics, s.smartRefresher).Mount(mux, "/api/v1/")
 	if s.requestLogging {
 		return logRequests(mux)
 	}
@@ -175,7 +185,7 @@ func (s *Server) handleSystemSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	capturedAt, summary, err := s.metrics.SystemSummary()
+	capturedAt, summary, err := s.current.SystemSummary()
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -184,6 +194,16 @@ func (s *Server) handleSystemSummary(w http.ResponseWriter, r *http.Request) {
 		CapturedAt: capturedAt,
 		Summary:    summary,
 	})
+}
+
+type missingCurrentReader struct{}
+
+func (missingCurrentReader) CurrentPlugin(string) (int64, json.RawMessage, error) {
+	return 0, nil, errors.New("current provider not configured")
+}
+
+func (missingCurrentReader) SystemSummary() (int64, system.Summary, error) {
+	return 0, system.Summary{}, errors.New("current provider not configured")
 }
 
 func (s *Server) metaResponse(collectorInterval time.Duration) apimodel.MetaResponse {

@@ -38,6 +38,9 @@ type App struct {
 	requestLogging    bool                       // Whether HTTP API requests are logged
 	store             *store.Store               // Persistent local store
 	httpRuntime       *httpRuntime               // HTTP server + effective listen address (nil before Start)
+	liveMu            sync.Mutex                 // Protects live API response caches
+	liveCache         map[string]liveCacheEntry  // Current API raw response cache by plugin/key
+	liveTTLs          map[string]time.Duration   // Current API cache TTL by plugin/key
 }
 
 // New creates a new app with the given data directory for persisting data.
@@ -46,9 +49,11 @@ func New(dataDir ...string) (app *App, err error) {
 	app = &App{
 		systemInfoManager: newSystemInfoManager(),
 		cache:             NewSystemDataCache(),
+		liveCache:         make(map[string]liveCacheEntry),
 	}
 
 	app.configureLogging()
+	app.liveTTLs = liveCurrentTTLsFromEnv(utils.GetEnv)
 	slog.Info("Starting go-monitoring", "version", version.Version)
 
 	app.dataDir, err = store.GetDataDir(dataDir...)

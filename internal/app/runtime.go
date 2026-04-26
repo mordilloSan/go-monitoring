@@ -261,6 +261,7 @@ func (a *App) ListenAddr() string {
 func (a *App) apiServer() *httpapi.Server {
 	return httpapi.NewServer(httpapi.Options{
 		Metrics:              a.store,
+		Current:              a,
 		SmartRefresher:       a,
 		DataDir:              a.dataDir,
 		ListenAddr:           a.ListenAddr,

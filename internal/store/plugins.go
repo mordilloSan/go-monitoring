@@ -152,6 +152,10 @@ func historyPluginSet(plugins []string) map[string]struct{} {
 	return out
 }
 
+func SnapshotPluginPayloads(data *system.CombinedData) map[string]any {
+	return snapshotPluginPayloads(data)
+}
+
 func snapshotPluginPayloads(data *system.CombinedData) map[string]any {
 	stats := data.Stats
 	return map[string]any{

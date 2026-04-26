@@ -12,6 +12,7 @@ import (
 
 	apimodel "github.com/mordilloSan/go-monitoring/internal/api/model"
 	"github.com/mordilloSan/go-monitoring/internal/domain/smart"
+	"github.com/mordilloSan/go-monitoring/internal/domain/system"
 	healthpkg "github.com/mordilloSan/go-monitoring/internal/health"
 	storepkg "github.com/mordilloSan/go-monitoring/internal/store"
 	"github.com/mordilloSan/go-monitoring/internal/store/storetest"
@@ -25,6 +26,20 @@ type fakeSmartRefresher struct {
 
 func (r fakeSmartRefresher) RefreshSmartNow() error {
 	return r.store.WriteSmartDevices(time.Now().UTC().UnixMilli(), map[string]smart.SmartData{})
+}
+
+type fakeCurrentReader struct {
+	capturedAt int64
+	plugins    map[string]json.RawMessage
+	summary    system.Summary
+}
+
+func (r fakeCurrentReader) CurrentPlugin(plugin string) (int64, json.RawMessage, error) {
+	return r.capturedAt, r.plugins[plugin], nil
+}
+
+func (r fakeCurrentReader) SystemSummary() (int64, system.Summary, error) {
+	return r.capturedAt, r.summary, nil
 }
 
 func newHTTPTestServer(t *testing.T) *Server {
@@ -49,12 +64,56 @@ func newHTTPTestServer(t *testing.T) *Server {
 
 	return NewServer(Options{
 		Metrics:              store,
+		Current:              store,
 		SmartRefresher:       fakeSmartRefresher{store: store},
 		DataDir:              tmpDir,
 		ListenAddr:           func() string { return ":45876" },
 		SmartRefreshInterval: func() string { return "" },
 		RequestLogging:       true,
 	})
+}
+
+func TestCurrentRoutesUseCurrentReaderAndHistoryUsesStore(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := storepkg.OpenStore(tmpDir)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	capturedAt := time.Now().UTC().UnixMilli()
+	require.NoError(t, store.WriteSnapshot(capturedAt, storetest.SampleCombinedData(55)))
+
+	server := NewServer(Options{
+		Metrics: store,
+		Current: fakeCurrentReader{
+			capturedAt: 123,
+			plugins: map[string]json.RawMessage{
+				storepkg.PluginCPU: json.RawMessage(`{"cpu_percent":99}`),
+			},
+			summary: system.Summary{Hostname: "live-host", CPUPercent: 99},
+		},
+		SmartRefresher: fakeSmartRefresher{store: store},
+		DataDir:        tmpDir,
+	})
+	handler := server.Handler(time.Minute)
+
+	cpuReq := httptest.NewRequest(http.MethodGet, "/api/v1/cpu", nil)
+	cpuRec := httptest.NewRecorder()
+	handler.ServeHTTP(cpuRec, cpuReq)
+	require.Equal(t, http.StatusOK, cpuRec.Code)
+	assert.Contains(t, cpuRec.Body.String(), `"cpu_percent":99`)
+	assert.NotContains(t, cpuRec.Body.String(), `"cpu_percent":55`)
+
+	summaryReq := httptest.NewRequest(http.MethodGet, "/api/v1/system/summary", nil)
+	summaryRec := httptest.NewRecorder()
+	handler.ServeHTTP(summaryRec, summaryReq)
+	require.Equal(t, http.StatusOK, summaryRec.Code)
+	assert.Contains(t, summaryRec.Body.String(), `"hostname":"live-host"`)
+
+	historyReq := httptest.NewRequest(http.MethodGet, "/api/v1/cpu/history?resolution=1m&from=0&to=9999999999999&limit=10", nil)
+	historyRec := httptest.NewRecorder()
+	handler.ServeHTTP(historyRec, historyReq)
+	require.Equal(t, http.StatusOK, historyRec.Code)
+	assert.Contains(t, historyRec.Body.String(), `"cpu_percent":55`)
 }
 
 func TestHTTPRoutes(t *testing.T) {
@@ -139,6 +198,8 @@ func TestBenchmarkEndpointReportsReadOnlyRoutes(t *testing.T) {
 	assert.Contains(t, paths, "GET /api/v1/system/summary")
 	assert.Contains(t, paths, "GET /api/v1/cpu/history?resolution=1m&limit=1")
 	assert.NotContains(t, paths, "POST /api/v1/smart/refresh")
+	require.NotEmpty(t, response.Items)
+	assert.Equal(t, "/api/v1/all", response.Items[len(response.Items)-1].Path)
 }
 
 func TestRequestLoggingEnabled(t *testing.T) {

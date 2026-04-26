@@ -69,7 +69,6 @@ func (s *Server) benchmarkEndpoints() []benchmarkEndpoint {
 		{method: http.MethodGet, path: "/api/v1/meta"},
 		{method: http.MethodGet, path: "/api/v1/system/summary"},
 		{method: http.MethodGet, path: "/api/v1/plugins"},
-		{method: http.MethodGet, path: "/api/v1/all"},
 	}
 
 	for _, plugin := range store.PluginNames() {
@@ -84,6 +83,11 @@ func (s *Server) benchmarkEndpoints() []benchmarkEndpoint {
 			})
 		}
 	}
+
+	endpoints = append(endpoints, benchmarkEndpoint{
+		method: http.MethodGet,
+		path:   "/api/v1/all",
+	})
 
 	return endpoints
 }

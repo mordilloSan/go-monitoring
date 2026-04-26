@@ -63,9 +63,10 @@ type rawHistoryResponse struct {
 }
 
 type currentPlugin struct {
-	name    string
-	kind    string
-	metrics MetricsReader
+	name          string
+	kind          string
+	current       CurrentReader
+	historyReader MetricsReader
 }
 
 type historyCurrentPlugin struct {
@@ -82,13 +83,14 @@ type refreshHistoryCurrentPlugin struct {
 	refresher SmartRefresher
 }
 
-func NewRegistry(metrics MetricsReader, refresher SmartRefresher) *Registry {
+func NewRegistry(current CurrentReader, metrics MetricsReader, refresher SmartRefresher) *Registry {
 	registry := &Registry{byName: map[string]Plugin{}}
 	for _, name := range store.PluginNames() {
 		base := currentPlugin{
-			name:    name,
-			kind:    pluginResponseKind(name),
-			metrics: metrics,
+			name:          name,
+			kind:          pluginResponseKind(name),
+			current:       current,
+			historyReader: metrics,
 		}
 		var plugin Plugin
 		switch {
@@ -242,7 +244,7 @@ func (p currentPlugin) Name() string {
 }
 
 func (p currentPlugin) Current() (any, error) {
-	capturedAt, raw, err := p.metrics.CurrentPlugin(p.name)
+	capturedAt, raw, err := p.current.CurrentPlugin(p.name)
 	if err != nil {
 		return nil, err
 	}
@@ -284,7 +286,7 @@ func (p refreshHistoryCurrentPlugin) History(resolution string, from, to int64, 
 }
 
 func (p currentPlugin) history(resolution string, from, to int64, limit int) (any, error) {
-	records, err := p.metrics.PluginHistory(p.name, resolution, from, to, limit)
+	records, err := p.historyReader.PluginHistory(p.name, resolution, from, to, limit)
 	if err != nil {
 		return nil, err
 	}
