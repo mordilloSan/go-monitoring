@@ -13,6 +13,7 @@ services:
     environment:
       PORT: "45876"
       HTTP_LOG: "${HTTP_LOG:-true}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
       HISTORY: "${HISTORY:-cpu,mem,diskio,network,containers}"
     security_opt:
       - apparmor=unconfined

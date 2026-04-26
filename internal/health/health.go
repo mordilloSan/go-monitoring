@@ -1,6 +1,6 @@
 // Package health provides functions to check and update the health of the agent.
-// It uses a file in the temp directory to store the timestamp of the last
-// successful persisted collection tick. If the timestamp is older than 90
+// It uses a file in shared memory or the temp directory to store the timestamp
+// of the last successful persisted collection tick. If the timestamp is older than 90
 // seconds, the agent is considered unhealthy.
 package health
 
@@ -12,7 +12,9 @@ import (
 	"time"
 )
 
-// healthFile is the path to the health file
+const healthFilename = "go_monitoring_health"
+
+// healthFile is the path to the health file.
 var healthFile = getHealthFilePath()
 
 const unhealthyAfter = 91 * time.Second
@@ -24,12 +26,19 @@ type Status struct {
 }
 
 func getHealthFilePath() string {
-	filename := "go_monitoring_health"
-	fullPath := filepath.Join("/dev/shm", filename)
-	if err := updateHealthFile(fullPath); err == nil {
-		return fullPath
+	return healthFilePath("/dev/shm", os.TempDir())
+}
+
+func healthFilePath(preferredDir, fallbackDir string) string {
+	if isDirectory(preferredDir) {
+		return filepath.Join(preferredDir, healthFilename)
 	}
-	return filepath.Join(os.TempDir(), filename)
+	return filepath.Join(fallbackDir, healthFilename)
+}
+
+func isDirectory(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 func FilePath() string {

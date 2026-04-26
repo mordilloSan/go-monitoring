@@ -61,3 +61,23 @@ func TestHealth(t *testing.T) {
 		})
 	})
 }
+
+func TestHealthFilePathDoesNotCreateHealthFile(t *testing.T) {
+	preferredDir := t.TempDir()
+	fallbackDir := t.TempDir()
+
+	path := healthFilePath(preferredDir, fallbackDir)
+
+	assert.Equal(t, filepath.Join(preferredDir, healthFilename), path)
+	_, err := os.Stat(path)
+	assert.True(t, os.IsNotExist(err), "path selection should not refresh the health timestamp")
+}
+
+func TestHealthFilePathUsesFallbackWhenPreferredMissing(t *testing.T) {
+	missingPreferredDir := filepath.Join(t.TempDir(), "missing")
+	fallbackDir := t.TempDir()
+
+	path := healthFilePath(missingPreferredDir, fallbackDir)
+
+	assert.Equal(t, filepath.Join(fallbackDir, healthFilename), path)
+}

@@ -77,7 +77,6 @@ func (sm *SmartManager) Refresh(forceScan bool) error {
 			continue
 		}
 		if err := sm.CollectSmart(deviceInfo); err != nil {
-			slog.Debug("smartctl collect failed", "device", deviceInfo.Name, "err", err)
 			collectErr = err
 		}
 	}
@@ -156,9 +155,9 @@ func (sm *SmartManager) ScanDevices(force bool) error {
 
 	var configuredDevices []*DeviceInfo
 	if configuredRaw, ok := utils.GetEnv("SMART_DEVICES"); ok {
-		slog.Info("SMART_DEVICES", "value", configuredRaw)
 		config := strings.TrimSpace(configuredRaw)
 		if config == "" {
+			slog.Info("No SMART devices detected", "source", "configured", "reason", "SMART_DEVICES is empty")
 			return errNoValidSmartData
 		}
 
@@ -208,14 +207,47 @@ func (sm *SmartManager) ScanDevices(force bool) error {
 	sm.updateSmartDevices(finalDevices)
 
 	if len(finalDevices) == 0 {
+		args := []any{"source", smartDeviceSource(scannedDevices, configuredDevices)}
 		if scanErr != nil {
+			args = append(args, "err", scanErr)
+			slog.Info("No SMART devices detected", args...)
 			slog.Debug("smartctl scan failed", "err", scanErr)
 			return scanErr
 		}
+		slog.Info("No SMART devices detected", args...)
 		return errNoValidSmartData
 	}
 
+	slog.Info("Detected SMART devices", "devices", smartDeviceLabels(finalDevices), "source", smartDeviceSource(scannedDevices, configuredDevices))
 	return nil
+}
+
+func smartDeviceLabels(devices []*DeviceInfo) []string {
+	labels := make([]string, 0, len(devices))
+	for _, device := range devices {
+		if device == nil || device.Name == "" {
+			continue
+		}
+		label := device.Name
+		if device.Type != "" {
+			label += ":" + device.Type
+		}
+		labels = append(labels, label)
+	}
+	return labels
+}
+
+func smartDeviceSource(scanned, configured []*DeviceInfo) string {
+	switch {
+	case len(scanned) > 0 && len(configured) > 0:
+		return "scan+configured"
+	case len(configured) > 0:
+		return "configured"
+	case len(scanned) > 0:
+		return "scan"
+	default:
+		return "scan"
+	}
 }
 
 func (sm *SmartManager) parseConfiguredDevices(config string) ([]*DeviceInfo, error) {
@@ -435,12 +467,10 @@ func (sm *SmartManager) parseSmartOutput(deviceInfo *DeviceInfo, output []byte) 
 			deviceInfo.typeVerified = true
 			return true
 		}
-		slog.Debug("parser failed", "device", deviceInfo.Name, "parser", parser.Type)
 	}
 
 	// Leave verification false so the next pass will attempt detection again.
 	deviceInfo.typeVerified = false
-	slog.Debug("parsing failed", "device", deviceInfo.Name)
 	return false
 }
 
@@ -535,10 +565,10 @@ func (sm *SmartManager) CollectSmart(deviceInfo *DeviceInfo) error {
 
 	if !hasValidData {
 		if err != nil {
-			slog.Debug("smartctl failed", "device", deviceInfo.Name, "err", err)
+			slog.Debug("SMART data unavailable", "device", deviceInfo.Name, "err", err)
 			return err
 		}
-		slog.Debug("no valid SMART data found", "device", deviceInfo.Name)
+		slog.Debug("SMART data unavailable", "device", deviceInfo.Name, "err", errNoValidSmartData)
 		return errNoValidSmartData
 	}
 
@@ -609,7 +639,6 @@ func (sm *SmartManager) parseScan(output []byte) ([]*DeviceInfo, bool) {
 
 	devices := make([]*DeviceInfo, 0, len(scan.Devices))
 	for _, device := range scan.Devices {
-		slog.Debug("smartctl scan", "name", device.Name, "type", device.Type, "protocol", device.Protocol)
 		devices = append(devices, &DeviceInfo{
 			Name:     device.Name,
 			Type:     device.Type,
@@ -845,7 +874,6 @@ func (sm *SmartManager) parseSmartForSata(output []byte) (bool, int) {
 	}
 
 	if data.SerialNumber == "" {
-		slog.Debug("no serial number", "device", data.Device.Name)
 		return false, data.Smartctl.ExitStatus
 	}
 
@@ -957,7 +985,6 @@ func (sm *SmartManager) parseSmartForScsi(output []byte) (bool, int) {
 	}
 
 	if data.SerialNumber == "" {
-		slog.Debug("no serial number", "device", data.Device.Name)
 		return false, data.Smartctl.ExitStatus
 	}
 
@@ -1045,7 +1072,6 @@ func (sm *SmartManager) parseSmartForNvme(output []byte) (bool, int) {
 	}
 
 	if data.SerialNumber == "" {
-		slog.Debug("no serial number", "device", data.Device.Name)
 		return false, data.Smartctl.ExitStatus
 	}
 
@@ -1141,15 +1167,16 @@ func NewSmartManager() (*SmartManager, error) {
 	}
 	sm.refreshExcludedDevices()
 	path, err := sm.detectSmartctl()
-	slog.Debug("smartctl", "path", path, "err", err)
 	if err != nil {
 		// Fail fast unless this host exposes eMMC or mdraid health via sysfs,
 		// in which case smartctl is optional.
 		if len(scanEmmcDevices()) > 0 || len(scanMdraidDevices()) > 0 {
+			slog.Debug("smartctl not found; using sysfs health collectors", "err", err)
 			return sm, nil
 		}
 		return nil, err
 	}
+	slog.Debug("Detected smartctl", "path", path)
 	sm.smartctlPath = path
 	return sm, nil
 }

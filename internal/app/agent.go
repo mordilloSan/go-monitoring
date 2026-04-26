@@ -75,7 +75,7 @@ func New(dataDir ...string) (app *App, err error) {
 		}
 	}
 
-	slog.Debug(version.Version)
+	slog.Debug("Agent version", "version", version.Version)
 
 	// initialize docker manager
 	app.dockerManager = dockerintegration.NewManager(func() {
@@ -124,9 +124,10 @@ func New(dataDir ...string) (app *App, err error) {
 		slog.Debug("GPU", "err", err)
 	}
 
-	// if debugging, print stats
+	// Avoid dumping full host snapshots in debug mode: process, program, and IRQ
+	// payloads can be large enough to flood container logs.
 	if app.debug {
-		slog.Debug("Stats", "data", app.gatherStats(common.DataRequestOptions{CacheTimeMs: defaultDataCacheTimeMs, IncludeDetails: true}))
+		slog.Debug("Debug logging enabled")
 	}
 
 	return app, nil
@@ -153,7 +154,7 @@ func (a *App) gatherStats(options common.DataRequestOptions) *system.CombinedDat
 	if a.dockerManager != nil {
 		if containerStats, err := a.dockerManager.GetStats(cacheTimeMs); err == nil {
 			data.Containers = containerStats
-			slog.Debug("Containers", "data", data.Containers)
+			slog.Debug("Containers", "count", len(data.Containers))
 		} else {
 			slog.Debug("Containers", "err", err)
 		}
@@ -161,7 +162,7 @@ func (a *App) gatherStats(options common.DataRequestOptions) *system.CombinedDat
 
 	// skip updating systemd services if cache time is not the default 60sec interval
 	if a.systemdManager != nil && cacheTimeMs == defaultDataCacheTimeMs {
-		services := a.systemdManager.getServiceStats(a.systemdManager.context(), nil, true)
+		services := a.systemdManager.getServiceStats(a.systemdManager.context(), nil, false)
 		totalCount := uint16(len(services))
 		if totalCount > 0 {
 			numFailed := a.systemdManager.getFailedServiceCount()
@@ -193,7 +194,7 @@ func (a *App) gatherStats(options common.DataRequestOptions) *system.CombinedDat
 			}
 		}
 	}
-	slog.Debug("Extra FS", "data", data.Stats.ExtraFs)
+	slog.Debug("Extra FS", "count", len(data.Stats.ExtraFs))
 
 	a.cache.Set(cacheableStatsData(data), cacheTimeMs)
 

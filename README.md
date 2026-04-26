@@ -5,7 +5,7 @@
 
 # go-monitoring
 
-A standalone Go agent that collects local system metrics, persists them to an embedded SQLite store, and exposes them over an HTTP JSON API.
+A standalone Go agent that collects local system metrics, persists them to an embedded SQLite store, and exposes them over an HTTP JSON API. Forked from Beszel.
 
 ## Features
 

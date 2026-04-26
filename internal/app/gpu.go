@@ -416,7 +416,9 @@ func (gm *GPUManager) GetCurrentData(cacheKey uint16) map[string]system.GPUData 
 		}
 		gpuData[id] = gpuAvg
 	}
-	slog.Debug("GPU", "data", gpuData)
+	if len(gpuData) > 0 {
+		slog.Debug("GPU data collected", "count", len(gpuData))
+	}
 	return gpuData
 }
 
@@ -611,7 +613,20 @@ func logGPUDiscovery(mode string, caps gpuCapabilities, requested, selected []co
 	if reason != "" {
 		args = append(args, "reason", reason)
 	}
-	slog.Info("GPU discovery", args...)
+	slog.Info(gpuDiscoveryLogMessage(mode, selected, reason), args...)
+}
+
+func gpuDiscoveryLogMessage(mode string, selected []collectorSource, reason string) string {
+	if len(selected) > 1 {
+		return "Detected GPU collectors"
+	}
+	if len(selected) == 1 {
+		return "Detected GPU collector"
+	}
+	if mode == "disabled" && reason == "SKIP_GPU=true" {
+		return "GPU monitoring disabled"
+	}
+	return "No GPU collector detected"
 }
 
 func (gm *GPUManager) startIntelCollector() {

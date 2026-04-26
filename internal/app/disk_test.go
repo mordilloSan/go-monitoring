@@ -93,6 +93,16 @@ func TestParseFilesystemEntry(t *testing.T) {
 	}
 }
 
+func TestDiskCounterNames(t *testing.T) {
+	names := diskCounterNames(map[string]disk.IOCountersStat{
+		"nvme0n1p2": {Name: "nvme0n1p2"},
+		"nvme0n1":   {Name: "nvme0n1"},
+		"sda":       {Name: "sda"},
+	})
+
+	assert.Equal(t, []string{"nvme0n1", "nvme0n1p2", "sda"}, names)
+}
+
 func TestExtraFilesystemPartitionInfo(t *testing.T) {
 	t.Run("uses partition device for label-only mountpoint", func(t *testing.T) {
 		device, customName := extraFilesystemPartitionInfo(disk.PartitionStat{

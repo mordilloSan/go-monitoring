@@ -132,7 +132,7 @@ docker-down:
 
 dev:
 	@if command -v entr >/dev/null 2>&1; then \
-		find "$(BACKEND_DIR)/internal" "$(BACKEND_DIR)/pkg" -type f -name '*.go' | entr -r sh -c 'cd "$(BACKEND_DIR)" && $(GO_CMD_ENV) "$(GO_BIN)" run $(AGENT_GO_TAGS) $(AGENT_PKG)'; \
+		find "$(BACKEND_DIR)/internal" "$(BACKEND_DIR)/pkg" -type f -name '*.go' | entr -r sh -c 'cd "$(BACKEND_DIR)" && LOG_LEVEL=$${LOG_LEVEL:-debug} $(GO_CMD_ENV) "$(GO_BIN)" run $(AGENT_GO_TAGS) $(AGENT_PKG)'; \
 	else \
-		cd "$(BACKEND_DIR)" && $(GO_CMD_ENV) "$(GO_BIN)" run $(AGENT_GO_TAGS) $(AGENT_PKG); \
+		cd "$(BACKEND_DIR)" && LOG_LEVEL=$${LOG_LEVEL:-debug} $(GO_CMD_ENV) "$(GO_BIN)" run $(AGENT_GO_TAGS) $(AGENT_PKG); \
 	fi

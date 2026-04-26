@@ -357,6 +357,24 @@ func TestScanDevicesWithEnvOverrideEmpty(t *testing.T) {
 	assert.Empty(t, sm.SmartDevices)
 }
 
+func TestSmartDeviceLabels(t *testing.T) {
+	labels := smartDeviceLabels([]*DeviceInfo{
+		{Name: "/dev/sda", Type: "sat"},
+		nil,
+		{Name: "/dev/nvme0", Type: "nvme"},
+		{Name: "/dev/sdb"},
+	})
+
+	assert.Equal(t, []string{"/dev/sda:sat", "/dev/nvme0:nvme", "/dev/sdb"}, labels)
+}
+
+func TestSmartDeviceSource(t *testing.T) {
+	assert.Equal(t, "scan+configured", smartDeviceSource([]*DeviceInfo{{Name: "/dev/sda"}}, []*DeviceInfo{{Name: "/dev/nvme0"}}))
+	assert.Equal(t, "configured", smartDeviceSource(nil, []*DeviceInfo{{Name: "/dev/nvme0"}}))
+	assert.Equal(t, "scan", smartDeviceSource([]*DeviceInfo{{Name: "/dev/sda"}}, nil))
+	assert.Equal(t, "scan", smartDeviceSource(nil, nil))
+}
+
 func TestSmartctlArgsWithoutType(t *testing.T) {
 	device := &DeviceInfo{Name: "/dev/sda"}
 

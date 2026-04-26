@@ -120,7 +120,7 @@ func (a *App) updateTemperatures(systemStats *system.Stats) {
 			return
 		}
 	}
-	slog.Debug("Temperature", "sensors", temps)
+	slog.Debug("Temperature sensors discovered", "count", len(temps))
 
 	// return if no sensors
 	if len(temps) == 0 {

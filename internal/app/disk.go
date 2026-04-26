@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -330,13 +331,13 @@ func (m *fsManager) initializeDiskInfo() {
 	if err != nil {
 		slog.Error("Error getting disk partitions", "err", err)
 	}
-	slog.Debug("Disk", "partitions", partitions)
+	slog.Debug("Disk partitions discovered", "count", len(partitions))
 
 	diskIoCounters, err := disk.IOCounters()
 	if err != nil {
 		slog.Error("Error getting diskstats", "err", err)
 	}
-	slog.Debug("Disk I/O", "diskstats", diskIoCounters)
+	slog.Debug("Disk I/O counters discovered", "count", len(diskIoCounters), "devices", diskCounterNames(diskIoCounters))
 	ctx := fsRegistrationContext{
 		filesystem:     filesystem,
 		diskIoCounters: diskIoCounters,
@@ -386,6 +387,15 @@ func (m *fsManager) initializeDiskInfo() {
 
 	m.pruneDuplicateRootExtraFilesystems()
 	m.initializeDiskIoStats(diskIoCounters)
+}
+
+func diskCounterNames(counters map[string]disk.IOCountersStat) []string {
+	names := make([]string, 0, len(counters))
+	for name := range counters {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
 }
 
 // Removes extra filesystems that mirror root usage (https://github.com/mordilloSan/go-monitoring/issues/1428).
