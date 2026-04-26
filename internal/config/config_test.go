@@ -60,3 +60,23 @@ func TestApplyEnvKeepsLegacyOverrides(t *testing.T) {
 	assert.Equal(t, time.Second, cfg.CacheTTL[store.PluginCPU].Duration())
 	assert.Equal(t, 8*time.Second, cfg.CacheTTL[store.PluginContainers].Duration())
 }
+
+func TestSaveIfMissingCreatesOnlyOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := Default()
+	cfg.CollectorInterval = Duration(15 * time.Second)
+
+	created, err := SaveIfMissing(path, cfg)
+	require.NoError(t, err)
+	assert.True(t, created)
+
+	cfg.CollectorInterval = Duration(30 * time.Second)
+	created, err = SaveIfMissing(path, cfg)
+	require.NoError(t, err)
+	assert.False(t, created)
+
+	loaded, exists, err := Load(path)
+	require.NoError(t, err)
+	assert.True(t, exists)
+	assert.Equal(t, 15*time.Second, loaded.CollectorInterval.Duration())
+}

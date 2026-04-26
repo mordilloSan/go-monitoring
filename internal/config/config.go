@@ -118,6 +118,36 @@ func Save(path string, cfg Config) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
+func SaveIfMissing(path string, cfg Config) (bool, error) {
+	if strings.TrimSpace(path) == "" {
+		path = DefaultPath()
+	}
+	if err := Validate(cfg); err != nil {
+		return false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return false, err
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return false, err
+	}
+	data = append(data, '\n')
+
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer file.Close()
+	if _, err := file.Write(data); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func Validate(cfg Config) error {
 	if cfg.CollectorInterval.Duration() <= 0 {
 		return fmt.Errorf("collector_interval must be greater than zero")

@@ -118,7 +118,8 @@ docker compose -f docker/docker-compose.yml run --rm go-monitoring config --coll
 Compose stores the config file inside the existing `/var/lib/go-monitoring`
 volume. You can also bind-mount a single config file to
 `/var/lib/go-monitoring/config.json`; when that file is absent the container
-loads built-in defaults.
+creates it from built-in defaults on startup. If the file cannot be created,
+the container continues with the same built-in defaults in memory.
 
 `make docker-up` starts the Compose service in the foreground. Stop it with:
 

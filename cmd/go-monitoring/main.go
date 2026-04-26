@@ -250,6 +250,13 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to load config: ", err)
 	}
+	if opts.command == commandRun && !loaded {
+		if created, err := config.SaveIfMissing(opts.configPath, cfg); err != nil {
+			log.Printf("Failed to create default config at %s; using built-in defaults: %v", opts.configPath, err)
+		} else if created {
+			log.Printf("Created default config: %s", opts.configPath)
+		}
+	}
 	config.ApplyEnv(&cfg, utils.GetEnv)
 	err = applyCLIToConfig(&cfg, opts)
 	if err != nil {
