@@ -21,7 +21,7 @@ import (
 	"github.com/mordilloSan/go-monitoring/internal/store"
 )
 
-const defaultCollectorInterval = time.Minute
+const DefaultCollectorInterval = 15 * time.Second
 
 // httpRuntime groups the HTTP server with its effective listen address. The
 // effective address differs from the requested one when the caller asks for
@@ -52,7 +52,7 @@ func (a *App) StartContext(ctx context.Context, opts RunOptions) error {
 		return errors.New("agent already started")
 	}
 	if opts.CollectorInterval <= 0 {
-		opts.CollectorInterval = defaultCollectorInterval
+		opts.CollectorInterval = DefaultCollectorInterval
 	}
 	if opts.Addr == "" {
 		return errors.New("listen address is required")

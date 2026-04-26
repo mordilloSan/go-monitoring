@@ -51,15 +51,37 @@ NVML (NVIDIA GPU) support is enabled automatically on `linux/amd64` glibc hosts 
 ## Run
 
 ```sh
-./go-monitoring                       # listens on :45876 by default
-./go-monitoring --listen :9000        # custom address/port
-./go-monitoring --history cpu,mem     # store history only for selected plugins
+./go-monitoring                       # show CLI help
+./go-monitoring run                   # listens on :45876 and collects every 15s by default
+./go-monitoring run --listen :9000    # custom address/port
+./go-monitoring run --history cpu,mem # store history only for selected plugins
 ./go-monitoring health                # exit 0 if the latest tick is fresh
 ./go-monitoring --version
 ```
 
+Dash-prefixed command aliases are also accepted: `./go-monitoring -run` and
+`./go-monitoring -config`.
+
+Configure the agent with a JSON file:
+
+```sh
+./go-monitoring config
+./go-monitoring config --init
+./go-monitoring config --collector-interval 30s --api-cache containers=10s
+./go-monitoring config --print
+./go-monitoring run --config ~/.config/go-monitoring/config.json
+```
+
+The config file defaults to `$CONFIG_FILE` when set. Root runs use
+`/etc/go-monitoring/config.json`; non-root runs use
+`$XDG_CONFIG_HOME/go-monitoring/config.json` or `~/.config/go-monitoring/config.json`.
+If the file is absent, built-in defaults are used. Config values can be
+overridden by the legacy environment variables below and then by explicit CLI
+flags.
+
 Environment variables:
 
+- `CONFIG_FILE` — config file path. Docker uses `/var/lib/go-monitoring/config.json`.
 - `LISTEN` / `PORT` — fallback listen address if `--listen` is not provided. Docker uses `PORT=45876` by default.
 - `HISTORY` — comma-separated history plugin allowlist, or `all` / `none` (`cpu,mem,diskio,network,containers` by default)
 - `MEM_CALC` — memory calculation formula
@@ -84,6 +106,19 @@ Build and run the API locally with Compose:
 ```sh
 make docker-up
 ```
+
+The image starts `go-monitoring run` by default and also contains the CLI, so
+config can be managed in the container:
+
+```sh
+docker compose -f docker/docker-compose.yml run --rm go-monitoring config --init
+docker compose -f docker/docker-compose.yml run --rm go-monitoring config --collector-interval 30s --api-cache containers=10s
+```
+
+Compose stores the config file inside the existing `/var/lib/go-monitoring`
+volume. You can also bind-mount a single config file to
+`/var/lib/go-monitoring/config.json`; when that file is absent the container
+loads built-in defaults.
 
 `make docker-up` starts the Compose service in the foreground. Stop it with:
 

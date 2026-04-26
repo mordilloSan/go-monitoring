@@ -24,7 +24,7 @@ func TestLiveCurrentTTLsFromEnv(t *testing.T) {
 	assert.Equal(t, 12*time.Second, ttls[store.PluginContainers])
 	assert.Equal(t, 3*time.Second, ttls[store.PluginProcesses])
 	assert.Equal(t, 12*time.Second, ttls[store.PluginPrograms])
-	assert.Equal(t, 1500*time.Millisecond, ttls[liveSystemSummaryKey])
+	assert.Equal(t, 1500*time.Millisecond, ttls[LiveSystemSummaryKey])
 }
 
 func TestLiveCacheTimeKeyAvoidsCollectorKey(t *testing.T) {

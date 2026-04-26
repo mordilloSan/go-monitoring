@@ -3,8 +3,10 @@ package main
 import (
 	"os"
 	"testing"
+	"time"
 
 	"github.com/mordilloSan/go-monitoring/internal/app"
+	"github.com/mordilloSan/go-monitoring/internal/config"
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 )
@@ -53,6 +55,7 @@ func TestGetAddress(t *testing.T) {
 func TestParseFlags(t *testing.T) {
 	oldArgs := os.Args
 	defer func() { os.Args = oldArgs }()
+	defaultConfigPath := config.DefaultPath()
 
 	tests := []struct {
 		name         string
@@ -62,25 +65,45 @@ func TestParseFlags(t *testing.T) {
 		expectedArgs []string
 	}{
 		{
-			name:     "no flags",
-			args:     []string{"cmd"},
-			expected: cmdOptions{},
+			name:    "no args shows help",
+			args:    []string{"cmd"},
+			handled: true,
+		},
+		{
+			name:     "run command",
+			args:     []string{"cmd", "run"},
+			expected: cmdOptions{command: commandRun, configPath: defaultConfigPath},
 		},
 		{
 			name:     "listen flag",
-			args:     []string{"cmd", "--listen", "8080"},
-			expected: cmdOptions{listen: "8080"},
+			args:     []string{"cmd", "run", "--listen", "8080"},
+			expected: cmdOptions{command: commandRun, configPath: defaultConfigPath, listen: "8080", listenSet: true},
 		},
 		{
 			name:     "history flag",
-			args:     []string{"cmd", "--history", "cpu,mem"},
-			expected: cmdOptions{history: "cpu,mem", historySet: true},
+			args:     []string{"cmd", "run", "--history", "cpu,mem"},
+			expected: cmdOptions{command: commandRun, configPath: defaultConfigPath, history: "cpu,mem", historySet: true},
+		},
+		{
+			name:     "collector interval flag",
+			args:     []string{"cmd", "run", "--collector-interval", "30s"},
+			expected: cmdOptions{command: commandRun, configPath: defaultConfigPath, collectorInterval: 30 * time.Second, collectorIntervalSet: true},
 		},
 		{
 			name:         "legacy single dash listen",
-			args:         []string{"cmd", "-listen=8080"},
-			expected:     cmdOptions{listen: "8080"},
-			expectedArgs: []string{"cmd", "--listen=8080"},
+			args:         []string{"cmd", "run", "-listen=8080"},
+			expected:     cmdOptions{command: commandRun, configPath: defaultConfigPath, listen: "8080", listenSet: true},
+			expectedArgs: []string{"cmd", "run", "-listen=8080"},
+		},
+		{
+			name:     "dash run alias",
+			args:     []string{"cmd", "-run", "--listen", "8080"},
+			expected: cmdOptions{command: commandRun, configPath: defaultConfigPath, listen: "8080", listenSet: true},
+		},
+		{
+			name:     "capital dash config alias",
+			args:     []string{"cmd", "-Config", "--print"},
+			expected: cmdOptions{command: commandConfig, configPath: defaultConfigPath, configPrint: true},
 		},
 		{
 			name:    "help command handled",
@@ -103,6 +126,7 @@ func TestParseFlags(t *testing.T) {
 
 			assert.Equal(t, tt.handled, handled)
 			if !handled {
+				tt.expected.cacheTTL = opts.cacheTTL
 				assert.Equal(t, tt.expected, opts)
 			}
 			if tt.expectedArgs != nil {

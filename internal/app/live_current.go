@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"strings"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 	"github.com/mordilloSan/go-monitoring/internal/utils"
 )
 
-const liveSystemSummaryKey = "system_summary"
+const LiveSystemSummaryKey = "system_summary"
 
 var baseSystemPluginNames = []string{
 	store.PluginCPU,
@@ -33,8 +34,14 @@ type liveCacheEntry struct {
 }
 
 func liveCurrentTTLsFromEnv(env func(string) (string, bool)) map[string]time.Duration {
-	ttls := map[string]time.Duration{
-		liveSystemSummaryKey:    2 * time.Second,
+	ttls := DefaultLiveCurrentTTLs()
+	ApplyLiveCurrentTTLEnv(ttls, env)
+	return ttls
+}
+
+func DefaultLiveCurrentTTLs() map[string]time.Duration {
+	return map[string]time.Duration{
+		LiveSystemSummaryKey:    2 * time.Second,
 		store.PluginCPU:         2 * time.Second,
 		store.PluginMem:         2 * time.Second,
 		store.PluginSwap:        2 * time.Second,
@@ -52,7 +59,9 @@ func liveCurrentTTLsFromEnv(env func(string) (string, bool)) map[string]time.Dur
 		store.PluginIRQ:         2 * time.Second,
 		store.PluginSmart:       30 * time.Second,
 	}
+}
 
+func ApplyLiveCurrentTTLEnv(ttls map[string]time.Duration, env func(string) (string, bool)) {
 	if raw, ok := env("API_CACHE_DEFAULT"); ok {
 		if ttl, valid := parseAPICacheTTL("API_CACHE_DEFAULT", raw); valid {
 			for key := range ttls {
@@ -75,7 +84,7 @@ func liveCurrentTTLsFromEnv(env func(string) (string, bool)) map[string]time.Dur
 		}
 	}
 
-	keys := append(store.PluginNames(), liveSystemSummaryKey)
+	keys := append(store.PluginNames(), LiveSystemSummaryKey)
 	for _, key := range keys {
 		envName := "API_CACHE_" + strings.ToUpper(key)
 		if raw, ok := env(envName); ok {
@@ -84,7 +93,11 @@ func liveCurrentTTLsFromEnv(env func(string) (string, bool)) map[string]time.Dur
 			}
 		}
 	}
-	return ttls
+}
+
+func (a *App) SetLiveCurrentTTLs(ttls map[string]time.Duration) {
+	a.liveTTLs = make(map[string]time.Duration, len(ttls))
+	maps.Copy(a.liveTTLs, ttls)
 }
 
 func parseAPICacheTTL(name, raw string) (time.Duration, bool) {
@@ -115,8 +128,8 @@ func (a *App) CurrentPlugin(plugin string) (int64, json.RawMessage, error) {
 }
 
 func (a *App) SystemSummary() (int64, system.Summary, error) {
-	capturedAt, raw, err := a.currentCachedRaw(liveSystemSummaryKey, a.liveTTL(liveSystemSummaryKey), func() (int64, json.RawMessage, error) {
-		cacheKey := liveCacheTimeKey(a.liveTTL(liveSystemSummaryKey))
+	capturedAt, raw, err := a.currentCachedRaw(LiveSystemSummaryKey, a.liveTTL(LiveSystemSummaryKey), func() (int64, json.RawMessage, error) {
+		cacheKey := liveCacheTimeKey(a.liveTTL(LiveSystemSummaryKey))
 		data := a.collectLiveCurrentData(cacheKey, true, false)
 		capturedAt := time.Now().UTC().UnixMilli()
 		if _, err := a.cachePluginPayloads(data, capturedAt, false); err != nil {

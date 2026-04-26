@@ -47,6 +47,7 @@ COPY --from=intel-tools /lib/x86_64-linux-gnu/libc.so.6 /lib/x86_64-linux-gnu/li
 COPY --from=intel-tools /lib/x86_64-linux-gnu/libglib-2.0.so.0 /lib/x86_64-linux-gnu/libudev.so.1 /lib/x86_64-linux-gnu/libpcre2-8.so.0 /usr/lib/
 
 ENV DATA_DIR=/var/lib/go-monitoring \
+	CONFIG_FILE=/var/lib/go-monitoring/config.json \
 	PORT=45876 \
 	HISTORY=cpu,mem,diskio,network,containers
 
@@ -63,3 +64,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
 	CMD ["/usr/local/bin/go-monitoring", "health"]
 
 ENTRYPOINT ["/usr/local/bin/go-monitoring"]
+CMD ["run"]
