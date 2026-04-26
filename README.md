@@ -65,7 +65,7 @@ Dash-prefixed command aliases are also accepted: `./go-monitoring -run` and
 Configure the agent with a JSON file:
 
 ```sh
-./go-monitoring config
+./go-monitoring config                 # interactive menu with arrow keys
 ./go-monitoring config --init
 ./go-monitoring config --collector-interval 30s --api-cache containers=10s
 ./go-monitoring config --print
@@ -75,9 +75,10 @@ Configure the agent with a JSON file:
 The config file defaults to `$CONFIG_FILE` when set. Root runs use
 `/etc/go-monitoring/config.json`; non-root runs use
 `$XDG_CONFIG_HOME/go-monitoring/config.json` or `~/.config/go-monitoring/config.json`.
-If the file is absent, built-in defaults are used. Config values can be
-overridden by the legacy environment variables below and then by explicit CLI
-flags.
+If the file is absent, `run` creates it from the effective startup config.
+Precedence is built-in defaults, config file, legacy environment variables,
+and explicit CLI flags. If the config file cannot be created, the agent
+continues with the effective config in memory.
 
 Environment variables:
 
@@ -118,8 +119,8 @@ docker compose -f docker/docker-compose.yml run --rm go-monitoring config --coll
 Compose stores the config file inside the existing `/var/lib/go-monitoring`
 volume. You can also bind-mount a single config file to
 `/var/lib/go-monitoring/config.json`; when that file is absent the container
-creates it from built-in defaults on startup. If the file cannot be created,
-the container continues with the same built-in defaults in memory.
+creates it from the effective startup config on startup. If the file cannot be
+created, the container continues with the same effective config in memory.
 
 `make docker-up` starts the Compose service in the foreground. Stop it with:
 

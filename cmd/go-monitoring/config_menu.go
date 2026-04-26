@@ -31,11 +31,16 @@ type configMenu struct {
 	rawState *term.State
 }
 
+type configMenuResult struct {
+	run bool
+	cfg config.Config
+}
+
 func shouldRunConfigMenu() bool {
 	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
-func runConfigMenu(path string, cfg config.Config, loaded bool) error {
+func runConfigMenu(path string, cfg config.Config, loaded bool) (configMenuResult, error) {
 	menu := &configMenu{
 		in:  os.Stdin,
 		out: os.Stdout,
@@ -43,9 +48,9 @@ func runConfigMenu(path string, cfg config.Config, loaded bool) error {
 	return menu.run(path, cfg, loaded)
 }
 
-func (m *configMenu) run(path string, cfg config.Config, loaded bool) error {
+func (m *configMenu) run(path string, cfg config.Config, loaded bool) (configMenuResult, error) {
 	if err := m.enterRaw(); err != nil {
-		return err
+		return configMenuResult{}, err
 	}
 	defer m.exitRaw()
 
@@ -56,14 +61,16 @@ func (m *configMenu) run(path string, cfg config.Config, loaded bool) error {
 			fmt.Sprintf("Collector interval: %s", cfg.CollectorInterval.Duration()),
 			fmt.Sprintf("History plugins: %s", cfg.History),
 			"Live API cache TTLs",
+			"Reset to defaults",
 			"Save and exit",
+			"Save and run",
 			"Exit without saving",
 		}
 		m.render("go-monitoring config", path, loaded, items, cursor)
 
 		switch key, err := m.readKey(); {
 		case err != nil:
-			return err
+			return configMenuResult{}, err
 		case key == menuKeyUp:
 			cursor = (cursor + len(items) - 1) % len(items)
 		case key == menuKeyDown:
@@ -71,15 +78,17 @@ func (m *configMenu) run(path string, cfg config.Config, loaded bool) error {
 		case key == menuKeyQuit || key == menuKeyEscape:
 			m.exitRaw()
 			fmt.Fprintln(m.out, "No changes saved.")
-			return nil
+			return configMenuResult{}, nil
 		case key == menuKeySave:
-			return m.save(path, cfg)
+			if saved, saveErr := m.save(path, cfg); saveErr != nil || saved {
+				return configMenuResult{cfg: cfg}, saveErr
+			}
 		case key == menuKeyEnter:
 			switch cursor {
 			case 0:
 				next, changed, promptErr := m.promptString("Listen address", cfg.Listen, validateListen)
 				if promptErr != nil {
-					return promptErr
+					return configMenuResult{}, promptErr
 				}
 				if changed {
 					cfg.Listen = next
@@ -92,30 +101,87 @@ func (m *configMenu) run(path string, cfg config.Config, loaded bool) error {
 					return nil
 				})
 				if promptErr != nil {
-					return promptErr
+					return configMenuResult{}, promptErr
 				}
 				if changed {
 					cfg.CollectorInterval = config.Duration(next)
 				}
 			case 2:
-				next, changed, promptErr := m.promptString("History plugins", cfg.History, validateHistory)
-				if promptErr != nil {
-					return promptErr
-				}
-				if changed {
-					cfg.History = next
+				if err := m.historyMenu(&cfg); err != nil {
+					return configMenuResult{}, err
 				}
 			case 3:
 				if err := m.cacheMenu(&cfg); err != nil {
-					return err
+					return configMenuResult{}, err
 				}
 			case 4:
-				return m.save(path, cfg)
+				cfg = config.Default()
 			case 5:
+				if saved, saveErr := m.save(path, cfg); saveErr != nil || saved {
+					return configMenuResult{cfg: cfg}, saveErr
+				}
+			case 6:
+				if saved, saveErr := m.save(path, cfg); saveErr != nil || saved {
+					return configMenuResult{run: saved, cfg: cfg}, saveErr
+				}
+				_ = m.enterRaw()
+			case 7:
 				m.exitRaw()
 				fmt.Fprintln(m.out, "No changes saved.")
-				return nil
+				return configMenuResult{}, nil
 			}
+		}
+	}
+}
+
+func (m *configMenu) historyMenu(cfg *config.Config) error {
+	cursor := 0
+	selected, err := selectedHistoryPlugins(cfg.History)
+	if err != nil {
+		return err
+	}
+	plugins := store.PluginNames()
+	for {
+		items := make([]string, 0, len(plugins)+3)
+		items = append(items, "Select all", "Select none")
+		for _, plugin := range plugins {
+			marker := "[ ]"
+			if selected[plugin] {
+				marker = "[x]"
+			}
+			items = append(items, marker+" "+plugin)
+		}
+		items = append(items, "Back")
+		m.render("History plugins", historyFromSelection(selected), true, items, cursor)
+
+		switch key, err := m.readKey(); {
+		case err != nil:
+			return err
+		case key == menuKeyUp:
+			cursor = (cursor + len(items) - 1) % len(items)
+		case key == menuKeyDown:
+			cursor = (cursor + 1) % len(items)
+		case key == menuKeyEscape || key == menuKeyQuit:
+			cfg.History = historyFromSelection(selected)
+			return nil
+		case key == menuKeyEnter:
+			switch cursor {
+			case 0:
+				for _, plugin := range plugins {
+					selected[plugin] = true
+				}
+			case 1:
+				for _, plugin := range plugins {
+					selected[plugin] = false
+				}
+			case len(items) - 1:
+				cfg.History = historyFromSelection(selected)
+				return nil
+			default:
+				plugin := plugins[cursor-2]
+				selected[plugin] = !selected[plugin]
+			}
+			cfg.History = historyFromSelection(selected)
 		}
 	}
 }
@@ -124,7 +190,8 @@ func (m *configMenu) cacheMenu(cfg *config.Config) error {
 	cursor := 0
 	keys := config.CacheKeys()
 	for {
-		items := make([]string, 0, len(keys)+1)
+		items := make([]string, 0, len(keys)+4)
+		items = append(items, "Set all TTLs", "Set expensive TTLs", "Reset TTLs to defaults")
 		for _, key := range keys {
 			items = append(items, fmt.Sprintf("%s: %s", key, cfg.CacheTTL[key].Duration()))
 		}
@@ -144,19 +211,35 @@ func (m *configMenu) cacheMenu(cfg *config.Config) error {
 			if cursor == len(items)-1 {
 				return nil
 			}
-			cacheKey := keys[cursor]
-			next, changed, promptErr := m.promptDuration("Cache TTL for "+cacheKey, cfg.CacheTTL[cacheKey].Duration(), func(value time.Duration) error {
-				if value < 0 {
-					return fmt.Errorf("duration must not be negative")
+			switch cursor {
+			case 0:
+				next, changed, promptErr := m.promptDuration("TTL for all live API caches", 2*time.Second, validateCacheTTL)
+				if promptErr != nil {
+					return promptErr
 				}
-				return nil
-			})
-			if promptErr != nil {
-				return promptErr
-			}
-			if changed {
-				if err := config.SetCacheTTL(cfg, cacheKey, next); err != nil {
-					return err
+				if changed {
+					config.ApplyCacheDefault(cfg, next)
+				}
+			case 1:
+				next, changed, promptErr := m.promptDuration("TTL for expensive live API caches", 10*time.Second, validateCacheTTL)
+				if promptErr != nil {
+					return promptErr
+				}
+				if changed {
+					config.ApplyCacheExpensive(cfg, next)
+				}
+			case 2:
+				cfg.CacheTTL = config.Default().CacheTTL
+			default:
+				cacheKey := keys[cursor-3]
+				next, changed, promptErr := m.promptDuration("Cache TTL for "+cacheKey, cfg.CacheTTL[cacheKey].Duration(), validateCacheTTL)
+				if promptErr != nil {
+					return promptErr
+				}
+				if changed {
+					if err := config.SetCacheTTL(cfg, cacheKey, next); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -299,16 +382,16 @@ func (m *configMenu) showPromptError(err error) error {
 	return readErr
 }
 
-func (m *configMenu) save(path string, cfg config.Config) error {
+func (m *configMenu) save(path string, cfg config.Config) (bool, error) {
 	if err := config.Save(path, cfg); err != nil {
 		if waitErr := m.showPromptError(err); waitErr != nil {
-			return waitErr
+			return false, waitErr
 		}
-		return nil
+		return false, nil
 	}
 	m.exitRaw()
 	fmt.Fprintln(m.out, "Saved config:", path)
-	return nil
+	return true, nil
 }
 
 func (m *configMenu) enterRaw() error {
@@ -341,4 +424,40 @@ func validateListen(value string) error {
 func validateHistory(value string) error {
 	_, err := store.ParseHistoryPlugins(value, true)
 	return err
+}
+
+func validateCacheTTL(value time.Duration) error {
+	if value < 0 {
+		return fmt.Errorf("duration must not be negative")
+	}
+	return nil
+}
+
+func selectedHistoryPlugins(raw string) (map[string]bool, error) {
+	plugins, err := store.ParseHistoryPlugins(raw, true)
+	if err != nil {
+		return nil, err
+	}
+	selected := make(map[string]bool, len(store.PluginNames()))
+	for _, plugin := range plugins {
+		selected[plugin] = true
+	}
+	return selected, nil
+}
+
+func historyFromSelection(selected map[string]bool) string {
+	plugins := store.PluginNames()
+	out := make([]string, 0, len(plugins))
+	for _, plugin := range plugins {
+		if selected[plugin] {
+			out = append(out, plugin)
+		}
+	}
+	if len(out) == 0 {
+		return "none"
+	}
+	if len(out) == len(plugins) {
+		return "all"
+	}
+	return strings.Join(out, ",")
 }

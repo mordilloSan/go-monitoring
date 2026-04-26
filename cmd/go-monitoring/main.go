@@ -250,20 +250,21 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to load config: ", err)
 	}
-	if opts.command == commandRun && !loaded {
-		if created, err := config.SaveIfMissing(opts.configPath, cfg); err != nil {
-			log.Printf("Failed to create default config at %s; using built-in defaults: %v", opts.configPath, err)
-		} else if created {
-			log.Printf("Created default config: %s", opts.configPath)
-		}
-	}
 	config.ApplyEnv(&cfg, utils.GetEnv)
 	err = applyCLIToConfig(&cfg, opts)
 	if err != nil {
 		log.Fatal("Invalid config: ", err)
 	}
+	if opts.command == commandRun && !loaded {
+		if created, err := config.SaveIfMissing(opts.configPath, cfg); err != nil {
+			log.Printf("Failed to create default config at %s; using effective in-memory defaults: %v", opts.configPath, err)
+		} else if created {
+			log.Printf("Created default config: %s", opts.configPath)
+		}
+	}
 
 	if opts.command == commandConfig {
+		runAfterConfig := false
 		switch {
 		case opts.configInit && loaded && !configWasMutated(opts):
 			fmt.Println("Config already exists:", opts.configPath)
@@ -283,9 +284,14 @@ func main() {
 			}
 			fmt.Print(rendered)
 		case !opts.configInit && !configWasMutated(opts) && shouldRunConfigMenu():
-			err = runConfigMenu(opts.configPath, cfg, loaded)
+			var result configMenuResult
+			result, err = runConfigMenu(opts.configPath, cfg, loaded)
 			if err != nil {
 				log.Fatal("Config menu failed: ", err)
+			}
+			runAfterConfig = result.run
+			if runAfterConfig {
+				cfg = result.cfg
 			}
 		case !opts.configInit && !configWasMutated(opts):
 			var rendered string
@@ -295,7 +301,9 @@ func main() {
 			}
 			fmt.Print(rendered)
 		}
-		return
+		if !runAfterConfig {
+			return
+		}
 	}
 
 	a, err := app.New()
