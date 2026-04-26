@@ -77,7 +77,7 @@ func (sm *SmartManager) Refresh(forceScan bool) error {
 			continue
 		}
 		if err := sm.CollectSmart(deviceInfo); err != nil {
-			collectErr = err
+			collectErr = fmt.Errorf("%s: %w", deviceInfo.Name, err)
 		}
 	}
 
@@ -218,7 +218,7 @@ func (sm *SmartManager) ScanDevices(force bool) error {
 		return errNoValidSmartData
 	}
 
-	slog.Info("Detected SMART devices", "devices", smartDeviceLabels(finalDevices), "source", smartDeviceSource(scannedDevices, configuredDevices))
+	slog.Info("Discovered SMART device candidates", "devices", smartDeviceLabels(finalDevices), "source", smartDeviceSource(scannedDevices, configuredDevices))
 	return nil
 }
 
@@ -565,10 +565,8 @@ func (sm *SmartManager) CollectSmart(deviceInfo *DeviceInfo) error {
 
 	if !hasValidData {
 		if err != nil {
-			slog.Debug("SMART data unavailable", "device", deviceInfo.Name, "err", err)
 			return err
 		}
-		slog.Debug("SMART data unavailable", "device", deviceInfo.Name, "err", errNoValidSmartData)
 		return errNoValidSmartData
 	}
 

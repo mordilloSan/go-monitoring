@@ -76,6 +76,9 @@ func New(dataDir ...string) (app *App, err error) {
 	}
 
 	slog.Debug("Agent version", "version", version.Version)
+	if app.debug {
+		slog.Debug("Debug logging enabled")
+	}
 
 	// initialize docker manager
 	app.dockerManager = dockerintegration.NewManager(func() {
@@ -122,12 +125,6 @@ func New(dataDir ...string) (app *App, err error) {
 	app.gpuManager, err = NewGPUManager()
 	if err != nil {
 		slog.Debug("GPU", "err", err)
-	}
-
-	// Avoid dumping full host snapshots in debug mode: process, program, and IRQ
-	// payloads can be large enough to flood container logs.
-	if app.debug {
-		slog.Debug("Debug logging enabled")
 	}
 
 	return app, nil

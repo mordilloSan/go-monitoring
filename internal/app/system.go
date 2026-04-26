@@ -161,7 +161,6 @@ func (a *App) getSystemStats(cacheTimeMs uint16) system.Stats {
 		systemStats.LoadAvg[0] = avgstat.Load1
 		systemStats.LoadAvg[1] = avgstat.Load5
 		systemStats.LoadAvg[2] = avgstat.Load15
-		slog.Debug("Load average", "5m", avgstat.Load5, "15m", avgstat.Load15)
 	} else {
 		slog.Error("Error getting load average", "err", err)
 	}
