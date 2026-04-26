@@ -67,6 +67,7 @@ func (s *Server) Handler(collectorInterval time.Duration) http.Handler {
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/api/v1/meta", s.handleMeta(collectorInterval))
 	mux.HandleFunc("/api/v1/system/summary", s.handleSystemSummary)
+	mux.HandleFunc("/api/v1/benchmark", s.handleBenchmark(mux))
 	NewRegistry(s.metrics, s.smartRefresher).Mount(mux, "/api/v1/")
 	if s.requestLogging {
 		return logRequests(mux)

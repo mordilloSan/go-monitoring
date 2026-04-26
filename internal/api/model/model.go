@@ -17,6 +17,23 @@ type SystemSummaryResponse struct {
 	system.Summary
 }
 
+type BenchmarkEndpointResult struct {
+	Method     string  `json:"method"`
+	Path       string  `json:"path"`
+	Status     int     `json:"status"`
+	DurationMS float64 `json:"duration_ms"`
+	Bytes      int     `json:"bytes"`
+}
+
+type BenchmarkResponse struct {
+	CapturedAt      int64                     `json:"captured_at"`
+	TotalDurationMS float64                   `json:"total_duration_ms"`
+	EndpointCount   int                       `json:"endpoint_count"`
+	SuccessfulCount int                       `json:"successful_count"`
+	FailedCount     int                       `json:"failed_count"`
+	Items           []BenchmarkEndpointResult `json:"items"`
+}
+
 type HistoryItem[T any] struct {
 	CapturedAt int64 `json:"captured_at"`
 	Stats      T     `json:"stats"`

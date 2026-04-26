@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	apimodel "github.com/mordilloSan/go-monitoring/internal/api/model"
 	"github.com/mordilloSan/go-monitoring/internal/domain/smart"
 	healthpkg "github.com/mordilloSan/go-monitoring/internal/health"
 	storepkg "github.com/mordilloSan/go-monitoring/internal/store"
@@ -92,6 +94,7 @@ func TestHTTPRoutes(t *testing.T) {
 		{name: "disabled history", method: http.MethodGet, path: "/api/v1/swap/history?resolution=1m", status: http.StatusNotFound, body: "404 page not found"},
 		{name: "invalid history", method: http.MethodGet, path: "/api/v1/cpu/history?resolution=bad", status: http.StatusBadRequest, body: `"error":"invalid resolution"`},
 		{name: "smart refresh", method: http.MethodPost, path: "/api/v1/smart/refresh", status: http.StatusOK, body: `"items":[]`},
+		{name: "benchmark", method: http.MethodGet, path: "/api/v1/benchmark", status: http.StatusOK, body: `"endpoint_count":26`},
 		{name: "legacy summary removed", method: http.MethodGet, path: "/api/v1/summary", status: http.StatusNotFound, body: "404 page not found"},
 		{name: "legacy system history removed", method: http.MethodGet, path: "/api/v1/history/system?resolution=1m", status: http.StatusNotFound, body: "404 page not found"},
 		{name: "legacy processlist removed", method: http.MethodGet, path: "/api/v1/processlist", status: http.StatusNotFound, body: "404 page not found"},
@@ -110,6 +113,32 @@ func TestHTTPRoutes(t *testing.T) {
 			assert.Contains(t, rec.Body.String(), tt.body)
 		})
 	}
+}
+
+func TestBenchmarkEndpointReportsReadOnlyRoutes(t *testing.T) {
+	server := newHTTPTestServer(t)
+	handler := server.Handler(time.Minute)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/benchmark", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var response apimodel.BenchmarkResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
+	assert.Equal(t, 26, response.EndpointCount)
+	assert.Equal(t, response.EndpointCount, len(response.Items))
+	assert.Equal(t, response.EndpointCount, response.SuccessfulCount)
+	assert.Zero(t, response.FailedCount)
+
+	paths := map[string]string{}
+	for _, item := range response.Items {
+		paths[item.Method+" "+item.Path] = item.Method
+		assert.NotZero(t, item.Status)
+	}
+	assert.Contains(t, paths, "GET /api/v1/system/summary")
+	assert.Contains(t, paths, "GET /api/v1/cpu/history?resolution=1m&limit=1")
+	assert.NotContains(t, paths, "POST /api/v1/smart/refresh")
 }
 
 func TestRequestLoggingEnabled(t *testing.T) {
