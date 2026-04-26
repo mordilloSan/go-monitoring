@@ -12,6 +12,11 @@ type SummaryResponse struct {
 	system.CombinedData
 }
 
+type SystemSummaryResponse struct {
+	CapturedAt int64 `json:"captured_at"`
+	system.Summary
+}
+
 type HistoryItem[T any] struct {
 	CapturedAt int64 `json:"captured_at"`
 	Stats      T     `json:"stats"`

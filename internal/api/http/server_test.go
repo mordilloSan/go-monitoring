@@ -68,6 +68,7 @@ func TestHTTPRoutes(t *testing.T) {
 	}{
 		{name: "health", method: http.MethodGet, path: "/healthz", status: http.StatusOK, body: `"healthy":true`},
 		{name: "meta", method: http.MethodGet, path: "/api/v1/meta", status: http.StatusOK, body: `"collector_interval":"1m0s"`},
+		{name: "system summary", method: http.MethodGet, path: "/api/v1/system/summary", status: http.StatusOK, body: `"hostname":"host-a"`},
 		{name: "plugins", method: http.MethodGet, path: "/api/v1/plugins", status: http.StatusOK, body: `"name":"cpu"`},
 		{name: "all", method: http.MethodGet, path: "/api/v1/all", status: http.StatusOK, body: `"containers"`},
 		{name: "cpu", method: http.MethodGet, path: "/api/v1/cpu", status: http.StatusOK, body: `"cpu_percent":55`},

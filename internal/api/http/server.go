@@ -12,6 +12,7 @@ import (
 	"time"
 
 	apimodel "github.com/mordilloSan/go-monitoring/internal/api/model"
+	"github.com/mordilloSan/go-monitoring/internal/domain/system"
 	"github.com/mordilloSan/go-monitoring/internal/health"
 	"github.com/mordilloSan/go-monitoring/internal/store"
 	"github.com/mordilloSan/go-monitoring/internal/utils"
@@ -25,6 +26,7 @@ type MetricsReader interface {
 	CurrentPlugin(plugin string) (int64, json.RawMessage, error)
 	PluginHistory(plugin, resolution string, from, to int64, limit int) ([]store.HistoryRecord[json.RawMessage], error)
 	HistoryEnabled(plugin string) bool
+	SystemSummary() (int64, system.Summary, error)
 }
 
 type SmartRefresher interface {
@@ -64,6 +66,7 @@ func (s *Server) Handler(collectorInterval time.Duration) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/api/v1/meta", s.handleMeta(collectorInterval))
+	mux.HandleFunc("/api/v1/system/summary", s.handleSystemSummary)
 	NewRegistry(s.metrics, s.smartRefresher).Mount(mux, "/api/v1/")
 	if s.requestLogging {
 		return logRequests(mux)
@@ -163,6 +166,23 @@ func (s *Server) handleMeta(collectorInterval time.Duration) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, s.metaResponse(collectorInterval))
 	}
+}
+
+func (s *Server) handleSystemSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+
+	capturedAt, summary, err := s.metrics.SystemSummary()
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, apimodel.SystemSummaryResponse{
+		CapturedAt: capturedAt,
+		Summary:    summary,
+	})
 }
 
 func (s *Server) metaResponse(collectorInterval time.Duration) apimodel.MetaResponse {

@@ -76,7 +76,12 @@ func SampleCombinedData(cpu float64) *system.CombinedData {
 		},
 		Details: &system.Details{
 			Hostname:    "host-a",
+			Kernel:      "6.1.0",
+			Cores:       4,
+			Threads:     8,
 			CpuModel:    "cpu",
+			OsName:      "Test OS",
+			Arch:        "x86_64",
 			MemoryTotal: 16 * 1024 * 1024 * 1024,
 		},
 	}

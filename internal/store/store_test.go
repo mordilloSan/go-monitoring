@@ -39,6 +39,17 @@ func TestStoreSnapshotAndCurrentQueries(t *testing.T) {
 	require.Len(t, summary.SystemdServices, 1)
 	assert.Equal(t, "nginx.service", summary.SystemdServices[0].Name)
 
+	systemSummaryCapturedAt, systemSummary, err := store.SystemSummary()
+	require.NoError(t, err)
+	assert.Equal(t, capturedAt, systemSummaryCapturedAt)
+	assert.Equal(t, "host-a", systemSummary.Hostname)
+	assert.Equal(t, "Test OS", systemSummary.OSName)
+	assert.Equal(t, "cpu", systemSummary.CPUModel)
+	assert.Equal(t, 42.0, systemSummary.CPUPercent)
+	assert.Equal(t, 16.0, systemSummary.MemoryTotalGB)
+	assert.Equal(t, 8.0, systemSummary.MemoryUsedGB)
+	assert.Equal(t, uint64(16*1024*1024*1024), systemSummary.MemoryBytes)
+
 	containersCapturedAt, containers, err := store.CurrentContainers()
 	require.NoError(t, err)
 	assert.Equal(t, capturedAt, containersCapturedAt)

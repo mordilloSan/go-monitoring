@@ -240,6 +240,13 @@ func (s *Store) WriteSnapshot(capturedAt int64, data *system.CombinedData) (err 
 	if err = s.writeSnapshotPluginRows(tx, capturedAt, data); err != nil {
 		return err
 	}
+	summaryJSON, err := marshalJSON(system.NewSummary(data))
+	if err != nil {
+		return err
+	}
+	if err = upsertMeta(tx, "last_system_summary_json", summaryJSON); err != nil {
+		return err
+	}
 	if err = upsertMeta(tx, "last_persisted_at", strconv.FormatInt(capturedAt, 10)); err != nil {
 		return err
 	}
@@ -408,6 +415,27 @@ func (s *Store) Summary() (int64, *system.CombinedData, error) {
 		}
 	}
 	return capturedAt, &summary, nil
+}
+
+func (s *Store) SystemSummary() (int64, system.Summary, error) {
+	capturedAt, err := s.currentCapturedAt()
+	if err != nil {
+		return 0, system.Summary{}, err
+	}
+
+	raw, ok, err := s.metaValue("last_system_summary_json")
+	if err != nil {
+		return 0, system.Summary{}, err
+	}
+	if !ok {
+		return 0, system.Summary{}, sql.ErrNoRows
+	}
+
+	var summary system.Summary
+	if err := json.Unmarshal([]byte(raw), &summary); err != nil {
+		return 0, system.Summary{}, err
+	}
+	return capturedAt, summary, nil
 }
 
 func (s *Store) currentContainerStats() ([]*container.Stats, error) {
