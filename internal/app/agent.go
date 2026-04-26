@@ -41,6 +41,12 @@ type App struct {
 	liveMu            sync.Mutex                 // Protects live API response caches
 	liveCache         map[string]liveCacheEntry  // Current API raw response cache by plugin/key
 	liveTTLs          map[string]time.Duration   // Current API cache TTL by plugin/key
+	runtimeMu         sync.RWMutex               // Protects mutable runtime config visible to API/reload
+	collectorInterval time.Duration
+	configPath        string
+	configSource      string
+	configVersion     int
+	historyPlugins    []string
 }
 
 // New creates a new app with the given data directory for persisting data.

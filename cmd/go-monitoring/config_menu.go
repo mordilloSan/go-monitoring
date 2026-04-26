@@ -56,82 +56,91 @@ func (m *configMenu) run(path string, cfg config.Config, loaded bool) (configMen
 
 	cursor := 0
 	for {
-		items := []string{
-			fmt.Sprintf("Listen address: %s", cfg.Listen),
-			fmt.Sprintf("Collector interval: %s", cfg.CollectorInterval.Duration()),
-			fmt.Sprintf("History plugins: %s", cfg.History),
-			"Live API cache TTLs",
-			"Reset to defaults",
-			"Save and exit",
-			"Save and run",
-			"Exit without saving",
-		}
+		items := mainMenuItems(cfg)
 		m.render("go-monitoring config", path, loaded, items, cursor)
 
-		switch key, err := m.readKey(); {
-		case err != nil:
+		key, err := m.readKey()
+		if err != nil {
 			return configMenuResult{}, err
-		case key == menuKeyUp:
+		}
+		switch key {
+		case menuKeyUp:
 			cursor = (cursor + len(items) - 1) % len(items)
-		case key == menuKeyDown:
+		case menuKeyDown:
 			cursor = (cursor + 1) % len(items)
-		case key == menuKeyQuit || key == menuKeyEscape:
+		case menuKeyQuit, menuKeyEscape:
 			m.exitRaw()
 			fmt.Fprintln(m.out, "No changes saved.")
 			return configMenuResult{}, nil
-		case key == menuKeySave:
+		case menuKeySave:
 			if saved, saveErr := m.save(path, cfg); saveErr != nil || saved {
 				return configMenuResult{cfg: cfg}, saveErr
 			}
-		case key == menuKeyEnter:
-			switch cursor {
-			case 0:
-				next, changed, promptErr := m.promptString("Listen address", cfg.Listen, validateListen)
-				if promptErr != nil {
-					return configMenuResult{}, promptErr
-				}
-				if changed {
-					cfg.Listen = next
-				}
-			case 1:
-				next, changed, promptErr := m.promptDuration("Collector interval", cfg.CollectorInterval.Duration(), func(value time.Duration) error {
-					if value <= 0 {
-						return fmt.Errorf("duration must be greater than zero")
-					}
-					return nil
-				})
-				if promptErr != nil {
-					return configMenuResult{}, promptErr
-				}
-				if changed {
-					cfg.CollectorInterval = config.Duration(next)
-				}
-			case 2:
-				if err := m.historyMenu(&cfg); err != nil {
-					return configMenuResult{}, err
-				}
-			case 3:
-				if err := m.cacheMenu(&cfg); err != nil {
-					return configMenuResult{}, err
-				}
-			case 4:
-				cfg = config.Default()
-			case 5:
-				if saved, saveErr := m.save(path, cfg); saveErr != nil || saved {
-					return configMenuResult{cfg: cfg}, saveErr
-				}
-			case 6:
-				if saved, saveErr := m.save(path, cfg); saveErr != nil || saved {
-					return configMenuResult{run: saved, cfg: cfg}, saveErr
-				}
-				_ = m.enterRaw()
-			case 7:
-				m.exitRaw()
-				fmt.Fprintln(m.out, "No changes saved.")
-				return configMenuResult{}, nil
+		case menuKeyEnter:
+			result, done, err := m.handleRunEnter(cursor, &cfg, path)
+			if done || err != nil {
+				return result, err
 			}
 		}
 	}
+}
+
+func mainMenuItems(cfg config.Config) []string {
+	return []string{
+		fmt.Sprintf("Listen address: %s", cfg.Listen),
+		fmt.Sprintf("Collector interval: %s", cfg.CollectorInterval.Duration()),
+		fmt.Sprintf("History plugins: %s", cfg.History),
+		"Live API cache TTLs",
+		"Reset to defaults",
+		"Save and exit",
+		"Save and run",
+		"Exit without saving",
+	}
+}
+
+func (m *configMenu) handleRunEnter(cursor int, cfg *config.Config, path string) (configMenuResult, bool, error) {
+	switch cursor {
+	case 0:
+		next, changed, err := m.promptString("Listen address", cfg.Listen, validateListen)
+		if err != nil {
+			return configMenuResult{}, true, err
+		}
+		if changed {
+			cfg.Listen = next
+		}
+	case 1:
+		next, changed, err := m.promptDuration("Collector interval", cfg.CollectorInterval.Duration(), validateCollectorInterval)
+		if err != nil {
+			return configMenuResult{}, true, err
+		}
+		if changed {
+			cfg.CollectorInterval = config.Duration(next)
+		}
+	case 2:
+		if err := m.historyMenu(cfg); err != nil {
+			return configMenuResult{}, true, err
+		}
+	case 3:
+		if err := m.cacheMenu(cfg); err != nil {
+			return configMenuResult{}, true, err
+		}
+	case 4:
+		*cfg = config.Default()
+	case 5:
+		if saved, err := m.save(path, *cfg); err != nil || saved {
+			return configMenuResult{cfg: *cfg}, true, err
+		}
+	case 6:
+		if saved, err := m.save(path, *cfg); err != nil || saved {
+			return configMenuResult{run: saved, cfg: *cfg}, true, err
+		}
+		_ = m.enterRaw()
+	case 7:
+		m.exitRaw()
+		fmt.Fprintln(m.out, "No changes saved.")
+		return configMenuResult{}, true, nil
+	}
+	return configMenuResult{}, false, nil
 }
 
 func (m *configMenu) historyMenu(cfg *config.Config) error {
@@ -142,108 +151,142 @@ func (m *configMenu) historyMenu(cfg *config.Config) error {
 	}
 	plugins := store.PluginNames()
 	for {
-		items := make([]string, 0, len(plugins)+3)
-		items = append(items, "Select all", "Select none")
-		for _, plugin := range plugins {
-			marker := "[ ]"
-			if selected[plugin] {
-				marker = "[x]"
-			}
-			items = append(items, marker+" "+plugin)
-		}
-		items = append(items, "Back")
+		items := buildHistoryItems(plugins, selected)
 		m.render("History plugins", historyFromSelection(selected), true, items, cursor)
 
-		switch key, err := m.readKey(); {
-		case err != nil:
+		key, err := m.readKey()
+		if err != nil {
 			return err
-		case key == menuKeyUp:
+		}
+		switch key {
+		case menuKeyUp:
 			cursor = (cursor + len(items) - 1) % len(items)
-		case key == menuKeyDown:
+		case menuKeyDown:
 			cursor = (cursor + 1) % len(items)
-		case key == menuKeyEscape || key == menuKeyQuit:
+		case menuKeyEscape, menuKeyQuit:
 			cfg.History = historyFromSelection(selected)
 			return nil
-		case key == menuKeyEnter:
-			switch cursor {
-			case 0:
-				for _, plugin := range plugins {
-					selected[plugin] = true
-				}
-			case 1:
-				for _, plugin := range plugins {
-					selected[plugin] = false
-				}
-			case len(items) - 1:
-				cfg.History = historyFromSelection(selected)
-				return nil
-			default:
-				plugin := plugins[cursor-2]
-				selected[plugin] = !selected[plugin]
-			}
+		case menuKeyEnter:
+			done := applyHistoryEnter(cursor, plugins, selected, len(items))
 			cfg.History = historyFromSelection(selected)
+			if done {
+				return nil
+			}
 		}
 	}
+}
+
+func buildHistoryItems(plugins []string, selected map[string]bool) []string {
+	items := make([]string, 0, len(plugins)+3)
+	items = append(items, "Select all", "Select none")
+	for _, plugin := range plugins {
+		marker := "[ ]"
+		if selected[plugin] {
+			marker = "[x]"
+		}
+		items = append(items, marker+" "+plugin)
+	}
+	return append(items, "Back")
+}
+
+func applyHistoryEnter(cursor int, plugins []string, selected map[string]bool, itemCount int) bool {
+	if cursor == itemCount-1 {
+		return true
+	}
+	switch cursor {
+	case 0:
+		for _, p := range plugins {
+			selected[p] = true
+		}
+	case 1:
+		for _, p := range plugins {
+			selected[p] = false
+		}
+	default:
+		selected[plugins[cursor-2]] = !selected[plugins[cursor-2]]
+	}
+	return false
 }
 
 func (m *configMenu) cacheMenu(cfg *config.Config) error {
 	cursor := 0
 	keys := config.CacheKeys()
 	for {
-		items := make([]string, 0, len(keys)+4)
-		items = append(items, "Set all TTLs", "Set expensive TTLs", "Reset TTLs to defaults")
-		for _, key := range keys {
-			items = append(items, fmt.Sprintf("%s: %s", key, cfg.CacheTTL[key].Duration()))
-		}
-		items = append(items, "Back")
+		items := buildCacheItems(keys, cfg)
 		m.render("Live API cache TTLs", "0s disables a live API response cache", true, items, cursor)
 
-		switch key, err := m.readKey(); {
-		case err != nil:
+		key, err := m.readKey()
+		if err != nil {
 			return err
-		case key == menuKeyUp:
+		}
+		switch key {
+		case menuKeyUp:
 			cursor = (cursor + len(items) - 1) % len(items)
-		case key == menuKeyDown:
+		case menuKeyDown:
 			cursor = (cursor + 1) % len(items)
-		case key == menuKeyEscape || key == menuKeyQuit:
+		case menuKeyEscape, menuKeyQuit:
 			return nil
-		case key == menuKeyEnter:
-			if cursor == len(items)-1 {
-				return nil
+		case menuKeyEnter:
+			done, err := m.handleCacheEnter(cursor, keys, cfg, len(items))
+			if err != nil {
+				return err
 			}
-			switch cursor {
-			case 0:
-				next, changed, promptErr := m.promptDuration("TTL for all live API caches", 2*time.Second, validateCacheTTL)
-				if promptErr != nil {
-					return promptErr
-				}
-				if changed {
-					config.ApplyCacheDefault(cfg, next)
-				}
-			case 1:
-				next, changed, promptErr := m.promptDuration("TTL for expensive live API caches", 10*time.Second, validateCacheTTL)
-				if promptErr != nil {
-					return promptErr
-				}
-				if changed {
-					config.ApplyCacheExpensive(cfg, next)
-				}
-			case 2:
-				cfg.CacheTTL = config.Default().CacheTTL
-			default:
-				cacheKey := keys[cursor-3]
-				next, changed, promptErr := m.promptDuration("Cache TTL for "+cacheKey, cfg.CacheTTL[cacheKey].Duration(), validateCacheTTL)
-				if promptErr != nil {
-					return promptErr
-				}
-				if changed {
-					if err := config.SetCacheTTL(cfg, cacheKey, next); err != nil {
-						return err
-					}
-				}
+			if done {
+				return nil
 			}
 		}
 	}
+}
+
+func buildCacheItems(keys []string, cfg *config.Config) []string {
+	items := make([]string, 0, len(keys)+4)
+	items = append(items, "Set all TTLs", "Set expensive TTLs", "Reset TTLs to defaults")
+	for _, key := range keys {
+		items = append(items, fmt.Sprintf("%s: %s", key, cfg.CacheTTL[key].Duration()))
+	}
+	return append(items, "Back")
+}
+
+func (m *configMenu) handleCacheEnter(cursor int, keys []string, cfg *config.Config, itemCount int) (bool, error) {
+	if cursor == itemCount-1 {
+		return true, nil
+	}
+	switch cursor {
+	case 0:
+		next, changed, err := m.promptDuration("TTL for all live API caches", 2*time.Second, validateCacheTTL)
+		if err != nil {
+			return false, err
+		}
+		if changed {
+			config.ApplyCacheDefault(cfg, next)
+		}
+	case 1:
+		next, changed, err := m.promptDuration("TTL for expensive live API caches", 10*time.Second, validateCacheTTL)
+		if err != nil {
+			return false, err
+		}
+		if changed {
+			config.ApplyCacheExpensive(cfg, next)
+		}
+	case 2:
+		cfg.CacheTTL = config.Default().CacheTTL
+	default:
+		if err := m.setCacheTTL(keys[cursor-3], cfg); err != nil {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+func (m *configMenu) setCacheTTL(key string, cfg *config.Config) error {
+	next, changed, err := m.promptDuration("Cache TTL for "+key, cfg.CacheTTL[key].Duration(), validateCacheTTL)
+	if err != nil {
+		return err
+	}
+	if changed {
+		return config.SetCacheTTL(cfg, key, next)
+	}
+	return nil
 }
 
 func (m *configMenu) render(title, subtitle string, loaded bool, items []string, cursor int) {
@@ -421,9 +464,11 @@ func validateListen(value string) error {
 	return nil
 }
 
-func validateHistory(value string) error {
-	_, err := store.ParseHistoryPlugins(value, true)
-	return err
+func validateCollectorInterval(d time.Duration) error {
+	if d <= 0 {
+		return fmt.Errorf("duration must be greater than zero")
+	}
+	return nil
 }
 
 func validateCacheTTL(value time.Duration) error {

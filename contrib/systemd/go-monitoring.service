@@ -1,0 +1,36 @@
+[Unit]
+Description=go-monitoring agent
+Documentation=https://github.com/mordilloSan/go-monitoring
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=CONFIG_FILE=/etc/go-monitoring/config.json
+Environment=DATA_DIR=/var/lib/go-monitoring
+ExecStart=/usr/local/bin/go-monitoring run
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+StateDirectory=go-monitoring
+ConfigurationDirectory=go-monitoring
+
+# Conservative hardening. Avoid PrivateDevices, ProtectProc, PrivateNetwork, and
+# a tight CapabilityBoundingSet by default: host metrics, Docker/DBus, SMART,
+# and GPU collectors may need the real host /proc, /sys, sockets, and devices.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/go-monitoring /etc/go-monitoring
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectClock=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

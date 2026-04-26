@@ -96,6 +96,8 @@ func ApplyLiveCurrentTTLEnv(ttls map[string]time.Duration, env func(string) (str
 }
 
 func (a *App) SetLiveCurrentTTLs(ttls map[string]time.Duration) {
+	a.runtimeMu.Lock()
+	defer a.runtimeMu.Unlock()
 	a.liveTTLs = make(map[string]time.Duration, len(ttls))
 	maps.Copy(a.liveTTLs, ttls)
 }
@@ -342,6 +344,8 @@ func (a *App) setLiveCache(key string, capturedAt int64, raw json.RawMessage, tt
 }
 
 func (a *App) liveTTL(key string) time.Duration {
+	a.runtimeMu.RLock()
+	defer a.runtimeMu.RUnlock()
 	if ttl, ok := a.liveTTLs[key]; ok {
 		return ttl
 	}

@@ -94,7 +94,7 @@ func TestCurrentRoutesUseCurrentReaderAndHistoryUsesStore(t *testing.T) {
 		SmartRefresher: fakeSmartRefresher{store: store},
 		DataDir:        tmpDir,
 	})
-	handler := server.Handler(time.Minute)
+	handler := server.Handler(func() time.Duration { return time.Minute })
 
 	cpuReq := httptest.NewRequest(http.MethodGet, "/api/v1/cpu", nil)
 	cpuRec := httptest.NewRecorder()
@@ -118,7 +118,7 @@ func TestCurrentRoutesUseCurrentReaderAndHistoryUsesStore(t *testing.T) {
 
 func TestHTTPRoutes(t *testing.T) {
 	server := newHTTPTestServer(t)
-	handler := server.Handler(time.Minute)
+	handler := server.Handler(func() time.Duration { return time.Minute })
 
 	tests := []struct {
 		name   string
@@ -176,7 +176,7 @@ func TestHTTPRoutes(t *testing.T) {
 
 func TestBenchmarkEndpointReportsReadOnlyRoutes(t *testing.T) {
 	server := newHTTPTestServer(t)
-	handler := server.Handler(time.Minute)
+	handler := server.Handler(func() time.Duration { return time.Minute })
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/benchmark", nil)
 	rec := httptest.NewRecorder()
 
@@ -268,7 +268,7 @@ func TestRoutesCanDisableRequestLogging(t *testing.T) {
 
 	server := newHTTPTestServer(t)
 	server.requestLogging = false
-	handler := server.Handler(time.Minute)
+	handler := server.Handler(func() time.Duration { return time.Minute })
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/meta", nil)
 	rec := httptest.NewRecorder()
@@ -280,7 +280,7 @@ func TestRoutesCanDisableRequestLogging(t *testing.T) {
 
 func TestHealthRouteReturnsServiceUnavailableWhenPersistIsStale(t *testing.T) {
 	server := newHTTPTestServer(t)
-	handler := server.Handler(time.Minute)
+	handler := server.Handler(func() time.Duration { return time.Minute })
 
 	old := time.Now().Add(-2 * time.Minute)
 	require.NoError(t, os.Chtimes(healthpkg.FilePath(), old, old))

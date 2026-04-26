@@ -56,6 +56,7 @@ NVML (NVIDIA GPU) support is enabled automatically on `linux/amd64` glibc hosts 
 ./go-monitoring run --listen :9000    # custom address/port
 ./go-monitoring run --history cpu,mem # store history only for selected plugins
 ./go-monitoring health                # exit 0 if the latest tick is fresh
+./go-monitoring status                # query a running local agent
 ./go-monitoring --version
 ```
 
@@ -67,6 +68,8 @@ Configure the agent with a JSON file:
 ```sh
 ./go-monitoring config                 # interactive menu with arrow keys
 ./go-monitoring config --init
+./go-monitoring config path
+./go-monitoring config validate
 ./go-monitoring config --collector-interval 30s --api-cache containers=10s
 ./go-monitoring config --print
 ./go-monitoring run --config ~/.config/go-monitoring/config.json
@@ -79,6 +82,10 @@ If the file is absent, `run` creates it from the effective startup config.
 Precedence is built-in defaults, config file, legacy environment variables,
 and explicit CLI flags. If the config file cannot be created, the agent
 continues with the effective config in memory.
+
+The config file is versioned with `"version": 1`. Send `SIGHUP` to a running
+agent to reload config-backed collector interval, live API cache TTLs, and
+history plugin settings without a full restart.
 
 Environment variables:
 
@@ -114,6 +121,8 @@ config can be managed in the container:
 ```sh
 docker compose -f docker/docker-compose.yml run --rm go-monitoring config --init
 docker compose -f docker/docker-compose.yml run --rm go-monitoring config --collector-interval 30s --api-cache containers=10s
+docker compose -f docker/docker-compose.yml exec go-monitoring go-monitoring config --print
+docker compose -f docker/docker-compose.yml exec go-monitoring go-monitoring status
 ```
 
 Compose stores the config file inside the existing `/var/lib/go-monitoring`
@@ -121,6 +130,18 @@ volume. You can also bind-mount a single config file to
 `/var/lib/go-monitoring/config.json`; when that file is absent the container
 creates it from the effective startup config on startup. If the file cannot be
 created, the container continues with the same effective config in memory.
+
+## Systemd
+
+A sample unit file is provided at
+[contrib/systemd/go-monitoring.service](contrib/systemd/go-monitoring.service).
+It is not installed by the build or Makefile yet; copy and adapt it manually if
+you want to run the agent under systemd. The sample pins
+`CONFIG_FILE=/etc/go-monitoring/config.json` and `DATA_DIR=/var/lib/go-monitoring`
+and includes conservative hardening. It intentionally avoids stronger sandboxing
+such as `PrivateDevices`, `ProtectProc`, `PrivateNetwork`, and a tight capability
+bounding set because host metrics, Docker/DBus, SMART, and GPU collectors may need
+host `/proc`, `/sys`, sockets, and devices.
 
 `make docker-up` starts the Compose service in the foreground. Stop it with:
 
@@ -165,7 +186,7 @@ The generated Compose override requests GPU access for NVIDIA, AMD, and Intel ho
 Base URL: `http://<listen>`
 
 - `GET /healthz` — liveness / freshness
-- `GET /api/v1/meta` — agent metadata and collector interval
+- `GET /api/v1/meta` — agent metadata, effective config metadata, and collector interval
 - `GET /api/v1/plugins` — plugin metadata and mounted routes
 - `GET /api/v1/all` — current snapshots keyed by plugin name
 - `GET /api/v1/{plugin}` — current plugin snapshot

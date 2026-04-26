@@ -14,7 +14,10 @@ import (
 	"github.com/mordilloSan/go-monitoring/internal/store"
 )
 
-const EnvConfigFile = "CONFIG_FILE"
+const (
+	CurrentVersion = 1
+	EnvConfigFile  = "CONFIG_FILE"
+)
 
 type Duration time.Duration
 
@@ -43,6 +46,7 @@ func (d *Duration) UnmarshalJSON(data []byte) error {
 }
 
 type Config struct {
+	Version           int                 `json:"version"`
 	Listen            string              `json:"listen"`
 	CollectorInterval Duration            `json:"collector_interval"`
 	History           string              `json:"history"`
@@ -69,6 +73,7 @@ func Default() Config {
 		cacheTTL[key] = Duration(ttl)
 	}
 	return Config{
+		Version:           CurrentVersion,
 		Listen:            ":45876",
 		CollectorInterval: Duration(app.DefaultCollectorInterval),
 		History:           strings.Join(store.DefaultHistoryPluginNames(), ","),
@@ -149,6 +154,9 @@ func SaveIfMissing(path string, cfg Config) (bool, error) {
 }
 
 func Validate(cfg Config) error {
+	if cfg.Version != CurrentVersion {
+		return fmt.Errorf("unsupported config version %d", cfg.Version)
+	}
 	if cfg.CollectorInterval.Duration() <= 0 {
 		return fmt.Errorf("collector_interval must be greater than zero")
 	}

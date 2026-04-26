@@ -81,7 +81,17 @@ type MetaResponse struct {
 	ListenAddr           string            `json:"listen_addr"`
 	CollectorInterval    string            `json:"collector_interval"`
 	SmartRefreshInterval string            `json:"smart_refresh_interval"`
+	Config               ConfigMeta        `json:"config"`
 	Retention            map[string]string `json:"retention"`
+}
+
+type ConfigMeta struct {
+	Path              string            `json:"path"`
+	Source            string            `json:"source"`
+	Version           int               `json:"version"`
+	CollectorInterval string            `json:"collector_interval"`
+	HistoryPlugins    []string          `json:"history_plugins"`
+	CacheTTL          map[string]string `json:"cache_ttl"`
 }
 
 type ErrorResponse struct {

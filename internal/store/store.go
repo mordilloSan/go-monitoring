@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/mordilloSan/go-monitoring/internal/domain/container"
@@ -57,6 +58,7 @@ var rollupSteps = []rollupStep{
 type Store struct {
 	db             *sql.DB
 	path           string
+	historyMu      sync.RWMutex
 	historyPlugins map[string]struct{}
 }
 
@@ -678,18 +680,28 @@ func (s *Store) PluginHistory(plugin, resolution string, from, to int64, limit i
 }
 
 func (s *Store) HistoryEnabled(plugin string) bool {
+	s.historyMu.RLock()
+	defer s.historyMu.RUnlock()
 	_, ok := s.historyPlugins[plugin]
 	return ok
 }
 
 func (s *Store) historyPluginNames() []string {
+	s.historyMu.RLock()
+	defer s.historyMu.RUnlock()
 	out := make([]string, 0, len(s.historyPlugins))
 	for _, plugin := range pluginNames {
-		if s.HistoryEnabled(plugin) {
+		if _, ok := s.historyPlugins[plugin]; ok {
 			out = append(out, plugin)
 		}
 	}
 	return out
+}
+
+func (s *Store) SetHistoryPlugins(plugins []string) {
+	s.historyMu.Lock()
+	defer s.historyMu.Unlock()
+	s.historyPlugins = historyPluginSet(plugins)
 }
 
 func (s *Store) metaValue(key string) (string, bool, error) {

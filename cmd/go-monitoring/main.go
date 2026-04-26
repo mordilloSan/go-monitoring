@@ -20,6 +20,7 @@ type command string
 const (
 	commandRun    command = "run"
 	commandConfig command = "config"
+	commandStatus command = "status"
 )
 
 type cmdOptions struct {
@@ -38,6 +39,7 @@ type cmdOptions struct {
 	cacheTTL             durationMapFlag
 	configPrint          bool
 	configInit           bool
+	configAction         string
 }
 
 func (opts *cmdOptions) parse() bool {
@@ -73,7 +75,7 @@ func (opts *cmdOptions) parse() bool {
 	version := fs.BoolP("version", "v", false, "Show version information")
 	help := fs.BoolP("help", "h", false, "Show this help message")
 
-	if opts.command == commandRun || opts.command == commandConfig {
+	if opts.command == commandRun || opts.command == commandConfig || opts.command == commandStatus {
 		fs.StringVarP(&opts.listen, "listen", "l", "", "Address or port to listen on")
 		fs.DurationVar(&opts.collectorInterval, "collector-interval", 0, "Collector interval, for example 30s or 1m")
 		fs.StringVar(&opts.history, "history", "", "Comma-separated history plugin allowlist, or all/none")
@@ -96,6 +98,9 @@ func (opts *cmdOptions) parse() bool {
 	opts.historySet = flagChanged(fs, "history")
 	opts.apiCacheDefaultSet = flagChanged(fs, "api-cache-default")
 	opts.apiCacheExpensiveSet = flagChanged(fs, "api-cache-expensive")
+	if opts.command == commandConfig && fs.NArg() > 0 {
+		opts.configAction = strings.ToLower(fs.Arg(0))
+	}
 
 	switch {
 	case *version:
@@ -112,7 +117,7 @@ func (opts *cmdOptions) parse() bool {
 func parseCommand(raw string) (string, bool) {
 	normalized := strings.ToLower(strings.TrimLeft(raw, "-"))
 	switch normalized {
-	case "run", "config", "health", "help":
+	case "run", "config", "health", "help", "status":
 		return normalized, true
 	default:
 		return "help", false
@@ -146,6 +151,7 @@ func printUsage(name string) {
 	builder.WriteString("  run          Start the monitoring agent\n")
 	builder.WriteString("  config       Open the config menu, print, initialize, or update the config file\n")
 	builder.WriteString("  health       Check if the latest persisted collection tick is fresh\n")
+	builder.WriteString("  status       Query a running local agent\n")
 	builder.WriteString("  help         Show this help message\n\n")
 	builder.WriteString("Aliases:\n")
 	builder.WriteString("  -run and -config are accepted for compatibility with dash-prefixed commands.\n\n")
@@ -163,6 +169,9 @@ func printUsage(name string) {
 	builder.WriteString("\nConfig-only flags:\n")
 	builder.WriteString("  --init                        Write defaults if the config file is absent\n")
 	builder.WriteString("  --print                       Print the effective config\n")
+	builder.WriteString("\nConfig actions:\n")
+	builder.WriteString("  config path                   Print the config path\n")
+	builder.WriteString("  config validate               Validate effective config\n")
 	fmt.Print(builder.String())
 }
 
@@ -240,71 +249,96 @@ func configWasMutated(opts cmdOptions) bool {
 		len(opts.cacheTTL.values) > 0
 }
 
-func main() {
-	var opts cmdOptions
-	if opts.parse() {
-		return
-	}
+type effectiveConfig struct {
+	cfg    config.Config
+	loaded bool
+	source string
+}
 
+func loadEffectiveConfig(opts cmdOptions) (effectiveConfig, error) {
 	cfg, loaded, err := config.Load(opts.configPath)
 	if err != nil {
-		log.Fatal("Failed to load config: ", err)
+		return effectiveConfig{}, err
+	}
+	source := "defaults"
+	if loaded {
+		source = "loaded"
 	}
 	config.ApplyEnv(&cfg, utils.GetEnv)
-	err = applyCLIToConfig(&cfg, opts)
-	if err != nil {
-		log.Fatal("Invalid config: ", err)
+	if err := applyCLIToConfig(&cfg, opts); err != nil {
+		return effectiveConfig{}, err
 	}
-	if opts.command == commandRun && !loaded {
-		if created, err := config.SaveIfMissing(opts.configPath, cfg); err != nil {
-			log.Printf("Failed to create default config at %s; using effective in-memory defaults: %v", opts.configPath, err)
-		} else if created {
-			log.Printf("Created default config: %s", opts.configPath)
-		}
+	return effectiveConfig{cfg: cfg, loaded: loaded, source: source}, nil
+}
+
+func maybeSaveDefaultConfig(path string, cfg config.Config, source string) string {
+	created, err := config.SaveIfMissing(path, cfg)
+	if err != nil {
+		log.Printf("Failed to create default config at %s; using effective in-memory config: %v", path, err)
+		return source
+	}
+	if created {
+		log.Printf("Created default config: %s", path)
+		return "created"
+	}
+	return source
+}
+
+func handleConfigCommand(opts cmdOptions, cfg config.Config, loaded bool, configSource string) (bool, config.Config, string, error) {
+	switch opts.configAction {
+	case "validate":
+		fmt.Printf("Config valid: %s (source=%s)\n", opts.configPath, configSource)
+		return false, cfg, configSource, nil
+	case "":
+	default:
+		return false, cfg, configSource, fmt.Errorf("unknown config action %q", opts.configAction)
 	}
 
-	if opts.command == commandConfig {
-		runAfterConfig := false
-		switch {
-		case opts.configInit && loaded && !configWasMutated(opts):
-			fmt.Println("Config already exists:", opts.configPath)
-		case opts.configInit || configWasMutated(opts):
-			err = config.Save(opts.configPath, cfg)
-			if err != nil {
-				log.Fatal("Failed to save config: ", err)
-			}
-			fmt.Println("Saved config:", opts.configPath)
+	mutated := configWasMutated(opts)
+	switch {
+	case opts.configInit && loaded && !mutated:
+		fmt.Println("Config already exists:", opts.configPath)
+	case opts.configInit || mutated:
+		if err := config.Save(opts.configPath, cfg); err != nil {
+			return false, cfg, configSource, fmt.Errorf("failed to save config: %w", err)
 		}
-		switch {
-		case opts.configPrint:
-			var rendered string
-			rendered, err = config.JSON(cfg)
-			if err != nil {
-				log.Fatal("Failed to render config: ", err)
-			}
-			fmt.Print(rendered)
-		case !opts.configInit && !configWasMutated(opts) && shouldRunConfigMenu():
-			var result configMenuResult
-			result, err = runConfigMenu(opts.configPath, cfg, loaded)
-			if err != nil {
-				log.Fatal("Config menu failed: ", err)
-			}
-			runAfterConfig = result.run
-			if runAfterConfig {
-				cfg = result.cfg
-			}
-		case !opts.configInit && !configWasMutated(opts):
-			var rendered string
-			rendered, err = config.JSON(cfg)
-			if err != nil {
-				log.Fatal("Failed to render config: ", err)
-			}
-			fmt.Print(rendered)
-		}
-		if !runAfterConfig {
-			return
-		}
+		fmt.Println("Saved config:", opts.configPath)
 	}
+
+	switch {
+	case opts.configPrint:
+		rendered, err := config.JSON(cfg)
+		if err != nil {
+			return false, cfg, configSource, fmt.Errorf("failed to render config: %w", err)
+		}
+		fmt.Print(rendered)
+	case !opts.configInit && !mutated && shouldRunConfigMenu():
+		result, err := runConfigMenu(opts.configPath, cfg, loaded)
+		if err != nil {
+			return false, cfg, configSource, fmt.Errorf("config menu failed: %w", err)
+		}
+		if result.run {
+			return true, result.cfg, "loaded", nil
+		}
+	case !opts.configInit && !mutated:
+		rendered, err := config.JSON(cfg)
+		if err != nil {
+			return false, cfg, configSource, fmt.Errorf("failed to render config: %w", err)
+		}
+		fmt.Print(rendered)
+	}
+	return false, cfg, configSource, nil
+}
+
+func startAgent(opts cmdOptions, cfg config.Config, configSource string) {
+	log.Printf("Config ready path=%s source=%s version=%d collector_interval=%s history=%q cache_ttl_count=%d",
+		opts.configPath,
+		configSource,
+		cfg.Version,
+		cfg.CollectorInterval.Duration(),
+		cfg.History,
+		len(cfg.CacheTTL),
+	)
 
 	a, err := app.New()
 	if err != nil {
@@ -317,7 +351,68 @@ func main() {
 		CollectorInterval: cfg.CollectorInterval.Duration(),
 		History:           cfg.History,
 		HistorySet:        true,
+		ConfigPath:        opts.configPath,
+		ConfigSource:      configSource,
+		ConfigVersion:     cfg.Version,
+		CacheTTL:          config.ToDurationMap(cfg.CacheTTL),
+		ReloadConfig: func() (app.ReloadOptions, error) {
+			reloaded, err := loadEffectiveConfig(opts)
+			if err != nil {
+				return app.ReloadOptions{}, err
+			}
+			return app.ReloadOptions{
+				CollectorInterval: reloaded.cfg.CollectorInterval.Duration(),
+				History:           reloaded.cfg.History,
+				HistorySet:        true,
+				CacheTTL:          config.ToDurationMap(reloaded.cfg.CacheTTL),
+				ConfigSource:      reloaded.source,
+				ConfigVersion:     reloaded.cfg.Version,
+			}, nil
+		},
 	}); err != nil {
 		log.Fatal("Failed to start standalone agent: ", err)
 	}
+}
+
+func main() {
+	var opts cmdOptions
+	if opts.parse() {
+		return
+	}
+	if opts.command == commandConfig && opts.configAction == "path" {
+		fmt.Println(opts.configPath)
+		return
+	}
+
+	effective, err := loadEffectiveConfig(opts)
+	if err != nil {
+		log.Fatal("Invalid config: ", err)
+	}
+	cfg := effective.cfg
+	configSource := effective.source
+
+	if opts.command == commandRun && !effective.loaded {
+		configSource = maybeSaveDefaultConfig(opts.configPath, cfg, effective.source)
+	}
+
+	if opts.command == commandConfig {
+		run, updatedCfg, updatedSource, cmdErr := handleConfigCommand(opts, cfg, effective.loaded, configSource)
+		if cmdErr != nil {
+			log.Fatal(cmdErr)
+		}
+		if !run {
+			return
+		}
+		cfg = updatedCfg
+		configSource = updatedSource
+	}
+
+	if opts.command == commandStatus {
+		if err := printStatus(cfg); err != nil {
+			log.Fatal("Status check failed: ", err)
+		}
+		return
+	}
+
+	startAgent(opts, cfg, configSource)
 }

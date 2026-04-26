@@ -19,6 +19,7 @@ func TestLoadMissingReturnsDefaults(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.False(t, loaded)
+	assert.Equal(t, CurrentVersion, cfg.Version)
 	assert.Equal(t, ":45876", cfg.Listen)
 	assert.Equal(t, app.DefaultCollectorInterval, cfg.CollectorInterval.Duration())
 	assert.Equal(t, 5*time.Second, cfg.CacheTTL[store.PluginContainers].Duration())
@@ -79,4 +80,14 @@ func TestSaveIfMissingCreatesOnlyOnce(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, exists)
 	assert.Equal(t, 15*time.Second, loaded.CollectorInterval.Duration())
+}
+
+func TestValidateRejectsUnsupportedVersion(t *testing.T) {
+	cfg := Default()
+	cfg.Version = CurrentVersion + 1
+
+	err := Validate(cfg)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported config version")
 }

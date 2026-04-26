@@ -43,6 +43,7 @@ type Options struct {
 	DataDir              string
 	ListenAddr           func() string
 	SmartRefreshInterval func() string
+	ConfigInfo           func() apimodel.ConfigMeta
 	RequestLogging       bool
 }
 
@@ -53,6 +54,7 @@ type Server struct {
 	dataDir              string
 	listenAddr           func() string
 	smartRefreshInterval func() string
+	configInfo           func() apimodel.ConfigMeta
 	requestLogging       bool
 }
 
@@ -68,11 +70,12 @@ func NewServer(opts Options) *Server {
 		dataDir:              opts.DataDir,
 		listenAddr:           opts.ListenAddr,
 		smartRefreshInterval: opts.SmartRefreshInterval,
+		configInfo:           opts.ConfigInfo,
 		requestLogging:       opts.RequestLogging,
 	}
 }
 
-func (s *Server) Handler(collectorInterval time.Duration) http.Handler {
+func (s *Server) Handler(collectorInterval func() time.Duration) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/api/v1/meta", s.handleMeta(collectorInterval))
@@ -169,13 +172,17 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleMeta(collectorInterval time.Duration) http.HandlerFunc {
+func (s *Server) handleMeta(collectorInterval func() time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeMethodNotAllowed(w, http.MethodGet)
 			return
 		}
-		writeJSON(w, http.StatusOK, s.metaResponse(collectorInterval))
+		interval := time.Duration(0)
+		if collectorInterval != nil {
+			interval = collectorInterval()
+		}
+		writeJSON(w, http.StatusOK, s.metaResponse(interval))
 	}
 }
 
@@ -215,13 +222,22 @@ func (s *Server) metaResponse(collectorInterval time.Duration) apimodel.MetaResp
 	if s.listenAddr != nil {
 		listenAddr = s.listenAddr()
 	}
+	configInfo := apimodel.ConfigMeta{}
+	if s.configInfo != nil {
+		configInfo = s.configInfo()
+	}
+	interval := collectorInterval.String()
+	if configInfo.CollectorInterval != "" {
+		interval = configInfo.CollectorInterval
+	}
 	return apimodel.MetaResponse{
 		Version:              version.Version,
 		DataDir:              s.dataDir,
 		DBPath:               s.metrics.Path(),
 		ListenAddr:           listenAddr,
-		CollectorInterval:    collectorInterval.String(),
+		CollectorInterval:    interval,
 		SmartRefreshInterval: smartRefreshInterval,
+		Config:               configInfo,
 		Retention:            store.RetentionStrings(),
 	}
 }
