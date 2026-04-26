@@ -44,7 +44,7 @@ make dev          # runs the agent, live-reloads with `entr` if installed
 make clean
 ```
 
-NVML (NVIDIA GPU) support is enabled automatically on `linux/amd64` glibc hosts. Override with `NVML=true` or `NVML=false`. Cross-compile with `OS=... ARCH=...`.
+NVML (NVIDIA GPU) support is enabled automatically on `linux/amd64` glibc hosts and in the Docker `linux/amd64` image. Override with `NVML=true` or `NVML=false`. Cross-compile with `OS=... ARCH=...`.
 
 `amd64` builds default to `GOAMD64=v3` for x86-64-v3 CPUs. Use `GOAMD64=v1 make build` or `docker build --build-arg GOAMD64=v1 ...` for maximum amd64 compatibility.
 
@@ -60,7 +60,7 @@ NVML (NVIDIA GPU) support is enabled automatically on `linux/amd64` glibc hosts.
 
 Environment variables:
 
-- `LISTEN` / `PORT` — fallback listen address if `--listen` is not provided
+- `LISTEN` / `PORT` — fallback listen address if `--listen` is not provided. Docker uses `PORT=45876` by default.
 - `HISTORY` — comma-separated history plugin allowlist, or `all` / `none` (`cpu,mem,diskio,network,containers` by default)
 - `MEM_CALC` — memory calculation formula
 - `DISK_USAGE_CACHE` — cache duration for disk-usage polling (e.g. `15m`) to avoid waking sleeping disks
@@ -105,14 +105,19 @@ The Docker setup avoids `--privileged` by using targeted host access:
 - `apparmor=unconfined` so the container can query host systemd over DBus.
 - `systempaths=unconfined` so Docker does not mask host `/proc/interrupts` for IRQ counters.
 - `CAP_SYS_RAWIO`, `CAP_SYS_ADMIN`, and explicit `/dev/...` device mappings for SMART data.
+- `gpus: all` for NVIDIA when detected.
+- `/dev/dri/...` device mappings for AMD and Intel when detected, plus `/dev/kfd` for AMD when present.
+- `CAP_PERFMON` for Intel `intel_gpu_top`.
 
-Compose cannot discover host devices dynamically, so `make docker-up` first writes a local `docker/docker-compose.override.yml` with discovered SMART devices. You can inspect what will be used with:
+Compose cannot discover host devices dynamically, so `make docker-up` first writes a local `docker/docker-compose.override.yml` with discovered SMART devices and GPU access when available. You can inspect what will be used with:
 
 ```sh
 make docker-smart-devices
 ```
 
 If SMART detection chooses the wrong device, edit `docker/docker-compose.override.yml` or set `SMART_DEVICES` manually. Use controller devices such as `/dev/nvme0` or `/dev/sda`, not partitions such as `/dev/nvme0n1p2`.
+
+The generated Compose override requests GPU access for NVIDIA, AMD, and Intel hosts. NVIDIA uses `gpus: all` and requires the NVIDIA Container Toolkit. AMD and Intel use DRM render/card device mappings; Intel also uses the `intel_gpu_top` binary installed in the image. Set `DOCKER_GPU=false make docker-up` to suppress GPU access, or `DOCKER_GPU=true make docker-up` to force it when auto-detection cannot see the host GPU.
 
 ## HTTP API
 

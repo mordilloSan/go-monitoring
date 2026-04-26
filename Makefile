@@ -114,7 +114,7 @@ build:
 	@( cd "$(BACKEND_DIR)" && GOOS=$(OS) GOARCH=$(ARCH) $(GOAMD64_ENV) $(GO_CMD_ENV) "$(GO_BIN)" build $(AGENT_GO_TAGS) -o "$(BUILD_OUTPUT)" -ldflags "$(LDFLAGS)" $(AGENT_PKG) )
 
 docker-build:
-	docker build -f "$(DOCKER_DIR)/Dockerfile" -t "$(IMAGE)" .
+	docker build --build-arg GOAMD64="$(GOAMD64)" --build-arg NVML="$(NVML)" -f "$(DOCKER_DIR)/Dockerfile" -t "$(IMAGE)" .
 
 docker-smart-devices:
 	@./$(DOCKER_DIR)/discover-smart-devices.sh summary

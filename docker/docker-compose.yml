@@ -11,8 +11,7 @@ services:
     network_mode: host
     pid: host
     environment:
-      LISTEN: ":45876"
-      DATA_DIR: /var/lib/go-monitoring
+      PORT: "45876"
       HTTP_LOG: "${HTTP_LOG:-true}"
       HISTORY: "${HISTORY:-cpu,mem,diskio,network,containers}"
     security_opt:
