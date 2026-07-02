@@ -1,0 +1,35 @@
+[Unit]
+Description=go-monitoring agent
+Documentation=https://github.com/mordilloSan/go-monitoring
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=CONFIG_FILE=/etc/go-monitoring/config.json
+Environment=DATA_DIR=/var/lib/go-monitoring
+ExecStart=/usr/bin/go-monitoring run --config /etc/go-monitoring/config.json
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+StateDirectory=go-monitoring
+ConfigurationDirectory=go-monitoring
+
+# Host metrics, DBus, SMART, and GPU collectors need real host /proc, /sys,
+# sockets, and devices, so the hardening avoids private devices/network/proc.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/go-monitoring /etc/go-monitoring
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectClock=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

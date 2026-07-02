@@ -1,0 +1,17 @@
+.idea/
+.idea.md
+.vscode/
+
+/agent
+/go-monitoring
+/dist/
+/data/
+/temp/
+
+*.test
+*.bak
+*timestamp*
+__debug_*
+*.asc
+*.gpg
+*.pgp

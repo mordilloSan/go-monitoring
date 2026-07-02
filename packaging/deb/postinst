@@ -1,0 +1,17 @@
+#!/bin/sh
+set -e
+
+# $1=configure, $2=previously installed version (empty on fresh install).
+# Guard on /run/systemd/system so containers/chroots without a running
+# systemd still install cleanly.
+if [ "$1" = "configure" ] && [ -d /run/systemd/system ]; then
+	systemctl daemon-reload || true
+	systemctl enable go-monitoring.service || true
+	if [ -z "${2:-}" ]; then
+		systemctl start go-monitoring.service || true
+	else
+		systemctl try-restart go-monitoring.service || true
+	fi
+fi
+
+exit 0

@@ -1,0 +1,355 @@
+// Package httpapi serves the go-monitoring REST API.
+package httpapi
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	apimodel "github.com/mordilloSan/go-monitoring/internal/api/model"
+	"github.com/mordilloSan/go-monitoring/internal/domain/system"
+	"github.com/mordilloSan/go-monitoring/internal/health"
+	"github.com/mordilloSan/go-monitoring/internal/store"
+	"github.com/mordilloSan/go-monitoring/internal/utils"
+	"github.com/mordilloSan/go-monitoring/internal/version"
+)
+
+const (
+	maxHistoryLimit   = 1000
+	apiRequestTimeout = 5 * time.Second
+)
+
+type MetricsReader interface {
+	Path() string
+	PluginHistory(plugin, resolution string, from, to int64, limit int) ([]store.HistoryRecord[json.RawMessage], error)
+	HistoryEnabled(plugin string) bool
+}
+
+type CurrentReader interface {
+	CurrentPlugin(plugin string) (int64, json.RawMessage, error)
+	SystemSummary() (int64, system.Summary, error)
+}
+
+type SmartRefresher interface {
+	RefreshSmartNow() error
+}
+
+type Options struct {
+	Metrics              MetricsReader
+	Current              CurrentReader
+	SmartRefresher       SmartRefresher
+	DataDir              string
+	ListenAddr           func() string
+	SmartRefreshInterval func() string
+	ConfigInfo           func() apimodel.ConfigMeta
+	RequestLogging       bool
+}
+
+type Server struct {
+	metrics              MetricsReader
+	current              CurrentReader
+	smartRefresher       SmartRefresher
+	dataDir              string
+	listenAddr           func() string
+	smartRefreshInterval func() string
+	configInfo           func() apimodel.ConfigMeta
+	requestLogging       bool
+}
+
+func NewServer(opts Options) *Server {
+	current := opts.Current
+	if current == nil {
+		current = missingCurrentReader{}
+	}
+	return &Server{
+		metrics:              opts.Metrics,
+		current:              current,
+		smartRefresher:       opts.SmartRefresher,
+		dataDir:              opts.DataDir,
+		listenAddr:           opts.ListenAddr,
+		smartRefreshInterval: opts.SmartRefreshInterval,
+		configInfo:           opts.ConfigInfo,
+		requestLogging:       opts.RequestLogging,
+	}
+}
+
+func (s *Server) Handler(collectorInterval func() time.Duration) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", s.handleHealth)
+	mux.HandleFunc("/api/v1/meta", s.handleMeta(collectorInterval))
+	mux.HandleFunc("/api/v1/system/summary", s.handleSystemSummary)
+	mux.HandleFunc("/api/v1/benchmark", s.handleBenchmark(mux))
+	NewRegistry(s.current, s.metrics, s.smartRefresher).Mount(mux, "/api/v1/")
+	if s.requestLogging {
+		return logRequests(mux)
+	}
+	return mux
+}
+
+func RequestLoggingEnabled() bool {
+	value, exists := utils.GetEnv("HTTP_LOG")
+	if !exists {
+		value, exists = utils.GetEnv("REQUEST_LOG")
+	}
+	if !exists {
+		return true
+	}
+
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		slog.Warn("Invalid HTTP_LOG value; defaulting to enabled", "value", value)
+		return true
+	}
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	if r.status != 0 {
+		return
+	}
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(data []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	n, err := r.ResponseWriter.Write(data)
+	r.bytes += n
+	return n, err
+}
+
+func logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w}
+		next.ServeHTTP(rec, r)
+		if rec.status == 0 {
+			rec.status = http.StatusOK
+		}
+
+		slog.Info("HTTP request",
+			"method", r.Method,
+			"path", r.URL.RequestURI(),
+			"status", rec.status,
+			"bytes", rec.bytes,
+			"duration", time.Since(start),
+		)
+	})
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+
+	status, err := health.GetStatus()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	code := http.StatusOK
+	if !status.Healthy {
+		code = http.StatusServiceUnavailable
+	}
+	writeJSON(w, code, map[string]any{
+		"healthy":      status.Healthy,
+		"last_updated": status.LastUpdated,
+		"age_seconds":  status.Age.Seconds(),
+	})
+}
+
+func (s *Server) handleMeta(collectorInterval func() time.Duration) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+		interval := time.Duration(0)
+		if collectorInterval != nil {
+			interval = collectorInterval()
+		}
+		writeJSON(w, http.StatusOK, s.metaResponse(interval))
+	}
+}
+
+func (s *Server) handleSystemSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+
+	ctx, cancel := requestContext(r)
+	defer cancel()
+
+	capturedAt, summary, err := s.systemSummary(ctx)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, apimodel.SystemSummaryResponse{
+		CapturedAt: capturedAt,
+		Summary:    summary,
+	})
+}
+
+type missingCurrentReader struct{}
+
+func (missingCurrentReader) CurrentPlugin(string) (int64, json.RawMessage, error) {
+	return 0, nil, errors.New("current provider not configured")
+}
+
+func (missingCurrentReader) SystemSummary() (int64, system.Summary, error) {
+	return 0, system.Summary{}, errors.New("current provider not configured")
+}
+
+func (s *Server) systemSummary(ctx context.Context) (int64, system.Summary, error) {
+	if reader, ok := s.current.(interface {
+		SystemSummaryContext(context.Context) (int64, system.Summary, error)
+	}); ok {
+		return reader.SystemSummaryContext(ctx)
+	}
+	return s.current.SystemSummary()
+}
+
+func (s *Server) metaResponse(collectorInterval time.Duration) apimodel.MetaResponse {
+	smartRefreshInterval := ""
+	if s.smartRefreshInterval != nil {
+		smartRefreshInterval = s.smartRefreshInterval()
+	}
+	listenAddr := ""
+	if s.listenAddr != nil {
+		listenAddr = s.listenAddr()
+	}
+	configInfo := apimodel.ConfigMeta{}
+	if s.configInfo != nil {
+		configInfo = s.configInfo()
+	}
+	interval := collectorInterval.String()
+	if configInfo.CollectorInterval != "" {
+		interval = configInfo.CollectorInterval
+	}
+	return apimodel.MetaResponse{
+		Version:              version.Version,
+		DataDir:              s.dataDir,
+		DBPath:               s.metrics.Path(),
+		ListenAddr:           listenAddr,
+		CollectorInterval:    interval,
+		SmartRefreshInterval: smartRefreshInterval,
+		Config:               configInfo,
+		Retention:            store.RetentionStrings(),
+	}
+}
+
+func parseHistoryQuery(w http.ResponseWriter, r *http.Request) (resolution string, from int64, to int64, limit int, ok bool) {
+	query := r.URL.Query()
+	resolution = query.Get("resolution")
+	if !store.ValidResolution(resolution) {
+		writeError(w, http.StatusBadRequest, errors.New("invalid resolution"))
+		return "", 0, 0, 0, false
+	}
+
+	var err error
+	from = 0
+	if raw := query.Get("from"); raw != "" {
+		from, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, errors.New("invalid from"))
+			return "", 0, 0, 0, false
+		}
+	}
+
+	to = time.Now().UTC().UnixMilli()
+	if raw := query.Get("to"); raw != "" {
+		to, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, errors.New("invalid to"))
+			return "", 0, 0, 0, false
+		}
+	}
+	if from > to {
+		writeError(w, http.StatusBadRequest, errors.New("from must be <= to"))
+		return "", 0, 0, 0, false
+	}
+
+	limit = 100
+	if raw := query.Get("limit"); raw != "" {
+		limit, err = strconv.Atoi(raw)
+		if err != nil || limit <= 0 || limit > maxHistoryLimit {
+			writeError(w, http.StatusBadRequest, errors.New("invalid limit"))
+			return "", 0, 0, 0, false
+		}
+	}
+	return resolution, from, to, limit, true
+}
+
+func writeStoreError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		writeErrorMessage(w, http.StatusNotFound, "not found")
+	case errors.Is(err, context.DeadlineExceeded):
+		writeErrorMessage(w, http.StatusGatewayTimeout, "request timed out")
+	case errors.Is(err, context.Canceled):
+		writeErrorMessage(w, http.StatusRequestTimeout, "request canceled")
+	default:
+		writeInternalError(w, err)
+	}
+}
+
+func writeMethodNotAllowed(w http.ResponseWriter, method string) {
+	w.Header().Set("Allow", method)
+	writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+}
+
+func requestContext(r *http.Request) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(r.Context(), apiRequestTimeout)
+}
+
+func publicErrorMessage(err error) string {
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return "not found"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "request timed out"
+	case errors.Is(err, context.Canceled):
+		return "request canceled"
+	default:
+		return "internal server error"
+	}
+}
+
+func writeInternalError(w http.ResponseWriter, err error) {
+	slog.Error("Internal API error", "err", err)
+	writeErrorMessage(w, http.StatusInternalServerError, "internal server error")
+}
+
+func writeError(w http.ResponseWriter, code int, err error) {
+	writeJSON(w, code, apimodel.ErrorResponse{Error: err.Error()})
+}
+
+func writeErrorMessage(w http.ResponseWriter, code int, message string) {
+	writeJSON(w, code, apimodel.ErrorResponse{Error: message})
+}
+
+func writeJSON(w http.ResponseWriter, code int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(payload)
+}

@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then
+	if command -v systemctl >/dev/null 2>&1; then
+		systemctl stop go-monitoring.service || true
+		systemctl disable go-monitoring.service || true
+	fi
+fi
+
+exit 0
