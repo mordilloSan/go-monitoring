@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -13,9 +15,20 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mordilloSan/go-monitoring/internal/domain/smart"
+	"github.com/mordilloSan/go-monitoring/internal/domain/system"
 	"github.com/mordilloSan/go-monitoring/internal/domain/systemd"
 	"github.com/mordilloSan/go-monitoring/internal/store/storetest"
 )
+
+func createStoreDBWithVersion(t *testing.T, dataDir string, version int) {
+	t.Helper()
+
+	db, err := sql.Open("sqlite", filepath.Join(dataDir, "metrics.db"))
+	require.NoError(t, err)
+	_, err = db.Exec(fmt.Sprintf("PRAGMA user_version = %d", version))
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+}
 
 func TestStoreSnapshotAndCurrentQueries(t *testing.T) {
 	ctx := context.Background()
@@ -113,6 +126,18 @@ func TestStoreSnapshotAndCurrentQueries(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestStoreRejectsNilSnapshot(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := OpenStore(tmpDir)
+	require.NoError(t, err)
+	defer store.Close()
+
+	err = store.WriteSnapshot(time.Now().UTC().UnixMilli(), nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "snapshot data is nil")
+}
+
 func TestStoreResetsOldSchemaToPluginTables(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "metrics.db")
@@ -199,6 +224,61 @@ func TestStoreDatabaseIntegrityMaintenanceAndReset(t *testing.T) {
 	require.NoError(t, CheckDatabase(tmpDir))
 }
 
+func TestCheckDatabaseErrors(t *testing.T) {
+	t.Run("missing database", func(t *testing.T) {
+		err := CheckDatabase(t.TempDir())
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "stat metrics.db")
+	})
+
+	t.Run("obsolete schema", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		createStoreDBWithVersion(t, tmpDir, 3)
+
+		err := CheckDatabase(tmpDir)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "obsolete metrics.db schema version 3")
+	})
+
+	t.Run("unsupported schema", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		createStoreDBWithVersion(t, tmpDir, 99)
+
+		err := CheckDatabase(tmpDir)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unsupported metrics.db schema version 99")
+	})
+}
+
+func TestStoreRepairValidDatabaseDoesNotMoveFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := OpenStore(tmpDir)
+	require.NoError(t, err)
+	require.NoError(t, store.Close())
+
+	repaired, moved, err := RepairDatabase(tmpDir)
+
+	require.NoError(t, err)
+	defer repaired.Close()
+	assert.Empty(t, moved)
+	require.NoError(t, repaired.IntegrityCheck())
+}
+
+func TestStoreResetDatabaseWithoutExistingDB(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	resetStore, moved, err := ResetDatabase(tmpDir)
+
+	require.NoError(t, err)
+	defer resetStore.Close()
+	assert.Empty(t, moved)
+	assert.FileExists(t, filepath.Join(tmpDir, "metrics.db"))
+	require.NoError(t, resetStore.IntegrityCheck())
+}
+
 func TestStoreRepairMovesAsideCorruptDatabase(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "metrics.db")
@@ -214,6 +294,26 @@ func TestStoreRepairMovesAsideCorruptDatabase(t *testing.T) {
 	require.Len(t, movedDBs, 1)
 	require.NoError(t, repaired.IntegrityCheck())
 	require.NoError(t, CheckDatabase(tmpDir))
+}
+
+func TestStoreUnknownPluginsAndEmptySmartFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := OpenStore(tmpDir)
+	require.NoError(t, err)
+	defer store.Close()
+
+	capturedAt, smartRaw, err := store.CurrentPlugin(context.Background(), PluginSmart)
+	require.NoError(t, err)
+	assert.Zero(t, capturedAt)
+	assert.JSONEq(t, `[]`, string(smartRaw))
+
+	_, _, err = store.CurrentPlugin(context.Background(), "nope")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unknown plugin "nope"`)
+
+	_, err = store.PluginHistory(context.Background(), "nope", resolution1m, 0, 1, 10)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unknown plugin "nope"`)
 }
 
 func TestStoreWritesHistoryOnlyForAllowlistedPlugins(t *testing.T) {
@@ -399,33 +499,24 @@ func TestStoreMaintenanceDoesNotRollFutureRowsIntoCurrentWindow(t *testing.T) {
 
 func TestStoreMaintenanceAppliesRetentionToAllHistoryTables(t *testing.T) {
 	tmpDir := t.TempDir()
-	store, err := OpenStore(tmpDir, Options{HistoryPlugins: []string{PluginCPU, PluginContainers}})
+	store, err := OpenStore(tmpDir, Options{HistoryPlugins: PluginNames()})
 	require.NoError(t, err)
 	defer store.Close()
 
 	now := time.Now().UTC().Truncate(time.Minute)
-	data := storetest.SampleCombinedData(42)
-	payloads := snapshotPluginPayloads(data)
-	cpuJSON, err := marshalJSON(payloads[PluginCPU])
-	require.NoError(t, err)
-	containerJSON, err := marshalJSON(payloads[PluginContainers])
-	require.NoError(t, err)
+	historyJSON := `{"retention":"test"}`
 
 	for resolution, retention := range historyRetention {
 		expiredAt := now.Add(-retention - time.Millisecond).UnixMilli()
 		boundaryAt := now.Add(-retention).UnixMilli()
 
-		_, err = store.db.Exec(`
-			INSERT INTO cpu_history (resolution, captured_at, stats_json)
-			VALUES (?, ?, ?), (?, ?, ?)
-		`, resolution, expiredAt, cpuJSON, resolution, boundaryAt, cpuJSON)
-		require.NoError(t, err)
-
-		_, err = store.db.Exec(`
-			INSERT INTO containers_history (resolution, captured_at, stats_json)
-			VALUES (?, ?, ?), (?, ?, ?)
-		`, resolution, expiredAt, containerJSON, resolution, boundaryAt, containerJSON)
-		require.NoError(t, err)
+		for _, plugin := range PluginNames() {
+			_, err = store.db.Exec(fmt.Sprintf(`
+				INSERT INTO %s (resolution, captured_at, stats_json)
+				VALUES (?, ?, ?), (?, ?, ?)
+			`, pluginHistoryTable(plugin)), resolution, expiredAt, historyJSON, resolution, boundaryAt, historyJSON)
+			require.NoError(t, err)
+		}
 	}
 
 	require.NoError(t, store.RunMaintenance(now))
@@ -433,40 +524,73 @@ func TestStoreMaintenanceAppliesRetentionToAllHistoryTables(t *testing.T) {
 	for resolution, retention := range historyRetention {
 		cutoff := now.Add(-retention).UnixMilli()
 
-		var expiredSystemRows int
-		err = store.db.QueryRow(`
-			SELECT COUNT(1)
-			FROM cpu_history
-			WHERE resolution = ? AND captured_at < ?
-		`, resolution, cutoff).Scan(&expiredSystemRows)
-		require.NoError(t, err)
-		assert.Zero(t, expiredSystemRows, "expired system rows should be deleted for %s", resolution)
+		for _, plugin := range PluginNames() {
+			var expiredRows int
+			err = store.db.QueryRow(fmt.Sprintf(`
+				SELECT COUNT(1)
+				FROM %s
+				WHERE resolution = ? AND captured_at < ?
+			`, pluginHistoryTable(plugin)), resolution, cutoff).Scan(&expiredRows)
+			require.NoError(t, err)
+			assert.Zero(t, expiredRows, "expired %s rows should be deleted for %s", plugin, resolution)
 
-		var expiredContainerRows int
-		err = store.db.QueryRow(`
-			SELECT COUNT(1)
-			FROM containers_history
-			WHERE resolution = ? AND captured_at < ?
-		`, resolution, cutoff).Scan(&expiredContainerRows)
-		require.NoError(t, err)
-		assert.Zero(t, expiredContainerRows, "expired container rows should be deleted for %s", resolution)
+			var keptRows int
+			err = store.db.QueryRow(fmt.Sprintf(`
+				SELECT COUNT(1)
+				FROM %s
+				WHERE resolution = ? AND captured_at = ?
+			`, pluginHistoryTable(plugin)), resolution, cutoff).Scan(&keptRows)
+			require.NoError(t, err)
+			assert.Equal(t, 1, keptRows, "boundary %s row should be kept for %s", plugin, resolution)
+		}
+	}
+}
 
-		var keptSystemRows int
-		err = store.db.QueryRow(`
-			SELECT COUNT(1)
-			FROM cpu_history
-			WHERE resolution = ? AND captured_at = ?
-		`, resolution, cutoff).Scan(&keptSystemRows)
-		require.NoError(t, err)
-		assert.Equal(t, 1, keptSystemRows, "boundary system row should be kept for %s", resolution)
+func TestAggregatePluginHistoryJSONCoversAllPlugins(t *testing.T) {
+	first := storetest.SampleCombinedData(10)
+	first.Stats.Swap = 2
+	first.Stats.SwapUsed = 1
+	first.Stats.NetworkSent = 3
+	first.Stats.NetworkRecv = 4
+	first.Stats.Temperatures = map[string]float64{"cpu": 50}
+	first.Stats.GPUData = map[string]system.GPUData{"0": {Name: "gpu0", Usage: 20, MemoryUsed: 100}}
+	second := storetest.SampleCombinedData(30)
+	second.Stats.Swap = 4
+	second.Stats.SwapUsed = 2
+	second.Stats.NetworkSent = 9
+	second.Stats.NetworkRecv = 10
+	second.Stats.Temperatures = map[string]float64{"cpu": 70}
+	second.Stats.GPUData = map[string]system.GPUData{"0": {Name: "gpu0", Usage: 60, MemoryUsed: 300}}
 
-		var keptContainerRows int
-		err = store.db.QueryRow(`
-			SELECT COUNT(1)
-			FROM containers_history
-			WHERE resolution = ? AND captured_at = ?
-		`, resolution, cutoff).Scan(&keptContainerRows)
-		require.NoError(t, err)
-		assert.Equal(t, 1, keptContainerRows, "boundary container row should be kept for %s", resolution)
+	firstPayloads := snapshotPluginPayloads(first)
+	secondPayloads := snapshotPluginPayloads(second)
+	passThroughPlugins := map[string]struct{}{
+		PluginSystemd:     {},
+		PluginProcesses:   {},
+		PluginPrograms:    {},
+		PluginConnections: {},
+		PluginIRQ:         {},
+	}
+
+	for _, plugin := range PluginNames() {
+		t.Run(plugin, func(t *testing.T) {
+			firstRaw := `{"first":true}`
+			secondRaw := `{"second":true}`
+			if plugin != PluginSmart {
+				var err error
+				firstRaw, err = marshalJSON(firstPayloads[plugin])
+				require.NoError(t, err)
+				secondRaw, err = marshalJSON(secondPayloads[plugin])
+				require.NoError(t, err)
+			}
+
+			aggregated, err := aggregatePluginHistoryJSON(plugin, []string{firstRaw, secondRaw})
+
+			require.NoError(t, err)
+			assert.True(t, json.Valid([]byte(aggregated)), "aggregate should be valid JSON: %s", aggregated)
+			if _, passThrough := passThroughPlugins[plugin]; passThrough || plugin == PluginSmart {
+				assert.JSONEq(t, secondRaw, aggregated)
+			}
+		})
 	}
 }

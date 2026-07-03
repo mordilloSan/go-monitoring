@@ -1,14 +1,49 @@
 package cmd
 
 import (
+	"bytes"
+	"io"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/mordilloSan/go-monitoring/internal/app"
 	"github.com/mordilloSan/go-monitoring/internal/config"
+	"github.com/mordilloSan/go-monitoring/internal/store"
 )
+
+func captureStdout(t *testing.T, fn func() error) (string, error) {
+	t.Helper()
+
+	original := os.Stdout
+	reader, writer, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stdout = writer
+	defer func() {
+		os.Stdout = original
+	}()
+
+	runErr := fn()
+	require.NoError(t, writer.Close())
+
+	var buf bytes.Buffer
+	_, copyErr := io.Copy(&buf, reader)
+	require.NoError(t, copyErr)
+	require.NoError(t, reader.Close())
+	return buf.String(), runErr
+}
+
+func createValidMetricsDB(t *testing.T, dataDir string) {
+	t.Helper()
+
+	s, err := store.OpenStore(dataDir)
+	require.NoError(t, err)
+	require.NoError(t, s.Close())
+}
 
 func TestGetAddress(t *testing.T) {
 	tests := []struct {
@@ -141,4 +176,85 @@ func TestParseFlags(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHandleDBCommandActions(t *testing.T) {
+	t.Run("path", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		out, err := captureStdout(t, func() error {
+			return handleDBCommand(cmdOptions{command: commandDB, dataDir: tmpDir, dbAction: "path"})
+		})
+
+		require.NoError(t, err)
+		assert.Equal(t, store.DatabasePath(tmpDir)+"\n", out)
+	})
+
+	t.Run("check", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		createValidMetricsDB(t, tmpDir)
+
+		_, err := captureStdout(t, func() error {
+			return handleDBCommand(cmdOptions{command: commandDB, dataDir: tmpDir, dbAction: "check"})
+		})
+
+		require.NoError(t, err)
+	})
+
+	t.Run("maintain", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		createValidMetricsDB(t, tmpDir)
+
+		_, err := captureStdout(t, func() error {
+			return handleDBCommand(cmdOptions{command: commandDB, dataDir: tmpDir, dbAction: "maintain"})
+		})
+
+		require.NoError(t, err)
+	})
+
+	t.Run("repair", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		dbPath := store.DatabasePath(tmpDir)
+		require.NoError(t, os.WriteFile(dbPath, []byte("not sqlite"), 0600))
+
+		_, err := captureStdout(t, func() error {
+			return handleDBCommand(cmdOptions{command: commandDB, dataDir: tmpDir, dbAction: "repair"})
+		})
+
+		require.NoError(t, err)
+		assert.FileExists(t, dbPath)
+		moved, err := filepath.Glob(dbPath + ".repair-*")
+		require.NoError(t, err)
+		assert.Len(t, moved, 1)
+	})
+
+	t.Run("reset with force", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		createValidMetricsDB(t, tmpDir)
+		dbPath := store.DatabasePath(tmpDir)
+
+		_, err := captureStdout(t, func() error {
+			return handleDBCommand(cmdOptions{command: commandDB, dataDir: tmpDir, dbAction: "reset", dbForce: true})
+		})
+
+		require.NoError(t, err)
+		assert.FileExists(t, dbPath)
+		moved, err := filepath.Glob(dbPath + ".reset-*")
+		require.NoError(t, err)
+		assert.Len(t, moved, 1)
+	})
+
+	t.Run("reset requires force", func(t *testing.T) {
+		err := handleDBCommand(cmdOptions{command: commandDB, dataDir: t.TempDir(), dbAction: "reset"})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "db reset requires --force")
+	})
+
+	t.Run("unknown action", func(t *testing.T) {
+		err := handleDBCommand(cmdOptions{command: commandDB, dataDir: t.TempDir(), dbAction: "nope"})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `unknown db action "nope"`)
+	})
 }
