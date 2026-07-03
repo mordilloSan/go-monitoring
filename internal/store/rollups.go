@@ -46,39 +46,53 @@ func rollupPlugin(tx *sql.Tx, plugin string, now time.Time) error {
 }
 
 func applyRollupStep(tx *sql.Tx, plugin, table string, step rollupStep, now time.Time) error {
-	existsAfter := now.Add(-step.window).UnixMilli()
-	exists, err := historyExistsSince(tx, table, step.longer, existsAfter)
+	windowMs := step.window.Milliseconds()
+	nowMs := now.UnixMilli()
+
+	// Chain windows off the previous rollup so delayed maintenance ticks
+	// cannot leave shorter-resolution rows outside every aggregated window.
+	cursor := nowMs
+	last, hasLast, err := latestHistoryAt(tx, table, step.longer)
 	if err != nil {
 		return err
 	}
-	if exists {
-		return nil
+	if hasLast {
+		cursor = last + windowMs
 	}
 
-	from := now.Add(-step.window).UnixMilli()
-	historyJSON, err := loadHistoryJSON(tx, table, step.shorter, from, now.UnixMilli())
-	if err != nil {
-		return err
-	}
-	if len(historyJSON) < step.minShorterRows {
-		return nil
+	// Windows whose source rows retention has already deleted can never fill;
+	// skip them so a long outage doesn't pin the cursor in the past.
+	if oldestUseful := nowMs - historyRetention[step.shorter].Milliseconds(); cursor <= oldestUseful {
+		cursor += ((oldestUseful-cursor)/windowMs + 1) * windowMs
 	}
 
-	rolledRaw, err := aggregatePluginHistoryJSON(plugin, historyJSON)
-	if err != nil {
-		return err
+	for ; cursor <= nowMs; cursor += windowMs {
+		historyJSON, err := loadHistoryJSON(tx, table, step.shorter, cursor-windowMs, cursor)
+		if err != nil {
+			return err
+		}
+		if len(historyJSON) < step.minShorterRows {
+			continue
+		}
+		rolledRaw, err := aggregatePluginHistoryJSON(plugin, historyJSON)
+		if err != nil {
+			return err
+		}
+		if err := insertPluginHistory(tx, plugin, step.longer, cursor, rolledRaw); err != nil {
+			return err
+		}
 	}
-	return insertPluginHistory(tx, plugin, step.longer, now.UnixMilli(), rolledRaw)
+	return nil
 }
 
-func historyExistsSince(tx *sql.Tx, table, resolution string, capturedAfter int64) (bool, error) {
-	var count int
+func latestHistoryAt(tx *sql.Tx, table, resolution string) (int64, bool, error) {
+	var at sql.NullInt64
 	err := tx.QueryRow(fmt.Sprintf(`
-		SELECT COUNT(1)
+		SELECT MAX(captured_at)
 		FROM %s
-		WHERE resolution = ? AND captured_at > ?
-	`, table), resolution, capturedAfter).Scan(&count)
-	return count > 0, err
+		WHERE resolution = ?
+	`, table), resolution).Scan(&at)
+	return at.Int64, at.Valid, err
 }
 
 func loadHistoryJSON(tx *sql.Tx, table, resolution string, capturedAfter, capturedAtOrBefore int64) ([]string, error) {

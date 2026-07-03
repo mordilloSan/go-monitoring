@@ -141,21 +141,25 @@ func (r *Registry) handleAll(w http.ResponseWriter, req *http.Request) {
 
 	out := make(map[string]any, len(r.plugins))
 	pluginErrors := map[string]string{}
+	var firstErr error
 	for _, plugin := range r.plugins {
 		current, err := plugin.Current(ctx)
 		if err != nil {
 			slog.Warn("Plugin current read failed", "plugin", plugin.Name(), "err", err)
+			if firstErr == nil {
+				firstErr = err
+			}
 			pluginErrors[plugin.Name()] = publicErrorMessage(err)
 			continue
 		}
 		out[plugin.Name()] = current
 	}
+	if len(r.plugins) > 0 && len(pluginErrors) == len(r.plugins) {
+		writeStoreError(w, firstErr)
+		return
+	}
 	if len(pluginErrors) > 0 {
 		out["errors"] = pluginErrors
-	}
-	if len(out) == 1 && len(pluginErrors) > 0 {
-		writeInternalError(w, errors.New("all plugin current reads failed"))
-		return
 	}
 	writeJSON(w, http.StatusOK, out)
 }

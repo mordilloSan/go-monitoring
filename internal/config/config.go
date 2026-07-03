@@ -74,7 +74,7 @@ func Default() Config {
 	}
 	return Config{
 		Version:           CurrentVersion,
-		Listen:            ":45876",
+		Listen:            "127.0.0.1:45876",
 		CollectorInterval: Duration(app.DefaultCollectorInterval),
 		History:           strings.Join(store.DefaultHistoryPluginNames(), ","),
 		CacheTTL:          cacheTTL,
@@ -146,8 +146,13 @@ func SaveIfMissing(path string, cfg Config) (bool, error) {
 		}
 		return false, err
 	}
-	defer file.Close()
 	if _, err := file.Write(data); err != nil {
+		if closeErr := file.Close(); closeErr != nil {
+			return false, errors.Join(err, closeErr)
+		}
+		return false, err
+	}
+	if err := file.Close(); err != nil {
 		return false, err
 	}
 	return true, nil

@@ -16,7 +16,8 @@ import (
 	"sync"
 	"time"
 
-	_ "modernc.org/sqlite"
+	sqlite "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 
 	"github.com/mordilloSan/go-monitoring/internal/domain/container"
 	modelnet "github.com/mordilloSan/go-monitoring/internal/domain/network"
@@ -137,14 +138,17 @@ func openStoreDB(dbPath string, historyPlugins []string) (*Store, error) {
 }
 
 func recoverableStoreOpenError(err error) bool {
-	if err == nil {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
 		return false
 	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "file is not a database") ||
-		strings.Contains(message, "not a database") ||
-		strings.Contains(message, "database disk image is malformed") ||
-		strings.Contains(message, "malformed")
+	// Mask extended result codes (e.g. SQLITE_CORRUPT_INDEX) to their primary code.
+	switch sqliteErr.Code() & 0xff {
+	case sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB:
+		return true
+	default:
+		return false
+	}
 }
 
 func DatabasePath(dataDir string) string {

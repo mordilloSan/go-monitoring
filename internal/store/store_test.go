@@ -497,6 +497,49 @@ func TestStoreMaintenanceDoesNotRollFutureRowsIntoCurrentWindow(t *testing.T) {
 	assert.Zero(t, tenMinuteRows)
 }
 
+func TestStoreMaintenanceDelayedTickDoesNotSkipRollupWindows(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := OpenStore(tmpDir, Options{HistoryPlugins: []string{PluginCPU}})
+	require.NoError(t, err)
+	defer store.Close()
+
+	start := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	for i := 1; i <= 10; i++ {
+		require.NoError(t, store.WriteSnapshot(start.Add(time.Duration(i)*time.Minute).UnixMilli(), storetest.SampleCombinedData(float64(i))))
+	}
+	require.NoError(t, store.RunMaintenance(start.Add(10*time.Minute)))
+
+	for i := 11; i <= 23; i++ {
+		require.NoError(t, store.WriteSnapshot(start.Add(time.Duration(i)*time.Minute).UnixMilli(), storetest.SampleCombinedData(float64(i))))
+	}
+	// Maintenance is late: the next tick lands 3 minutes past the window edge.
+	require.NoError(t, store.RunMaintenance(start.Add(23*time.Minute)))
+
+	rows, err := store.db.Query(`
+		SELECT captured_at
+		FROM cpu_history
+		WHERE resolution = ?
+		ORDER BY captured_at ASC
+	`, resolution10m)
+	require.NoError(t, err)
+	defer rows.Close()
+
+	var capturedAts []int64
+	for rows.Next() {
+		var capturedAt int64
+		require.NoError(t, rows.Scan(&capturedAt))
+		capturedAts = append(capturedAts, capturedAt)
+	}
+	require.NoError(t, rows.Err())
+
+	// Windows must chain off the previous rollup, not the delayed tick time,
+	// so no 1m row falls between two aggregated windows.
+	assert.Equal(t, []int64{
+		start.Add(10 * time.Minute).UnixMilli(),
+		start.Add(20 * time.Minute).UnixMilli(),
+	}, capturedAts)
+}
+
 func TestStoreMaintenanceAppliesRetentionToAllHistoryTables(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := OpenStore(tmpDir, Options{HistoryPlugins: PluginNames()})

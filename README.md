@@ -1,7 +1,6 @@
-[![Go Report Card](https://goreportcard.com/badge/github.com/mordilloSan/go-monitoring)](https://goreportcard.com/report/github.com/mordilloSan/go-monitoring)
 [![License](https://img.shields.io/github/license/mordilloSan/go-monitoring)](LICENSE)
 [![Go](https://img.shields.io/github/go-mod/go-version/mordilloSan/go-monitoring)](go.mod)
-[![CodeQL](https://github.com/mordilloSan/go-monitoring/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/mordilloSan/go-monitoring/actions/workflows/github-code-scanning/codeql)
+[![CodeQL](https://github.com/mordilloSan/go-monitoring/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/mordilloSan/go-monitoring/actions/workflows/codeql.yml)
 
 # go-monitoring
 

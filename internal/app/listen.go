@@ -14,10 +14,12 @@ func GetAddress(addr string) string {
 		addr, _ = utils.GetEnv("PORT")
 	}
 	if addr == "" {
-		return ":45876"
+		return "127.0.0.1:45876"
 	}
+	// A bare port stays local-only; use an explicit host (or ":port") to
+	// listen on all interfaces.
 	if !strings.Contains(addr, ":") {
-		addr = ":" + addr
+		addr = "127.0.0.1:" + addr
 	}
 	return addr
 }
