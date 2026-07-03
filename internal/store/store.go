@@ -16,7 +16,8 @@ import (
 	"sync"
 	"time"
 
-	_ "modernc.org/sqlite"
+	sqlite "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 
 	"github.com/mordilloSan/go-monitoring/internal/domain/container"
 	modelnet "github.com/mordilloSan/go-monitoring/internal/domain/network"
@@ -137,14 +138,17 @@ func openStoreDB(dbPath string, historyPlugins []string) (*Store, error) {
 }
 
 func recoverableStoreOpenError(err error) bool {
-	if err == nil {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
 		return false
 	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "file is not a database") ||
-		strings.Contains(message, "not a database") ||
-		strings.Contains(message, "database disk image is malformed") ||
-		strings.Contains(message, "malformed")
+	// Mask extended result codes (e.g. SQLITE_CORRUPT_INDEX) to their primary code.
+	switch sqliteErr.Code() & 0xff {
+	case sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB:
+		return true
+	default:
+		return false
+	}
 }
 
 func DatabasePath(dataDir string) string {
@@ -279,23 +283,108 @@ func (s *Store) init() error {
 	case storeSchemaVersion:
 		return s.createSchema()
 	case 1, 2, 3:
-		slog.Warn("Resetting metrics.db for plugin storage schema", "from_version", version, "to_version", storeSchemaVersion)
-		return s.resetSchema()
+		return s.migrateLegacySchema(version)
 	default:
 		return fmt.Errorf("unsupported store schema version %d", version)
 	}
 }
 
-func (s *Store) resetSchema() error {
-	for _, table := range knownStoreTables() {
-		if _, err := s.db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", table)); err != nil {
+func (s *Store) migrateLegacySchema(version int) error {
+	backupPath, err := s.backupDatabase("backup", version)
+	if err != nil {
+		return fmt.Errorf("backup metrics.db before schema migration: %w", err)
+	}
+	slog.Warn(
+		"Migrating metrics.db to plugin storage schema",
+		"from_version", version,
+		"to_version", storeSchemaVersion,
+		"backup", backupPath,
+	)
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if err = archiveLegacyTables(tx, version); err != nil {
+		return err
+	}
+	if err = createSchema(tx); err != nil {
+		return err
+	}
+	if err = upsertMeta(tx, "schema_migration_backup", backupPath); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) backupDatabase(reason string, version int) (string, error) {
+	if s.path == "" {
+		return "", errors.New("database path is empty")
+	}
+	backupPath := fmt.Sprintf("%s.%s-v%d-%s", s.path, reason, version, time.Now().UTC().Format("20060102T150405.000000000Z"))
+	if _, err := s.db.Exec("VACUUM INTO " + sqlStringLiteral(backupPath)); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(backupPath, 0o600); err != nil {
+		return "", err
+	}
+	return backupPath, nil
+}
+
+func archiveLegacyTables(tx *sql.Tx, version int) error {
+	for _, table := range legacyStoreTables() {
+		exists, err := tableExists(tx, table)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			continue
+		}
+		archiveTable := fmt.Sprintf("legacy_v%d_%s", version, table)
+		if archived, err := tableExists(tx, archiveTable); err != nil {
+			return err
+		} else if archived {
+			return fmt.Errorf("legacy archive table %s already exists", archiveTable)
+		}
+		if _, err := tx.Exec(
+			fmt.Sprintf("ALTER TABLE %s RENAME TO %s", quoteIdentifier(table), quoteIdentifier(archiveTable)),
+		); err != nil {
 			return err
 		}
 	}
-	return s.createSchema()
+	return nil
+}
+
+func tableExists(tx *sql.Tx, table string) (bool, error) {
+	var exists bool
+	err := tx.QueryRow(`
+		SELECT EXISTS(
+			SELECT 1
+			FROM sqlite_master
+			WHERE type = 'table' AND name = ?
+		)
+	`, table).Scan(&exists)
+	return exists, err
 }
 
 func (s *Store) createSchema() error {
+	return createSchema(s.db)
+}
+
+type schemaExecer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func createSchema(db schemaExecer) error {
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS meta (
 			key TEXT PRIMARY KEY,
@@ -322,15 +411,15 @@ func (s *Store) createSchema() error {
 	statements = append(statements, fmt.Sprintf("PRAGMA user_version = %d", storeSchemaVersion))
 
 	for _, stmt := range statements {
-		if _, err := s.db.Exec(stmt); err != nil {
+		if _, err := db.Exec(stmt); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func knownStoreTables() []string {
-	tables := []string{
+func legacyStoreTables() []string {
+	return []string{
 		"meta",
 		"system_current",
 		"system_stats_history",
@@ -344,10 +433,14 @@ func knownStoreTables() []string {
 		"connections_current",
 		"irq_current",
 	}
-	for _, plugin := range pluginNames {
-		tables = append(tables, pluginCurrentTable(plugin), pluginHistoryTable(plugin))
-	}
-	return tables
+}
+
+func quoteIdentifier(identifier string) string {
+	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`
+}
+
+func sqlStringLiteral(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }
 
 func (s *Store) Close() error {
@@ -559,21 +652,21 @@ func upsertMeta(tx *sql.Tx, key, value string) error {
 	return err
 }
 
-func (s *Store) Summary() (int64, *system.CombinedData, error) {
-	capturedAt, err := s.currentCapturedAt()
+func (s *Store) Summary(ctx context.Context) (int64, *system.CombinedData, error) {
+	capturedAt, err := s.currentCapturedAt(ctx)
 	if err != nil {
 		return 0, nil, err
 	}
 
 	var summary system.CombinedData
-	if infoRaw, ok, err := s.metaValue("last_info_json"); err != nil {
+	if infoRaw, ok, err := s.metaValue(ctx, "last_info_json"); err != nil {
 		return 0, nil, err
 	} else if ok {
 		if err := json.Unmarshal([]byte(infoRaw), &summary.Info); err != nil {
 			return 0, nil, err
 		}
 	}
-	if detailsRaw, ok, err := s.metaValue("last_details_json"); err != nil {
+	if detailsRaw, ok, err := s.metaValue(ctx, "last_details_json"); err != nil {
 		return 0, nil, err
 	} else if ok && detailsRaw != "" {
 		summary.Details = &system.Details{}
@@ -586,7 +679,7 @@ func (s *Store) Summary() (int64, *system.CombinedData, error) {
 		if plugin == PluginSmart {
 			continue
 		}
-		_, raw, err := s.CurrentPlugin(plugin)
+		_, raw, err := s.CurrentPlugin(ctx, plugin)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -597,17 +690,13 @@ func (s *Store) Summary() (int64, *system.CombinedData, error) {
 	return capturedAt, &summary, nil
 }
 
-func (s *Store) SystemSummary() (int64, system.Summary, error) {
-	return s.SystemSummaryContext(context.Background())
-}
-
-func (s *Store) SystemSummaryContext(ctx context.Context) (int64, system.Summary, error) {
-	capturedAt, err := s.currentCapturedAtContext(ctx)
+func (s *Store) SystemSummary(ctx context.Context) (int64, system.Summary, error) {
+	capturedAt, err := s.currentCapturedAt(ctx)
 	if err != nil {
 		return 0, system.Summary{}, err
 	}
 
-	raw, ok, err := s.metaValueContext(ctx, "last_system_summary_json")
+	raw, ok, err := s.metaValue(ctx, "last_system_summary_json")
 	if err != nil {
 		return 0, system.Summary{}, err
 	}
@@ -622,9 +711,9 @@ func (s *Store) SystemSummaryContext(ctx context.Context) (int64, system.Summary
 	return capturedAt, summary, nil
 }
 
-func (s *Store) currentContainerStats() ([]*container.Stats, error) {
+func (s *Store) currentContainerStats(ctx context.Context) ([]*container.Stats, error) {
 	currentItems := []containerCurrentRecord{}
-	_, raw, err := s.CurrentPlugin(PluginContainers)
+	_, raw, err := s.CurrentPlugin(ctx, PluginContainers)
 	if err != nil {
 		return nil, err
 	}
@@ -650,17 +739,17 @@ func (s *Store) currentContainerStats() ([]*container.Stats, error) {
 	return items, nil
 }
 
-func (s *Store) CurrentContainers() (int64, []*container.Stats, error) {
-	capturedAt, err := s.currentCapturedAt()
+func (s *Store) CurrentContainers(ctx context.Context) (int64, []*container.Stats, error) {
+	capturedAt, err := s.currentCapturedAt(ctx)
 	if err != nil {
 		return 0, nil, err
 	}
-	items, err := s.currentContainerStats()
+	items, err := s.currentContainerStats(ctx)
 	return capturedAt, items, err
 }
 
-func (s *Store) CurrentSystemd() (int64, []*systemd.Service, error) {
-	capturedAt, raw, err := s.CurrentPlugin(PluginSystemd)
+func (s *Store) CurrentSystemd(ctx context.Context) (int64, []*systemd.Service, error) {
+	capturedAt, raw, err := s.CurrentPlugin(ctx, PluginSystemd)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -671,13 +760,13 @@ func (s *Store) CurrentSystemd() (int64, []*systemd.Service, error) {
 	return capturedAt, items, nil
 }
 
-func (s *Store) CurrentSystemdItems() ([]*systemd.Service, error) {
-	_, items, err := s.CurrentSystemd()
+func (s *Store) CurrentSystemdItems(ctx context.Context) ([]*systemd.Service, error) {
+	_, items, err := s.CurrentSystemd(ctx)
 	return items, err
 }
 
-func (s *Store) CurrentProcessCount() (int64, procmodel.Count, error) {
-	capturedAt, raw, err := s.CurrentPlugin(PluginProcesses)
+func (s *Store) CurrentProcessCount(ctx context.Context) (int64, procmodel.Count, error) {
+	capturedAt, raw, err := s.CurrentPlugin(ctx, PluginProcesses)
 	if err != nil {
 		return 0, procmodel.Count{}, err
 	}
@@ -691,8 +780,8 @@ func (s *Store) CurrentProcessCount() (int64, procmodel.Count, error) {
 	return capturedAt, *data.Count, nil
 }
 
-func (s *Store) CurrentProcesses() (int64, []procmodel.Process, error) {
-	capturedAt, raw, err := s.CurrentPlugin(PluginProcesses)
+func (s *Store) CurrentProcesses(ctx context.Context) (int64, []procmodel.Process, error) {
+	capturedAt, raw, err := s.CurrentPlugin(ctx, PluginProcesses)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -703,8 +792,8 @@ func (s *Store) CurrentProcesses() (int64, []procmodel.Process, error) {
 	return capturedAt, data.Items, nil
 }
 
-func (s *Store) CurrentPrograms() (int64, []procmodel.Program, error) {
-	capturedAt, raw, err := s.CurrentPlugin(PluginPrograms)
+func (s *Store) CurrentPrograms(ctx context.Context) (int64, []procmodel.Program, error) {
+	capturedAt, raw, err := s.CurrentPlugin(ctx, PluginPrograms)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -715,8 +804,8 @@ func (s *Store) CurrentPrograms() (int64, []procmodel.Program, error) {
 	return capturedAt, items, nil
 }
 
-func (s *Store) CurrentConnections() (int64, modelnet.ConnectionStats, error) {
-	capturedAt, raw, err := s.CurrentPlugin(PluginConnections)
+func (s *Store) CurrentConnections(ctx context.Context) (int64, modelnet.ConnectionStats, error) {
+	capturedAt, raw, err := s.CurrentPlugin(ctx, PluginConnections)
 	if err != nil {
 		return 0, modelnet.ConnectionStats{}, err
 	}
@@ -730,8 +819,8 @@ func (s *Store) CurrentConnections() (int64, modelnet.ConnectionStats, error) {
 	return capturedAt, data, nil
 }
 
-func (s *Store) CurrentIRQ() (int64, []modelnet.IRQStat, error) {
-	capturedAt, raw, err := s.CurrentPlugin(PluginIRQ)
+func (s *Store) CurrentIRQ(ctx context.Context) (int64, []modelnet.IRQStat, error) {
+	capturedAt, raw, err := s.CurrentPlugin(ctx, PluginIRQ)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -742,8 +831,8 @@ func (s *Store) CurrentIRQ() (int64, []modelnet.IRQStat, error) {
 	return capturedAt, items, nil
 }
 
-func (s *Store) CurrentSmartDevices() (int64, []SmartDeviceRecord, error) {
-	capturedAt, raw, err := s.CurrentPlugin(PluginSmart)
+func (s *Store) CurrentSmartDevices(ctx context.Context) (int64, []SmartDeviceRecord, error) {
+	capturedAt, raw, err := s.CurrentPlugin(ctx, PluginSmart)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -754,8 +843,8 @@ func (s *Store) CurrentSmartDevices() (int64, []SmartDeviceRecord, error) {
 	return capturedAt, items, nil
 }
 
-func (s *Store) SystemHistory(resolution string, from, to int64, limit int) ([]HistoryRecord[system.Stats], error) {
-	rawItems, err := s.PluginHistory(PluginCPU, resolution, from, to, limit)
+func (s *Store) SystemHistory(ctx context.Context, resolution string, from, to int64, limit int) ([]HistoryRecord[system.Stats], error) {
+	rawItems, err := s.PluginHistory(ctx, PluginCPU, resolution, from, to, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -773,8 +862,8 @@ func (s *Store) SystemHistory(resolution string, from, to int64, limit int) ([]H
 	return items, nil
 }
 
-func (s *Store) ContainerHistory(resolution string, from, to int64, limit int) ([]HistoryRecord[[]container.Stats], error) {
-	rawItems, err := s.PluginHistory(PluginContainers, resolution, from, to, limit)
+func (s *Store) ContainerHistory(ctx context.Context, resolution string, from, to int64, limit int) ([]HistoryRecord[[]container.Stats], error) {
+	rawItems, err := s.PluginHistory(ctx, PluginContainers, resolution, from, to, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -792,12 +881,8 @@ func (s *Store) ContainerHistory(resolution string, from, to int64, limit int) (
 	return items, nil
 }
 
-func (s *Store) currentCapturedAt() (int64, error) {
-	return s.currentCapturedAtContext(context.Background())
-}
-
-func (s *Store) currentCapturedAtContext(ctx context.Context) (int64, error) {
-	raw, ok, err := s.metaValueContext(ctx, "last_persisted_at")
+func (s *Store) currentCapturedAt(ctx context.Context) (int64, error) {
+	raw, ok, err := s.metaValue(ctx, "last_persisted_at")
 	if err != nil {
 		return 0, err
 	}
@@ -807,11 +892,7 @@ func (s *Store) currentCapturedAtContext(ctx context.Context) (int64, error) {
 	return strconv.ParseInt(raw, 10, 64)
 }
 
-func (s *Store) CurrentPlugin(plugin string) (int64, json.RawMessage, error) {
-	return s.CurrentPluginContext(context.Background(), plugin)
-}
-
-func (s *Store) CurrentPluginContext(ctx context.Context, plugin string) (int64, json.RawMessage, error) {
+func (s *Store) CurrentPlugin(ctx context.Context, plugin string) (int64, json.RawMessage, error) {
 	if !IsPluginName(plugin) {
 		return 0, nil, fmt.Errorf("unknown plugin %q", plugin)
 	}
@@ -833,11 +914,7 @@ func (s *Store) CurrentPluginContext(ctx context.Context, plugin string) (int64,
 	return capturedAt, json.RawMessage(raw), nil
 }
 
-func (s *Store) PluginHistory(plugin, resolution string, from, to int64, limit int) ([]HistoryRecord[json.RawMessage], error) {
-	return s.PluginHistoryContext(context.Background(), plugin, resolution, from, to, limit)
-}
-
-func (s *Store) PluginHistoryContext(ctx context.Context, plugin, resolution string, from, to int64, limit int) ([]HistoryRecord[json.RawMessage], error) {
+func (s *Store) PluginHistory(ctx context.Context, plugin, resolution string, from, to int64, limit int) ([]HistoryRecord[json.RawMessage], error) {
 	if !IsPluginName(plugin) {
 		return nil, fmt.Errorf("unknown plugin %q", plugin)
 	}
@@ -898,11 +975,7 @@ func (s *Store) SetHistoryPlugins(plugins []string) {
 	s.historyPlugins = historyPluginSet(plugins)
 }
 
-func (s *Store) metaValue(key string) (string, bool, error) {
-	return s.metaValueContext(context.Background(), key)
-}
-
-func (s *Store) metaValueContext(ctx context.Context, key string) (string, bool, error) {
+func (s *Store) metaValue(ctx context.Context, key string) (string, bool, error) {
 	var value string
 	err := s.db.QueryRowContext(ctx, "SELECT value FROM meta WHERE key = ?", key).Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {

@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"log/slog"
 	"os"
@@ -31,7 +32,7 @@ type systemInfoManager struct {
 
 type containerRuntimeInfo interface {
 	IsPodman() bool
-	GetHostInfo() (dockerapi.HostInfo, error)
+	GetHostInfo(context.Context) (dockerapi.HostInfo, error)
 }
 
 func newSystemInfoManager() *systemInfoManager {
@@ -39,7 +40,7 @@ func newSystemInfoManager() *systemInfoManager {
 }
 
 // Sets initial / non-changing values about the host system
-func (m *systemInfoManager) refreshSystemDetails(dockerManager containerRuntimeInfo) {
+func (m *systemInfoManager) refreshSystemDetails(ctx context.Context, dockerManager containerRuntimeInfo) {
 	m.systemInfo.AgentVersion = version.Version
 
 	// get host info from Docker if available
@@ -47,7 +48,7 @@ func (m *systemInfoManager) refreshSystemDetails(dockerManager containerRuntimeI
 
 	if dockerManager != nil {
 		m.systemDetails.Podman = dockerManager.IsPodman()
-		hostInfo, _ = dockerManager.GetHostInfo()
+		hostInfo, _ = dockerManager.GetHostInfo(ctx)
 	}
 
 	m.systemDetails.Hostname, _ = os.Hostname()
@@ -126,20 +127,57 @@ func (m *systemInfoManager) updateSystemDetails(updateFunc func(details *system.
 	m.detailsDirty = true
 }
 
-// Returns current info, stats about the host system
-//
-//nolint:gocognit // System stats assembly coordinates multiple collectors and cache-aware delta paths.
-func (a *App) getSystemStats(cacheTimeMs uint16) system.Stats {
+// Returns current info, stats about the host system.
+func (a *App) getSystemStats(ctx context.Context, cacheTimeMs uint16) (system.Stats, error) {
 	var systemStats system.Stats
+	if err := a.updateCoreSystemStats(ctx, cacheTimeMs, &systemStats); err != nil {
+		return systemStats, err
+	}
+	if err := a.fsManager.updateDiskUsage(ctx, &systemStats); err != nil {
+		return systemStats, err
+	}
+	if err := a.fsManager.updateDiskIo(ctx, cacheTimeMs, &systemStats); err != nil {
+		return systemStats, err
+	}
+	if err := a.networkManager.updateNetworkStats(ctx, cacheTimeMs, &systemStats); err != nil {
+		return systemStats, err
+	}
+	if err := a.updateTemperatures(ctx, &systemStats); err != nil {
+		return systemStats, err
+	}
+	a.updateGPUStats(cacheTimeMs, &systemStats)
+	if err := a.updateSystemInfoStats(ctx, &systemStats); err != nil {
+		return systemStats, err
+	}
+	return systemStats, nil
+}
 
-	// battery
+func (a *App) updateCoreSystemStats(ctx context.Context, cacheTimeMs uint16, systemStats *system.Stats) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	updateBatteryStats(systemStats)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := updateCPUMetrics(ctx, cacheTimeMs, systemStats); err != nil {
+		return err
+	}
+	if err := updateLoadStats(ctx, systemStats); err != nil {
+		return err
+	}
+	return a.updateMemoryStats(ctx, systemStats)
+}
+
+func updateBatteryStats(systemStats *system.Stats) {
 	if batteryPercent, batteryState, err := GetBatteryStats(); err == nil {
 		systemStats.Battery[0] = batteryPercent
 		systemStats.Battery[1] = batteryState
 	}
+}
 
-	// cpu metrics
-	cpuMetrics, err := getCpuMetrics(cacheTimeMs)
+func updateCPUMetrics(ctx context.Context, cacheTimeMs uint16, systemStats *system.Stats) error {
+	cpuMetrics, err := getCpuMetrics(ctx, cacheTimeMs)
 	if err == nil {
 		systemStats.Cpu = utils.TwoDecimals(cpuMetrics.Total)
 		systemStats.CpuBreakdown = []float64{
@@ -149,119 +187,117 @@ func (a *App) getSystemStats(cacheTimeMs uint16) system.Stats {
 			utils.TwoDecimals(cpuMetrics.Steal),
 			utils.TwoDecimals(cpuMetrics.Idle),
 		}
+	} else if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
 	} else {
 		slog.Error("Error getting cpu metrics", "err", err)
 	}
 
-	// per-core cpu usage
-	if perCoreUsage, err := getPerCoreCpuUsage(cacheTimeMs); err == nil {
+	if perCoreUsage, err := getPerCoreCpuUsage(ctx, cacheTimeMs); err == nil {
 		systemStats.CpuCoresUsage = perCoreUsage
+	} else if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
 	}
+	return nil
+}
 
-	// load average
-	if avgstat, err := load.Avg(); err == nil {
+func updateLoadStats(ctx context.Context, systemStats *system.Stats) error {
+	avgstat, err := load.AvgWithContext(ctx)
+	if err == nil {
 		systemStats.LoadAvg[0] = avgstat.Load1
 		systemStats.LoadAvg[1] = avgstat.Load5
 		systemStats.LoadAvg[2] = avgstat.Load15
-	} else {
-		slog.Error("Error getting load average", "err", err)
+		return nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	slog.Error("Error getting load average", "err", err)
+	return nil
+}
+
+func (a *App) updateMemoryStats(ctx context.Context, systemStats *system.Stats) error {
+	v, err := mem.VirtualMemoryWithContext(ctx)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return nil
 	}
 
-	// memory
-	if v, err := mem.VirtualMemory(); err == nil {
-		// swap
-		systemStats.Swap = utils.BytesToGigabytes(v.SwapTotal)
-		systemStats.SwapUsed = utils.BytesToGigabytes(v.SwapTotal - v.SwapFree - v.SwapCached)
-		// cache + buffers value for default mem calculation
-		// note: gopsutil automatically adds SReclaimable to v.Cached
-		cacheBuff := v.Cached + v.Buffers - v.Shared
-		if cacheBuff <= 0 {
-			cacheBuff = max(v.Total-v.Free-v.Used, 0)
-		}
-		// htop memory calculation overrides (likely outdated as of mid 2025)
-		if a.memCalc == "htop" {
-			// cacheBuff = v.Cached + v.Buffers - v.Shared
-			v.Used = v.Total - (v.Free + cacheBuff)
+	systemStats.Swap = utils.BytesToGigabytes(v.SwapTotal)
+	systemStats.SwapUsed = utils.BytesToGigabytes(v.SwapTotal - v.SwapFree - v.SwapCached)
+	cacheBuff := v.Cached + v.Buffers - v.Shared
+	if cacheBuff <= 0 {
+		cacheBuff = max(v.Total-v.Free-v.Used, 0)
+	}
+	if a.memCalc == "htop" {
+		v.Used = v.Total - (v.Free + cacheBuff)
+		v.UsedPercent = float64(v.Used) / float64(v.Total) * 100.0
+	}
+	if a.systemInfoManager.zfs {
+		if arcSize, _ := ARCSize(); arcSize > 0 && arcSize < v.Used {
+			v.Used -= arcSize
 			v.UsedPercent = float64(v.Used) / float64(v.Total) * 100.0
+			systemStats.MemZfsArc = utils.BytesToGigabytes(arcSize)
 		}
-		// if a.memCalc == "legacy" {
-		// 	v.Used = v.Total - v.Free - v.Buffers - v.Cached
-		// 	cacheBuff = v.Total - v.Free - v.Used
-		// 	v.UsedPercent = float64(v.Used) / float64(v.Total) * 100.0
-		// }
-		// subtract ZFS ARC size from used memory and add as its own category
-		if a.systemInfoManager.zfs {
-			if arcSize, _ := ARCSize(); arcSize > 0 && arcSize < v.Used {
-				v.Used -= arcSize
-				v.UsedPercent = float64(v.Used) / float64(v.Total) * 100.0
-				systemStats.MemZfsArc = utils.BytesToGigabytes(arcSize)
-			}
-		}
-		systemStats.Mem = utils.BytesToGigabytes(v.Total)
-		systemStats.MemBuffCache = utils.BytesToGigabytes(cacheBuff)
-		systemStats.MemUsed = utils.BytesToGigabytes(v.Used)
-		systemStats.MemPct = utils.TwoDecimals(v.UsedPercent)
 	}
+	systemStats.Mem = utils.BytesToGigabytes(v.Total)
+	systemStats.MemBuffCache = utils.BytesToGigabytes(cacheBuff)
+	systemStats.MemUsed = utils.BytesToGigabytes(v.Used)
+	systemStats.MemPct = utils.TwoDecimals(v.UsedPercent)
+	return nil
+}
 
-	// disk usage
-	a.fsManager.updateDiskUsage(&systemStats)
-
-	// disk i/o (cache-aware per interval)
-	a.fsManager.updateDiskIo(cacheTimeMs, &systemStats)
-
-	// network stats (per cache interval)
-	a.networkManager.updateNetworkStats(cacheTimeMs, &systemStats)
-
-	// temperatures
-	// TODO: maybe refactor to methods on systemStats
-	a.updateTemperatures(&systemStats)
-
-	// GPU data
+func (a *App) updateGPUStats(cacheTimeMs uint16, systemStats *system.Stats) {
 	info := &a.systemInfoManager.systemInfo
-	if a.gpuManager != nil {
-		// reset high gpu percent
-		info.GpuPct = 0
-		// get current GPU data
-		if gpuData := a.gpuManager.GetCurrentData(cacheTimeMs); len(gpuData) > 0 {
-			systemStats.GPUData = gpuData
-
-			// add temperatures
-			if systemStats.Temperatures == nil {
-				systemStats.Temperatures = make(map[string]float64, len(gpuData))
-			}
-			highestTemp := 0.0
-			for _, gpu := range gpuData {
-				if gpu.Temperature > 0 {
-					systemStats.Temperatures[gpu.Name] = gpu.Temperature
-					if a.sensorConfig.primarySensor == gpu.Name {
-						info.DashboardTemp = gpu.Temperature
-					}
-					if gpu.Temperature > highestTemp {
-						highestTemp = gpu.Temperature
-					}
-				}
-				// update high gpu percent for dashboard
-				info.GpuPct = max(info.GpuPct, gpu.Usage)
-			}
-			// use highest temp for dashboard temp if dashboard temp is unset
-			if info.DashboardTemp == 0 {
-				info.DashboardTemp = highestTemp
-			}
-		}
+	if a.gpuManager == nil {
+		return
 	}
+	info.GpuPct = 0
+	gpuData := a.gpuManager.GetCurrentData(cacheTimeMs)
+	if len(gpuData) == 0 {
+		return
+	}
+	systemStats.GPUData = gpuData
+	if systemStats.Temperatures == nil {
+		systemStats.Temperatures = make(map[string]float64, len(gpuData))
+	}
+	highestTemp := 0.0
+	for _, gpu := range gpuData {
+		if gpu.Temperature > 0 {
+			systemStats.Temperatures[gpu.Name] = gpu.Temperature
+			if a.sensorConfig.primarySensor == gpu.Name {
+				info.DashboardTemp = gpu.Temperature
+			}
+			highestTemp = max(highestTemp, gpu.Temperature)
+		}
+		info.GpuPct = max(info.GpuPct, gpu.Usage)
+	}
+	if info.DashboardTemp == 0 {
+		info.DashboardTemp = highestTemp
+	}
+}
 
-	// update system info
+func (a *App) updateSystemInfoStats(ctx context.Context, systemStats *system.Stats) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	info := &a.systemInfoManager.systemInfo
 	info.ConnectionType = a.connectionType
 	info.Cpu = systemStats.Cpu
 	info.LoadAvg = systemStats.LoadAvg
 	info.MemPct = systemStats.MemPct
 	info.DiskPct = systemStats.DiskPct
 	info.Battery = systemStats.Battery
-	info.Uptime, _ = host.Uptime()
+	if uptime, err := host.UptimeWithContext(ctx); err == nil {
+		info.Uptime = uptime
+	} else if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
 	info.BandwidthBytes = systemStats.Bandwidth[0] + systemStats.Bandwidth[1]
 	info.Threads = a.systemInfoManager.systemDetails.Threads
-
-	return systemStats
+	return nil
 }
 
 // getOsPrettyName attempts to get the pretty OS name from /etc/os-release on Linux systems
@@ -280,6 +316,9 @@ func getOsPrettyName() (string, error) {
 			value = strings.Trim(value, `"`)
 			return value, nil
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", err
 	}
 
 	return "", errors.New("pretty name not found")

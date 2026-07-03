@@ -83,11 +83,17 @@ func (u *userAgentRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 }
 
 // Add goroutine to the queue
-func (d *Manager) queue() {
+func (d *Manager) queue(ctx context.Context) bool {
 	d.wg.Add(1)
 	if d.goodDockerVersion {
-		d.sem <- struct{}{}
+		select {
+		case d.sem <- struct{}{}:
+		case <-ctx.Done():
+			d.wg.Done()
+			return false
+		}
 	}
+	return true
 }
 
 // Remove goroutine from the queue
@@ -114,8 +120,8 @@ func (dm *Manager) shouldExcludeContainer(name string) bool {
 // Returns stats for all running containers with cache-time-aware delta tracking
 //
 //nolint:gocognit // Container stats collection coordinates API probing, concurrency, and per-container error handling.
-func (dm *Manager) GetStats(cacheTimeMs uint16) ([]*container.Stats, error) {
-	resp, err := dm.client.Get("http://localhost/containers/json")
+func (dm *Manager) GetStats(ctx context.Context, cacheTimeMs uint16) ([]*container.Stats, error) {
+	resp, err := dm.get(ctx, "http://localhost/containers/json")
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +137,10 @@ func (dm *Manager) GetStats(cacheTimeMs uint16) ([]*container.Stats, error) {
 		dm.setIsPodman()
 	}
 
-	dm.ensureDockerVersionChecked()
+	dm.ensureDockerVersionChecked(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	containersLength := len(dm.apiContainerList)
 
@@ -145,6 +154,10 @@ func (dm *Manager) GetStats(cacheTimeMs uint16) ([]*container.Stats, error) {
 	var failedContainers []*dockerapi.Info
 
 	for _, ctr := range dm.apiContainerList {
+		if err := ctx.Err(); err != nil {
+			dm.wg.Wait()
+			return nil, err
+		}
 		ctr.IdShort = ctr.Id[:12]
 
 		// Skip this container if it matches the exclusion pattern
@@ -160,10 +173,13 @@ func (dm *Manager) GetStats(cacheTimeMs uint16) ([]*container.Stats, error) {
 			// if so, remove old container data
 			dm.deleteContainerStatsSync(ctr.IdShort)
 		}
-		dm.queue()
+		if !dm.queue(ctx) {
+			dm.wg.Wait()
+			return nil, ctx.Err()
+		}
 		go func(ctr *dockerapi.Info) {
 			defer dm.dequeue()
-			err := dm.updateContainerStats(ctr, cacheTimeMs)
+			err := dm.updateContainerStats(ctx, ctr, cacheTimeMs)
 			// if error, delete from map and add to failed list to retry
 			if err != nil {
 				dm.containerStatsMutex.Lock()
@@ -175,21 +191,34 @@ func (dm *Manager) GetStats(cacheTimeMs uint16) ([]*container.Stats, error) {
 	}
 
 	dm.wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	// retry failed containers separately so we can run them in parallel (docker 24 bug)
 	if len(failedContainers) > 0 {
 		slog.Debug("Retrying failed containers", "count", len(failedContainers))
 		for i := range failedContainers {
+			if err := ctx.Err(); err != nil {
+				dm.wg.Wait()
+				return nil, err
+			}
 			ctr := failedContainers[i]
-			dm.queue()
+			if !dm.queue(ctx) {
+				dm.wg.Wait()
+				return nil, ctx.Err()
+			}
 			go func(ctr *dockerapi.Info) {
 				defer dm.dequeue()
-				if err2 := dm.updateContainerStats(ctr, cacheTimeMs); err2 != nil {
+				if err2 := dm.updateContainerStats(ctx, ctr, cacheTimeMs); err2 != nil {
 					slog.Error("Error getting container stats", "err", err2)
 				}
 			}(ctr)
 		}
 		dm.wg.Wait()
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 	}
 
 	// populate final stats and remove old / invalid container stats
@@ -413,8 +442,8 @@ func parseDockerHealthStatus(status string) (container.DockerHealth, bool) {
 // getPodmanContainerHealth fetches container health status from the container inspect endpoint.
 // Used for Podman which doesn't provide health status in the /containers/json endpoint as of March 2026.
 // https://github.com/containers/podman/issues/27786
-func (dm *Manager) getPodmanContainerHealth(containerID string) (container.DockerHealth, error) {
-	resp, err := dm.client.Get(fmt.Sprintf("http://localhost/containers/%s/json", url.PathEscape(containerID)))
+func (dm *Manager) getPodmanContainerHealth(ctx context.Context, containerID string) (container.DockerHealth, error) {
+	resp, err := dm.get(ctx, fmt.Sprintf("http://localhost/containers/%s/json", url.PathEscape(containerID)))
 	if err != nil {
 		return container.DockerHealthNone, err
 	}
@@ -443,10 +472,10 @@ func (dm *Manager) getPodmanContainerHealth(containerID string) (container.Docke
 }
 
 // Updates stats for individual container with cache-time-aware delta tracking
-func (dm *Manager) updateContainerStats(ctr *dockerapi.Info, cacheTimeMs uint16) error {
+func (dm *Manager) updateContainerStats(ctx context.Context, ctr *dockerapi.Info, cacheTimeMs uint16) error {
 	name := ctr.Names[0][1:]
 
-	resp, err := dm.client.Get(fmt.Sprintf("http://localhost/containers/%s/stats?stream=0&one-shot=1", ctr.IdShort))
+	resp, err := dm.get(ctx, fmt.Sprintf("http://localhost/containers/%s/stats?stream=0&one-shot=1", ctr.IdShort))
 	if err != nil {
 		return err
 	}
@@ -461,7 +490,7 @@ func (dm *Manager) updateContainerStats(ctr *dockerapi.Info, cacheTimeMs uint16)
 			health = h
 		}
 	} else if dm.usingPodman {
-		if podmanHealth, healthErr := dm.getPodmanContainerHealth(ctr.IdShort); healthErr == nil {
+		if podmanHealth, healthErr := dm.getPodmanContainerHealth(ctx, ctr.IdShort); healthErr == nil {
 			health = podmanHealth
 		}
 	}
@@ -562,7 +591,7 @@ func (dm *Manager) deleteContainerStatsSync(id string) {
 }
 
 // NewManager creates a new HTTP client for Docker or Podman API.
-func NewManager(onPodmanDetected func()) *Manager {
+func NewManager(ctx context.Context, onPodmanDetected func()) *Manager {
 	dockerHost, exists := utils.GetEnv("DOCKER_HOST")
 	if exists {
 		// return nil if set to empty string
@@ -649,15 +678,17 @@ func NewManager(onPodmanDetected func()) *Manager {
 
 	// Best-effort startup probe. If the engine is not ready yet, GetStats will
 	// retry after the first successful /containers/json request.
-	_, _ = manager.checkDockerVersion()
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	_, _ = manager.checkDockerVersion(probeCtx)
 
 	return manager
 }
 
 // checkDockerVersion checks Docker version and sets goodDockerVersion if at least 25.0.0.
 // Versions before 25.0.0 have a bug with one-shot which requires all requests to be made in one batch.
-func (dm *Manager) checkDockerVersion() (bool, error) {
-	resp, err := dm.client.Get("http://localhost/version")
+func (dm *Manager) checkDockerVersion(ctx context.Context) (bool, error) {
+	resp, err := dm.get(ctx, "http://localhost/version")
 	if err != nil {
 		return false, err
 	}
@@ -680,11 +711,14 @@ func (dm *Manager) checkDockerVersion() (bool, error) {
 
 // ensureDockerVersionChecked retries the version probe after a successful
 // container list request.
-func (dm *Manager) ensureDockerVersionChecked() {
+func (dm *Manager) ensureDockerVersionChecked(ctx context.Context) {
 	if dm.dockerVersionChecked {
 		return
 	}
-	if _, err := dm.checkDockerVersion(); err != nil {
+	if ctx.Err() != nil {
+		return
+	}
+	if _, err := dm.checkDockerVersion(ctx); err != nil {
 		slog.Debug("Failed to get Docker version", "err", err)
 	}
 }
@@ -757,11 +791,11 @@ func getDockerHost() string {
 }
 
 // GetHostInfo fetches the system info from Docker
-func (dm *Manager) GetHostInfo() (info dockerapi.HostInfo, err error) {
+func (dm *Manager) GetHostInfo(ctx context.Context) (info dockerapi.HostInfo, err error) {
 	if dm == nil {
 		return info, nil
 	}
-	resp, err := dm.client.Get("http://localhost/info")
+	resp, err := dm.get(ctx, "http://localhost/info")
 	if err != nil {
 		return info, err
 	}
@@ -772,6 +806,14 @@ func (dm *Manager) GetHostInfo() (info dockerapi.HostInfo, err error) {
 	}
 
 	return info, nil
+}
+
+func (dm *Manager) get(ctx context.Context, url string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return dm.client.Do(req)
 }
 
 func (dm *Manager) IsPodman() bool {

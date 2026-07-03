@@ -4,7 +4,7 @@ Linux release packaging: the `.deb` package and the signed APT repository.
 
 ## What ships where
 
-Every `v*` tag (or manual `workflow_dispatch`) runs
+Every semver `v*` tag, for example `v1.2.3` or `v1.2.3-rc.1`, runs
 [.github/workflows/release.yml](../.github/workflows/release.yml):
 
 1. **build** — compiles the `linux/amd64` v2 binary and runs
@@ -27,6 +27,10 @@ Every `v*` tag (or manual `workflow_dispatch`) runs
 The `apt-repo` job skips itself (with a note in the workflow summary) when the
 `APT_GPG_PRIVATE_KEY` secret is missing, so releases still work before the
 one-time setup below is done.
+
+Manual `workflow_dispatch` releases require an existing semver tag. Prerelease
+tags are converted to Debian prerelease versions, so `v1.2.3-rc.1` packages as
+`1.2.3~rc.1` and sorts before `1.2.3`.
 
 ## How the APT repository works
 

@@ -15,13 +15,16 @@ import (
 	"github.com/mordilloSan/go-monitoring/internal/utils"
 )
 
-func collectConnectionStats() *modelnet.ConnectionStats {
+func collectConnectionStats(ctx context.Context) (*modelnet.ConnectionStats, error) {
 	stats := &modelnet.ConnectionStats{Statuses: make(map[string]int)}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	conns, err := psutilNet.ConnectionsMaxWithoutUidsWithContext(ctx, "inet", 0)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		slog.Debug("network connection collection failed", "err", err)
 	} else {
 		stats.NetConnectionsEnabled = true
@@ -42,6 +45,9 @@ func collectConnectionStats() *modelnet.ConnectionStats {
 		applyConnectionStatusFields(stats)
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	count, max, ok := readConntrackStats()
 	if ok {
 		stats.NFConntrackEnabled = true
@@ -54,7 +60,7 @@ func collectConnectionStats() *modelnet.ConnectionStats {
 	if len(stats.Statuses) == 0 {
 		stats.Statuses = nil
 	}
-	return stats
+	return stats, nil
 }
 
 func applyConnectionStatusFields(stats *modelnet.ConnectionStats) {
@@ -77,12 +83,18 @@ func readConntrackStats() (count uint64, max uint64, ok bool) {
 	return count, max, countOK && maxOK
 }
 
-func collectIRQStats() []modelnet.IRQStat {
+func collectIRQStats(ctx context.Context) ([]modelnet.IRQStat, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	raw := utils.ReadStringFile("/proc/interrupts")
 	if raw == "" {
-		return nil
+		return nil, nil
 	}
-	return parseInterrupts(raw)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return parseInterrupts(raw), nil
 }
 
 func parseInterrupts(raw string) []modelnet.IRQStat {

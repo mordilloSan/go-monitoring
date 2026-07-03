@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -26,7 +28,7 @@ type fakeSmartRefresher struct {
 	store *storepkg.Store
 }
 
-func (r fakeSmartRefresher) RefreshSmartNow() error {
+func (r fakeSmartRefresher) RefreshSmartNow(context.Context) error {
 	return r.store.WriteSmartDevices(time.Now().UTC().UnixMilli(), map[string]smart.SmartData{})
 }
 
@@ -38,7 +40,7 @@ type fakeCurrentReader struct {
 	summaryErr   error
 }
 
-func (r fakeCurrentReader) CurrentPlugin(plugin string) (int64, json.RawMessage, error) {
+func (r fakeCurrentReader) CurrentPlugin(_ context.Context, plugin string) (int64, json.RawMessage, error) {
 	if err := r.pluginErrors[plugin]; err != nil {
 		return 0, nil, err
 	}
@@ -48,7 +50,7 @@ func (r fakeCurrentReader) CurrentPlugin(plugin string) (int64, json.RawMessage,
 	return r.capturedAt, json.RawMessage(`{}`), nil
 }
 
-func (r fakeCurrentReader) SystemSummary() (int64, system.Summary, error) {
+func (r fakeCurrentReader) SystemSummary(context.Context) (int64, system.Summary, error) {
 	if r.summaryErr != nil {
 		return 0, system.Summary{}, r.summaryErr
 	}
@@ -235,6 +237,67 @@ func TestEmptyStoreCurrentRouteReturnsNotFound(t *testing.T) {
 
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 	assert.Contains(t, rec.Body.String(), `"error":"not found"`)
+
+	// smart serves an empty item list even before the first snapshot, so the
+	// all route responds with partial data plus per-plugin errors.
+	allReq := httptest.NewRequest(http.MethodGet, "/api/v1/all", nil)
+	allRec := httptest.NewRecorder()
+	handler.ServeHTTP(allRec, allReq)
+
+	assert.Equal(t, http.StatusOK, allRec.Code)
+	assert.Contains(t, allRec.Body.String(), `"smart"`)
+	assert.Contains(t, allRec.Body.String(), `"cpu":"not found"`)
+}
+
+func TestAllRouteReturnsNotFoundWhenEveryPluginHasNoRows(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := storepkg.OpenStore(tmpDir)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	pluginErrors := map[string]error{}
+	for _, name := range storepkg.PluginNames() {
+		pluginErrors[name] = sql.ErrNoRows
+	}
+	server := NewServer(Options{
+		Metrics: store,
+		Current: fakeCurrentReader{pluginErrors: pluginErrors},
+		DataDir: tmpDir,
+	})
+	handler := server.Handler(func() time.Duration { return time.Minute })
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/all", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"error":"not found"`)
+}
+
+func TestAllRouteReturnsInternalErrorWhenEveryPluginFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := storepkg.OpenStore(tmpDir)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	pluginErrors := map[string]error{}
+	for _, name := range storepkg.PluginNames() {
+		pluginErrors[name] = errors.New("private failure details")
+	}
+	server := NewServer(Options{
+		Metrics: store,
+		Current: fakeCurrentReader{pluginErrors: pluginErrors},
+		DataDir: tmpDir,
+	})
+	handler := server.Handler(func() time.Duration { return time.Minute })
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/all", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"error":"internal server error"`)
+	assert.NotContains(t, rec.Body.String(), "private failure")
 }
 
 func TestInternalErrorsUseGenericBodies(t *testing.T) {

@@ -1,7 +1,6 @@
-[![Go Report Card](https://goreportcard.com/badge/github.com/mordilloSan/go-monitoring)](https://goreportcard.com/report/github.com/mordilloSan/go-monitoring)
 [![License](https://img.shields.io/github/license/mordilloSan/go-monitoring)](LICENSE)
 [![Go](https://img.shields.io/github/go-mod/go-version/mordilloSan/go-monitoring)](go.mod)
-[![CodeQL](https://github.com/mordilloSan/go-monitoring/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/mordilloSan/go-monitoring/actions/workflows/github-code-scanning/codeql)
+[![CodeQL](https://github.com/mordilloSan/go-monitoring/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/mordilloSan/go-monitoring/actions/workflows/codeql.yml)
 
 # go-monitoring
 
@@ -26,13 +25,15 @@ Upstream Beszel is MIT-licensed. This fork's combined work is distributed under 
 
 ## Layout
 
-- [cmd/go-monitoring/](cmd/go-monitoring/) — entrypoint (`main` package)
+- [main.go](main.go) — entrypoint (`main` package); only place that calls `os.Exit`
+- [cmd/](cmd/) — CLI commands, flag parsing, and the interactive config menu (`cmd` package)
 - [internal/app/](internal/app/) — app lifecycle, collection orchestration, and remaining local samplers/managers
 - [internal/api/http/](internal/api/http/) — REST API routes, handlers, request logging, and query parsing
 - [internal/api/model/](internal/api/model/) — REST API response contracts
 - [internal/integration/docker/](internal/integration/docker/) — Docker/Podman integration
 - [internal/integration/docker/dockerapi/](internal/integration/docker/dockerapi/) — Docker Engine API wire DTOs
 - [internal/domain/](internal/domain/) — shared domain data types (system, container, smart, systemd)
+- [internal/logging/](internal/logging/) — slog setup: native journald handler under systemd, text on stderr otherwise
 - [internal/store/](internal/store/) — SQLite persistence, history, and rollups
 - [internal/health/](internal/health/) — freshness check used by `go-monitoring health`
 - [internal/version/](internal/version/) — version/app metadata
@@ -44,6 +45,7 @@ Requires Go (see [go.mod](go.mod) for the pinned toolchain).
 
 ```sh
 make build        # produces ./go-monitoring
+sudo make install # installs to /usr/local/bin (override with PREFIX/DESTDIR)
 make test         # runs the full backend check suite
 make check-backend
 make test-backend # runs Go unit tests only
@@ -102,10 +104,11 @@ The package installs:
 - `/var/lib/go-monitoring` for `metrics.db`
 
 Change the listen port or collection interval through the config CLI, then reload
-the service:
+the service. Bare ports are localhost-only; use an explicit host if you need a
+different bind address:
 
 ```sh
-sudo go-monitoring config --config /etc/go-monitoring/config.json --listen :9000
+sudo go-monitoring config --config /etc/go-monitoring/config.json --listen 9000
 sudo go-monitoring config --config /etc/go-monitoring/config.json --collector-interval 30s
 sudo systemctl reload go-monitoring.service
 ```
@@ -113,14 +116,27 @@ sudo systemctl reload go-monitoring.service
 ## Run
 
 ```sh
-./go-monitoring                       # show CLI help
-./go-monitoring run                   # listens on :45876 and collects every 15s by default
-./go-monitoring run --listen :9000    # custom address/port
+./go-monitoring                       # interactive menu on a terminal; CLI help otherwise
+./go-monitoring run                   # listens on 127.0.0.1:45876 and collects every 15s by default
+./go-monitoring run --listen 9000     # listen on 127.0.0.1:9000
+./go-monitoring run --listen :9000    # listen on all interfaces
+./go-monitoring run --listen unix:/run/go-monitoring/agent.sock  # serve the API on a unix socket
+./go-monitoring run --listen none     # collect and store history without the HTTP API
 ./go-monitoring run --history cpu,mem # store history only for selected plugins
 ./go-monitoring health                # exit 0 if the latest tick is fresh
-./go-monitoring status                # query a running local agent
+./go-monitoring status                # query a running local agent (TCP or unix socket)
 ./go-monitoring --version
 ```
+
+Started with no arguments on a terminal, the CLI opens an interactive menu
+(also available as `go-monitoring menu`) covering the agent, status, the
+config editor, and database operations. Listen addresses take four forms: a
+bare port (localhost-only), `host:port`, `unix:/path` (or a bare absolute
+path) for a unix socket restricted to the agent's user and group, and `none` /
+`off` to disable the HTTP API entirely while the collector keeps recording
+history. `status` reaches the agent over TCP or the unix socket automatically;
+with the API disabled, use `go-monitoring health` for the file-based liveness
+check.
 
 Dash-prefixed command aliases are also accepted: `./go-monitoring -run` and
 `./go-monitoring -config`.
@@ -171,7 +187,7 @@ sudo systemctl start go-monitoring.service
 Environment variables:
 
 - `CONFIG_FILE` — config file path
-- `LISTEN` / `PORT` — fallback listen address if `--listen` is not provided
+- `LISTEN` / `PORT` — fallback listen address if `--listen` is not provided; bare ports bind to `127.0.0.1`, `unix:/path` selects a unix socket, `none` disables the HTTP API
 - `HISTORY` — comma-separated history plugin allowlist, or `all` / `none` (`cpu,mem,diskio,network,containers` by default)
 - `MEM_CALC` — memory calculation formula
 - `DISK_USAGE_CACHE` — cache duration for disk-usage polling (e.g. `15m`) to avoid waking sleeping disks
@@ -192,18 +208,25 @@ At startup the agent logs which GPU collectors were discovered and which ones we
 
 The Debian package installs
 [packaging/systemd/go-monitoring.service](packaging/systemd/go-monitoring.service).
-The source tree also keeps a manual sample at
-[contrib/systemd/go-monitoring.service](contrib/systemd/go-monitoring.service).
-Both pin `CONFIG_FILE=/etc/go-monitoring/config.json` and
-`DATA_DIR=/var/lib/go-monitoring` and include conservative hardening. They
-intentionally avoid stronger sandboxing such as `PrivateDevices`, `ProtectProc`,
+If you built from source and installed the binary to `/usr/local/bin`, copy
+that unit and change `ExecStart` accordingly. The unit runs as root, pins
+`CONFIG_FILE=/etc/go-monitoring/config.json` and
+`DATA_DIR=/var/lib/go-monitoring`, and includes conservative hardening. Its
+`RuntimeDirectory=go-monitoring` provides `/run/go-monitoring` for a unix
+socket listener (`"listen": "unix:/run/go-monitoring/agent.sock"`). It
+intentionally avoids stronger sandboxing such as `PrivateDevices`, `ProtectProc`,
 `PrivateNetwork`, and a tight capability bounding set because host metrics,
 Docker/DBus, SMART, and GPU collectors may need host `/proc`, `/sys`, sockets,
 and devices.
 
 ## HTTP API
 
-Base URL: `http://<listen>`
+Base URL: `http://127.0.0.1:45876` by default, or `http://<listen>` when configured.
+With a unix socket listener, point the client at the socket instead:
+
+```sh
+curl --unix-socket /run/go-monitoring/agent.sock http://localhost/api/v1/meta
+```
 
 - `GET /healthz` — liveness / freshness
 - `GET /api/v1/meta` — agent metadata, effective config metadata, and collector interval

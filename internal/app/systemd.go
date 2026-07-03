@@ -76,9 +76,6 @@ func (sm *systemdManager) Start(ctx context.Context) {
 	if sm == nil {
 		return
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	sm.lifecycleMu.Lock()
 	if sm.cancel != nil {
 		sm.lifecycleMu.Unlock()
@@ -107,27 +104,20 @@ func (sm *systemdManager) Stop() {
 	sm.lifecycleMu.Unlock()
 }
 
-func (sm *systemdManager) context() context.Context {
-	if sm.ctx != nil {
-		return sm.ctx
-	}
-	return context.Background()
-}
-
 func (sm *systemdManager) startWorker(ctx context.Context) {
 	if sm.isRunning {
 		return
 	}
 	sm.isRunning = true
 	// prime the service stats map with the current services
-	_ = sm.getServiceStats(ctx, nil, true)
+	_, _ = sm.getServiceStats(ctx, nil, true)
 	// update the services every 10 minutes
 	sm.wg.Go(func() {
 		for {
 			if !sleepUntilDone(ctx, time.Minute*10) {
 				return
 			}
-			_ = sm.getServiceStats(ctx, nil, true)
+			_, _ = sm.getServiceStats(ctx, nil, true)
 		}
 	})
 }
@@ -146,23 +136,25 @@ func (sm *systemdManager) getFailedServiceCount() uint16 {
 }
 
 // getServiceStats collects statistics for all running systemd services.
-func (sm *systemdManager) getServiceStats(ctx context.Context, conn *dbus.Conn, refresh bool) []*systemd.Service {
+func (sm *systemdManager) getServiceStats(ctx context.Context, conn *dbus.Conn, refresh bool) ([]*systemd.Service, error) {
 	// start := time.Now()
 	// defer func() {
 	// 	slog.Info("systemdManager.getServiceStats", "duration", time.Since(start))
 	// }()
 
-	if ctx == nil {
-		ctx = context.Background()
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-
 	if !refresh {
-		return sm.cachedServiceStats()
+		return sm.cachedServiceStats(), nil
 	}
 
 	conn, closeConn, ok := sm.systemdConnection(ctx, conn)
 	if !ok {
-		return nil
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return nil, nil
 	}
 	if closeConn {
 		defer conn.Close()
@@ -171,13 +163,16 @@ func (sm *systemdManager) getServiceStats(ctx context.Context, conn *dbus.Conn, 
 	units, err := conn.ListUnitsByPatternsContext(ctx, []string{"loaded"}, sm.patterns)
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil
+			return nil, ctx.Err()
 		}
 		slog.Error("Error listing systemd service units", "err", err)
-		return nil
+		return nil, err
 	}
 
-	services, currentUnits, skippedNeverActive, skippedErrors := sm.collectSystemdUnitStats(ctx, conn, units)
+	services, currentUnits, skippedNeverActive, skippedErrors, err := sm.collectSystemdUnitStats(ctx, conn, units)
+	if err != nil {
+		return nil, err
+	}
 	sm.removeStaleServices(currentUnits)
 
 	sm.hasFreshStats = true
@@ -187,7 +182,7 @@ func (sm *systemdManager) getServiceStats(ctx context.Context, conn *dbus.Conn, 
 		"skipped_never_active", skippedNeverActive,
 		"skipped_errors", skippedErrors,
 	)
-	return services
+	return services, nil
 }
 
 func (sm *systemdManager) cachedServiceStats() []*systemd.Service {
@@ -196,7 +191,7 @@ func (sm *systemdManager) cachedServiceStats() []*systemd.Service {
 
 	services := make([]*systemd.Service, 0, len(sm.serviceStatsMap))
 	for _, service := range sm.serviceStatsMap {
-		services = append(services, service)
+		services = append(services, cloneSystemdService(service))
 	}
 	sm.hasFreshStats = false
 	return services
@@ -217,18 +212,23 @@ func (sm *systemdManager) systemdConnection(ctx context.Context, conn *dbus.Conn
 	return conn, true, true
 }
 
-func (sm *systemdManager) collectSystemdUnitStats(ctx context.Context, conn *dbus.Conn, units []dbus.UnitStatus) ([]*systemd.Service, map[string]struct{}, int, int) {
+func (sm *systemdManager) collectSystemdUnitStats(ctx context.Context, conn *dbus.Conn, units []dbus.UnitStatus) ([]*systemd.Service, map[string]struct{}, int, int, error) {
 	services := make([]*systemd.Service, 0, len(units))
 	currentUnits := make(map[string]struct{}, len(units))
 	skippedNeverActive := 0
 	skippedErrors := 0
 
 	for _, unit := range units {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, 0, 0, err
+		}
 		currentUnits[unit.Name] = struct{}{}
 		service, err := sm.updateServiceStats(ctx, conn, unit)
 		switch {
 		case err == nil:
 			services = append(services, service)
+		case ctx.Err() != nil:
+			return nil, nil, 0, 0, ctx.Err()
 		case errors.Is(err, errNoActiveTime):
 			skippedNeverActive++
 		default:
@@ -237,7 +237,7 @@ func (sm *systemdManager) collectSystemdUnitStats(ctx context.Context, conn *dbu
 		}
 	}
 
-	return services, currentUnits, skippedNeverActive, skippedErrors
+	return services, currentUnits, skippedNeverActive, skippedErrors, nil
 }
 
 func (sm *systemdManager) removeStaleServices(currentUnits map[string]struct{}) {
@@ -308,7 +308,15 @@ func (sm *systemdManager) updateServiceStats(ctx context.Context, conn *dbus.Con
 	}
 	service.UpdateCPUPercent(cpuUsage)
 
-	return service, nil
+	return cloneSystemdService(service), nil
+}
+
+func cloneSystemdService(service *systemd.Service) *systemd.Service {
+	if service == nil {
+		return nil
+	}
+	clone := *service
+	return &clone
 }
 
 // unescapeServiceName unescapes systemd service names that contain C-style escape sequences like \x2d

@@ -3,6 +3,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -308,7 +309,7 @@ func TestScanDevicesWithEnvOverrideAndSeparator(t *testing.T) {
 		SmartDataMap: make(map[string]*smart.SmartData),
 	}
 
-	err := sm.ScanDevices(true)
+	err := sm.ScanDevices(context.Background(), true)
 	require.NoError(t, err)
 
 	require.Len(t, sm.SmartDevices, 2)
@@ -325,7 +326,7 @@ func TestScanDevicesWithEnvOverride(t *testing.T) {
 		SmartDataMap: make(map[string]*smart.SmartData),
 	}
 
-	err := sm.ScanDevices(true)
+	err := sm.ScanDevices(context.Background(), true)
 	require.NoError(t, err)
 
 	require.Len(t, sm.SmartDevices, 2)
@@ -342,7 +343,7 @@ func TestScanDevicesWithEnvOverrideInvalid(t *testing.T) {
 		SmartDataMap: make(map[string]*smart.SmartData),
 	}
 
-	err := sm.ScanDevices(true)
+	err := sm.ScanDevices(context.Background(), true)
 	require.Error(t, err)
 }
 
@@ -353,7 +354,7 @@ func TestScanDevicesWithEnvOverrideEmpty(t *testing.T) {
 		SmartDataMap: make(map[string]*smart.SmartData),
 	}
 
-	err := sm.ScanDevices(true)
+	err := sm.ScanDevices(context.Background(), true)
 	assert.ErrorIs(t, err, errNoValidSmartData)
 	assert.Empty(t, sm.SmartDevices)
 }

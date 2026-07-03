@@ -2,9 +2,10 @@ name: Backend Checks
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'dev/v*', 'release/**']
+    tags: ['v*']
   pull_request:
-    branches: [main]
+    branches: [main, 'dev/v*', 'release/**']
 
 jobs:
   check-backend:

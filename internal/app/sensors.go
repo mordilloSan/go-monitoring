@@ -23,7 +23,7 @@ var errTemperatureFetchTimeout = errors.New("temperature collection timed out")
 type getTempsFn func(ctx context.Context) ([]sensors.TemperatureStat, error)
 
 type SensorConfig struct {
-	context        context.Context
+	envMap         common.EnvMap
 	sensors        map[string]struct{}
 	primarySensor  string
 	timeout        time.Duration
@@ -57,7 +57,6 @@ func (a *App) newSensorConfigWithEnv(primarySensor, sysSensors, sensorsEnvVal, s
 	}
 
 	config := &SensorConfig{
-		context:        context.Background(),
 		primarySensor:  primarySensor,
 		timeout:        timeout,
 		readSem:        make(chan struct{}, 1),
@@ -69,9 +68,7 @@ func (a *App) newSensorConfigWithEnv(primarySensor, sysSensors, sensorsEnvVal, s
 	// Set sensors context (allows overriding sys location for sensors)
 	if sysSensors != "" {
 		slog.Info("SYS_SENSORS", "path", sysSensors)
-		config.context = context.WithValue(config.context,
-			common.EnvKey, common.EnvMap{common.HostSysEnvKey: sysSensors},
-		)
+		config.envMap = common.EnvMap{common.HostSysEnvKey: sysSensors}
 	}
 
 	// handle blacklist
@@ -96,35 +93,44 @@ func (a *App) newSensorConfigWithEnv(primarySensor, sysSensors, sensorsEnvVal, s
 // updateTemperatures updates the agent with the latest sensor temperatures
 //
 //nolint:gocognit // Temperature collection merges heterogeneous sensor sources and fallback paths.
-func (a *App) updateTemperatures(systemStats *system.Stats) {
+func (a *App) updateTemperatures(ctx context.Context, systemStats *system.Stats) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// skip if sensors whitelist is set to empty string
 	if a.sensorConfig.skipCollection {
 		slog.Debug("Skipping temperature collection")
-		return
+		return nil
 	}
 
 	// reset high temp
 	a.systemInfoManager.systemInfo.DashboardTemp = 0
 
-	temps, err := a.getTempsWithTimeout(getSensorTemps)
+	temps, err := a.getTempsWithTimeout(ctx, getSensorTemps)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		// retry once on panic (gopsutil/issues/1832)
 		if !errors.Is(err, errTemperatureFetchTimeout) {
-			temps, err = a.getTempsWithTimeout(getSensorTemps)
+			temps, err = a.getTempsWithTimeout(ctx, getSensorTemps)
 		}
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
 			slog.Warn("Error updating temperatures", "err", err)
 			if len(systemStats.Temperatures) > 0 {
 				systemStats.Temperatures = make(map[string]float64)
 			}
-			return
+			return nil
 		}
 	}
 	slog.Debug("Temperature sensors discovered", "count", len(temps))
 
 	// return if no sensors
 	if len(temps) == 0 {
-		return
+		return nil
 	}
 
 	systemStats.Temperatures = make(map[string]float64, len(temps))
@@ -155,6 +161,7 @@ func (a *App) updateTemperatures(systemStats *system.Stats) {
 		}
 		systemStats.Temperatures[sensorName] = utils.TwoDecimals(sensor.Temperature)
 	}
+	return nil
 }
 
 // getTempsWithPanicRecovery wraps sensors.TemperaturesWithContext to recover from panics (gopsutil/issues/1832)
@@ -191,7 +198,7 @@ func (c *SensorConfig) finishRead() {
 	}
 }
 
-func (a *App) getTempsWithTimeout(getTemps getTempsFn) ([]sensors.TemperatureStat, error) {
+func (a *App) getTempsWithTimeout(ctx context.Context, getTemps getTempsFn) ([]sensors.TemperatureStat, error) {
 	type result struct {
 		temps []sensors.TemperatureStat
 		err   error
@@ -213,7 +220,11 @@ func (a *App) getTempsWithTimeout(getTemps getTempsFn) ([]sensors.TemperatureSta
 	// when the timeout fires. The worker goroutine still survives the parent's
 	// return if gopsutil ignores ctx, but this gate prevents one stuck read from
 	// growing into one new goroutine per poll.
-	ctx, cancel := context.WithTimeout(a.sensorConfig.context, timeout)
+	parentCtx := ctx
+	if len(a.sensorConfig.envMap) > 0 {
+		ctx = context.WithValue(ctx, common.EnvKey, a.sensorConfig.envMap)
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	resultCh := make(chan result, 1)
@@ -230,6 +241,9 @@ func (a *App) getTempsWithTimeout(getTemps getTempsFn) ([]sensors.TemperatureSta
 	case res := <-resultCh:
 		return res.temps, res.err
 	case <-ctx.Done():
+		if err := parentCtx.Err(); err != nil {
+			return nil, err
+		}
 		return nil, errTemperatureFetchTimeout
 	}
 }

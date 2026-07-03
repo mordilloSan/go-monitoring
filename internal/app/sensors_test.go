@@ -178,7 +178,6 @@ func TestNewSensorConfigWithEnv(t *testing.T) {
 			sysSensors:    "",
 			sensors:       "",
 			expectedConfig: &SensorConfig{
-				context:        context.Background(),
 				primarySensor:  "",
 				timeout:        2 * time.Second,
 				sensors:        map[string]struct{}{},
@@ -194,7 +193,6 @@ func TestNewSensorConfigWithEnv(t *testing.T) {
 			sensors:        "",
 			sensorsTimeout: "5s",
 			expectedConfig: &SensorConfig{
-				context: context.Background(),
 				timeout: 5 * time.Second,
 				sensors: map[string]struct{}{},
 			},
@@ -206,7 +204,6 @@ func TestNewSensorConfigWithEnv(t *testing.T) {
 			sensors:        "",
 			sensorsTimeout: "notaduration",
 			expectedConfig: &SensorConfig{
-				context: context.Background(),
 				timeout: 2 * time.Second,
 				sensors: map[string]struct{}{},
 			},
@@ -218,7 +215,6 @@ func TestNewSensorConfigWithEnv(t *testing.T) {
 			sensors:        "",
 			skipCollection: true,
 			expectedConfig: &SensorConfig{
-				context:        context.Background(),
 				primarySensor:  "",
 				timeout:        2 * time.Second,
 				sensors:        map[string]struct{}{},
@@ -233,7 +229,6 @@ func TestNewSensorConfigWithEnv(t *testing.T) {
 			sysSensors:    "",
 			sensors:       "",
 			expectedConfig: &SensorConfig{
-				context:       context.Background(),
 				primarySensor: "cpu_temp",
 				timeout:       2 * time.Second,
 				sensors:       map[string]struct{}{},
@@ -247,7 +242,6 @@ func TestNewSensorConfigWithEnv(t *testing.T) {
 			sysSensors:    "",
 			sensors:       "cpu_temp,gpu_temp",
 			expectedConfig: &SensorConfig{
-				context:       context.Background(),
 				primarySensor: "cpu_temp",
 				timeout:       2 * time.Second,
 				sensors: map[string]struct{}{
@@ -264,7 +258,6 @@ func TestNewSensorConfigWithEnv(t *testing.T) {
 			sysSensors:    "",
 			sensors:       "-cpu_temp,gpu_temp",
 			expectedConfig: &SensorConfig{
-				context:       context.Background(),
 				primarySensor: "cpu_temp",
 				timeout:       2 * time.Second,
 				sensors: map[string]struct{}{
@@ -281,7 +274,6 @@ func TestNewSensorConfigWithEnv(t *testing.T) {
 			sysSensors:    "",
 			sensors:       "cpu_*,gpu_temp",
 			expectedConfig: &SensorConfig{
-				context:       context.Background(),
 				primarySensor: "cpu_temp",
 				timeout:       2 * time.Second,
 				sensors: map[string]struct{}{
@@ -298,7 +290,6 @@ func TestNewSensorConfigWithEnv(t *testing.T) {
 			sysSensors:    "",
 			sensors:       "cpu_*, gpu_temp",
 			expectedConfig: &SensorConfig{
-				context:       context.Background(),
 				primarySensor: "cpu_temp",
 				timeout:       2 * time.Second,
 				sensors: map[string]struct{}{
@@ -351,10 +342,7 @@ func TestNewSensorConfigWithEnv(t *testing.T) {
 
 			// Check context
 			if tt.sysSensors != "" {
-				// Verify context contains correct values
-				envMap, ok := result.context.Value(common.EnvKey).(common.EnvMap)
-				require.True(t, ok, "Context should contain EnvMap")
-				sysPath, ok := envMap[common.HostSysEnvKey]
+				sysPath, ok := result.envMap[common.HostSysEnvKey]
 				require.True(t, ok, "EnvMap should contain HostSysEnvKey")
 				assert.Equal(t, tt.sysSensors, sysPath)
 			}
@@ -380,10 +368,8 @@ func TestNewSensorConfig(t *testing.T) {
 	assert.True(t, result.hasWildcards)
 	assert.False(t, result.isBlacklist)
 
-	// Check that sys sensors path is in context
-	envMap, ok := result.context.Value(common.EnvKey).(common.EnvMap)
-	require.True(t, ok, "Context should contain EnvMap")
-	sysPath, ok := envMap[common.HostSysEnvKey]
+	// Check that sys sensors path is preserved for context-aware reads.
+	sysPath, ok := result.envMap[common.HostSysEnvKey]
 	require.True(t, ok, "EnvMap should contain HostSysEnvKey")
 	assert.Equal(t, "/test/path", sysPath)
 }
@@ -473,9 +459,7 @@ func TestScaleTemperatureLogic(t *testing.T) {
 func TestGetTempsWithPanicRecovery(t *testing.T) {
 	agent := &App{
 		systemInfoManager: &systemInfoManager{systemInfo: system.Info{}},
-		sensorConfig: &SensorConfig{
-			context: context.Background(),
-		},
+		sensorConfig:      &SensorConfig{},
 	}
 
 	tests := []struct {
@@ -567,13 +551,12 @@ func TestGetTempsWithPanicRecovery(t *testing.T) {
 func TestGetTempsWithTimeout(t *testing.T) {
 	agent := &App{
 		sensorConfig: &SensorConfig{
-			context: context.Background(),
 			timeout: 10 * time.Millisecond,
 		},
 	}
 
 	t.Run("returns temperatures before timeout", func(t *testing.T) {
-		temps, err := agent.getTempsWithTimeout(func(ctx context.Context) ([]sensors.TemperatureStat, error) {
+		temps, err := agent.getTempsWithTimeout(context.Background(), func(ctx context.Context) ([]sensors.TemperatureStat, error) {
 			return []sensors.TemperatureStat{{SensorKey: "cpu_temp", Temperature: 42}}, nil
 		})
 
@@ -583,7 +566,7 @@ func TestGetTempsWithTimeout(t *testing.T) {
 	})
 
 	t.Run("returns timeout error when collector hangs", func(t *testing.T) {
-		temps, err := agent.getTempsWithTimeout(func(ctx context.Context) ([]sensors.TemperatureStat, error) {
+		temps, err := agent.getTempsWithTimeout(context.Background(), func(ctx context.Context) ([]sensors.TemperatureStat, error) {
 			time.Sleep(50 * time.Millisecond)
 			return []sensors.TemperatureStat{{SensorKey: "cpu_temp", Temperature: 42}}, nil
 		})
@@ -597,7 +580,6 @@ func TestUpdateTemperaturesSkipsOnTimeout(t *testing.T) {
 	agent := &App{
 		systemInfoManager: &systemInfoManager{systemInfo: system.Info{DashboardTemp: 99}},
 		sensorConfig: &SensorConfig{
-			context: context.Background(),
 			timeout: 10 * time.Millisecond,
 		},
 	}
@@ -614,7 +596,7 @@ func TestUpdateTemperaturesSkipsOnTimeout(t *testing.T) {
 		Temperatures: map[string]float64{"stale": 50},
 	}
 
-	agent.updateTemperatures(stats)
+	require.NoError(t, agent.updateTemperatures(context.Background(), stats))
 
 	assert.Equal(t, 0.0, agent.systemInfoManager.systemInfo.DashboardTemp)
 	assert.Equal(t, map[string]float64{}, stats.Temperatures)

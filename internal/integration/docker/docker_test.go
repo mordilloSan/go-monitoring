@@ -223,7 +223,7 @@ func TestGetPodmanContainerHealth(t *testing.T) {
 		})},
 	}
 
-	health, err := dm.getPodmanContainerHealth("0123456789ab")
+	health, err := dm.getPodmanContainerHealth(context.Background(), "0123456789ab")
 	require.NoError(t, err)
 	assert.True(t, called)
 	assert.Equal(t, container.DockerHealthHealthy, health)
@@ -597,7 +597,7 @@ func TestCheckDockerVersion(t *testing.T) {
 				},
 			}
 
-			success, err := dm.checkDockerVersion()
+			success, err := dm.checkDockerVersion(context.Background())
 
 			assert.Equal(t, tt.expectSuccess, success)
 			assert.Equal(t, tt.expectSuccess, dm.dockerVersionChecked)
@@ -625,7 +625,7 @@ func TestCheckDockerVersion(t *testing.T) {
 			},
 		}
 
-		success, err := dm.checkDockerVersion()
+		success, err := dm.checkDockerVersion(context.Background())
 
 		assert.False(t, success)
 		require.Error(t, err)
@@ -710,7 +710,7 @@ func TestGetDockerStatsChecksDockerVersionAfterContainerList(t *testing.T) {
 
 			dm := newDockerManagerForVersionTest(server)
 
-			stats, err := dm.GetStats(defaultCacheTimeMs)
+			stats, err := dm.GetStats(context.Background(), defaultCacheTimeMs)
 			require.NoError(t, err)
 			assert.Empty(t, stats)
 			assert.True(t, dm.dockerVersionChecked)
@@ -723,7 +723,7 @@ func TestGetDockerStatsChecksDockerVersionAfterContainerList(t *testing.T) {
 				assert.Equal(t, 1, requestCounts["/version"])
 			}
 
-			stats, err = dm.GetStats(defaultCacheTimeMs)
+			stats, err = dm.GetStats(context.Background(), defaultCacheTimeMs)
 			require.NoError(t, err)
 			assert.Empty(t, stats)
 			assert.Equal(t, tt.expectedGood, dm.goodDockerVersion)
@@ -765,14 +765,14 @@ func TestGetDockerStatsRetriesVersionCheckUntilSuccess(t *testing.T) {
 
 	dm := newDockerManagerForVersionTest(server)
 
-	stats, err := dm.GetStats(defaultCacheTimeMs)
+	stats, err := dm.GetStats(context.Background(), defaultCacheTimeMs)
 	require.NoError(t, err)
 	assert.Empty(t, stats)
 	assert.False(t, dm.dockerVersionChecked)
 	assert.False(t, dm.goodDockerVersion)
 	assert.Equal(t, 1, requestCounts["/version"])
 
-	stats, err = dm.GetStats(defaultCacheTimeMs)
+	stats, err = dm.GetStats(context.Background(), defaultCacheTimeMs)
 	require.NoError(t, err)
 	assert.Empty(t, stats)
 	assert.True(t, dm.dockerVersionChecked)
@@ -780,7 +780,7 @@ func TestGetDockerStatsRetriesVersionCheckUntilSuccess(t *testing.T) {
 	assert.Equal(t, 2, requestCounts["/containers/json"])
 	assert.Equal(t, 2, requestCounts["/version"])
 
-	stats, err = dm.GetStats(defaultCacheTimeMs)
+	stats, err = dm.GetStats(context.Background(), defaultCacheTimeMs)
 	require.NoError(t, err)
 	assert.Empty(t, stats)
 	assert.Equal(t, 3, requestCounts["/containers/json"])
@@ -1257,7 +1257,7 @@ func TestGetHostInfo(t *testing.T) {
 func TestNilManagerRuntimeInfo(t *testing.T) {
 	var dm *Manager
 
-	info, err := dm.GetHostInfo()
+	info, err := dm.GetHostInfo(context.Background())
 
 	require.NoError(t, err)
 	assert.Equal(t, dockerapi.HostInfo{}, info)
@@ -1453,7 +1453,7 @@ func TestUpdateContainerStatsUsesPodmanInspectHealthFallback(t *testing.T) {
 		Image:   "go-monitoring:latest",
 	}
 
-	err := dm.updateContainerStats(ctr, defaultCacheTimeMs)
+	err := dm.updateContainerStats(context.Background(), ctr, defaultCacheTimeMs)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"/containers/0123456789ab/stats", "/containers/0123456789ab/json"}, requestedPaths)
 	assert.Equal(t, container.DockerHealthHealthy, dm.containerStatsMap[ctr.IdShort].Health)

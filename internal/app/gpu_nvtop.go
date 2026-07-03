@@ -124,8 +124,7 @@ func (gm *GPUManager) collectNvtopStats(ctx context.Context, interval string) (e
 }
 
 // startNvtopCollector starts nvtop collection with retry or fallback callback handling.
-func (gm *GPUManager) startNvtopCollector(interval string, onFailure func()) {
-	ctx := gm.collectorContext()
+func (gm *GPUManager) startNvtopCollector(ctx context.Context, interval string, onFailure func()) {
 	gm.startCollector(func() {
 		runRetryingCollector(ctx, retryWaitTime, func() error {
 			return gm.collectNvtopStats(ctx, interval)

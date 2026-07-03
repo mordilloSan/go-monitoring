@@ -1,8 +1,10 @@
-package main
+package cmd
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/mordilloSan/go-monitoring/internal/app"
 	"github.com/mordilloSan/go-monitoring/internal/config"
 	"github.com/mordilloSan/go-monitoring/internal/health"
+	"github.com/mordilloSan/go-monitoring/internal/logging"
 	"github.com/mordilloSan/go-monitoring/internal/store"
 	"github.com/mordilloSan/go-monitoring/internal/utils"
 	buildinfo "github.com/mordilloSan/go-monitoring/internal/version"
@@ -24,6 +27,7 @@ const (
 	commandConfig command = "config"
 	commandDB     command = "db"
 	commandStatus command = "status"
+	commandMenu   command = "menu"
 )
 
 type cmdOptions struct {
@@ -48,11 +52,24 @@ type cmdOptions struct {
 	dbAction             string
 }
 
-func (opts *cmdOptions) parse() bool {
-	args := os.Args[1:]
+// parse fills opts from argv (argv[0] is the program name). It returns
+// done=true when the command was fully handled, along with the exit code.
+//
+//nolint:gocognit // CLI parsing keeps legacy aliases, command dispatch, and flag wiring together.
+func (opts *cmdOptions) parse(argv []string) (bool, int) {
+	name := argv[0]
+	args := argv[1:]
 	if len(args) == 0 {
-		printUsage(os.Args[0])
-		return true
+		// On a terminal, no arguments opens the interactive menu; scripts and
+		// pipes keep getting the usage text.
+		if shouldRunConfigMenu() {
+			opts.command = commandMenu
+			opts.configPath = config.DefaultPath()
+			opts.cacheTTL = durationMapFlag{values: make(map[string]time.Duration)}
+			return false, 0
+		}
+		printUsage(name)
+		return true, 0
 	}
 
 	subcommand, commandFound := parseCommand(args[0])
@@ -60,19 +77,20 @@ func (opts *cmdOptions) parse() bool {
 		args = args[1:]
 	} else if !strings.HasPrefix(args[0], "-") {
 		fmt.Fprintf(os.Stderr, "Unknown command %q\n\n", args[0])
-		printUsage(os.Args[0])
-		return true
+		printUsage(name)
+		return true, 1
 	}
 
 	if subcommand == "health" {
 		if err := health.Check(); err != nil {
-			log.Fatal(err)
+			fmt.Fprintln(os.Stderr, err)
+			return true, 1
 		}
 		fmt.Print("ok")
-		return true
+		return true, 0
 	}
 
-	fs := pflag.NewFlagSet(os.Args[0], pflag.ContinueOnError)
+	fs := pflag.NewFlagSet(name, pflag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	opts.command = command(subcommand)
 	opts.cacheTTL = durationMapFlag{values: make(map[string]time.Duration)}
@@ -81,8 +99,8 @@ func (opts *cmdOptions) parse() bool {
 	version := fs.BoolP("version", "v", false, "Show version information")
 	help := fs.BoolP("help", "h", false, "Show this help message")
 
-	if opts.command == commandRun || opts.command == commandConfig || opts.command == commandStatus {
-		fs.StringVarP(&opts.listen, "listen", "l", "", "Address or port to listen on")
+	if opts.command == commandRun || opts.command == commandConfig || opts.command == commandStatus || opts.command == commandMenu {
+		fs.StringVarP(&opts.listen, "listen", "l", "", "Address, port, unix:/path socket, or none to disable the HTTP API")
 		fs.DurationVar(&opts.collectorInterval, "collector-interval", 0, "Collector interval, for example 30s or 1m")
 		fs.StringVar(&opts.history, "history", "", "Comma-separated history plugin allowlist, or all/none")
 		fs.DurationVar(&opts.apiCacheDefault, "api-cache-default", 0, "Set every live API cache TTL")
@@ -93,15 +111,17 @@ func (opts *cmdOptions) parse() bool {
 		fs.BoolVar(&opts.configPrint, "print", false, "Print the effective config")
 		fs.BoolVar(&opts.configInit, "init", false, "Write the current defaults if the config file is absent")
 	}
-	if opts.command == commandDB {
+	if opts.command == commandDB || opts.command == commandMenu {
 		fs.StringVar(&opts.dataDir, "data-dir", "", "Data directory containing metrics.db")
+	}
+	if opts.command == commandDB {
 		fs.BoolVar(&opts.dbForce, "force", false, "Confirm destructive database actions")
 	}
-	fs.Usage = func() { printUsage(os.Args[0]) }
+	fs.Usage = func() { printUsage(name) }
 
 	args = normalizeLegacyArgs(args)
 	if err := fs.Parse(args); err != nil {
-		return true
+		return true, 2
 	}
 	opts.listenSet = flagChanged(fs, "listen")
 	opts.collectorIntervalSet = flagChanged(fs, "collector-interval")
@@ -118,19 +138,19 @@ func (opts *cmdOptions) parse() bool {
 	switch {
 	case *version:
 		fmt.Println(buildinfo.RepoName+"-agent", buildinfo.Version)
-		return true
+		return true, 0
 	case *help || subcommand == "help":
 		fs.Usage()
-		return true
+		return true, 0
 	}
 
-	return false
+	return false, 0
 }
 
 func parseCommand(raw string) (string, bool) {
 	normalized := strings.ToLower(strings.TrimLeft(raw, "-"))
 	switch normalized {
-	case "run", "config", "db", "health", "help", "status":
+	case "run", "config", "db", "health", "help", "status", "menu":
 		return normalized, true
 	default:
 		return "help", false
@@ -162,6 +182,8 @@ func printUsage(name string) {
 	builder.WriteString(" <command> [flags]\n\n")
 	builder.WriteString("Commands:\n")
 	builder.WriteString("  run          Start the monitoring agent\n")
+	builder.WriteString("  menu         Interactive menu: run, status, config, and database operations\n")
+	builder.WriteString("               (also the default when started on a terminal with no arguments)\n")
 	builder.WriteString("  config       Open the config menu, print, initialize, or update the config file\n")
 	builder.WriteString("  db           Check, maintain, repair, reset, or print the metrics database path\n")
 	builder.WriteString("  health       Check if the latest persisted collection tick is fresh\n")
@@ -174,7 +196,7 @@ func printUsage(name string) {
 	builder.WriteString("  -h, --help                    Show this help message\n")
 	builder.WriteString("  -v, --version                 Show version information\n\n")
 	builder.WriteString("Run/config flags:\n")
-	builder.WriteString("  -l, --listen address          Address or port to listen on\n")
+	builder.WriteString("  -l, --listen address          Address, port, unix:/path socket, or none to disable the HTTP API\n")
 	builder.WriteString("  --collector-interval duration Collector interval, for example 30s or 1m\n")
 	builder.WriteString("  --history list                History plugin allowlist, all, or none\n")
 	builder.WriteString("  --api-cache-default duration  Set every live API cache TTL\n")
@@ -297,11 +319,11 @@ func loadEffectiveConfig(opts cmdOptions) (effectiveConfig, error) {
 func maybeSaveDefaultConfig(path string, cfg config.Config, source string) string {
 	created, err := config.SaveIfMissing(path, cfg)
 	if err != nil {
-		log.Printf("Failed to create default config at %s; using effective in-memory config: %v", path, err)
+		slog.Warn("failed to create default config; using effective in-memory config", "path", path, "error", err)
 		return source
 	}
 	if created {
-		log.Printf("Created default config: %s", path)
+		slog.Info("created default config", "path", path)
 		return "created"
 	}
 	return source
@@ -353,23 +375,23 @@ func handleConfigCommand(opts cmdOptions, cfg config.Config, loaded bool, config
 	return false, cfg, configSource, nil
 }
 
-func startAgent(opts cmdOptions, cfg config.Config, configSource string) {
-	log.Printf("Config ready path=%s source=%s version=%d collector_interval=%s history=%q cache_ttl_count=%d",
-		opts.configPath,
-		configSource,
-		cfg.Version,
-		cfg.CollectorInterval.Duration(),
-		cfg.History,
-		len(cfg.CacheTTL),
+func startAgent(ctx context.Context, opts cmdOptions, cfg config.Config, configSource string) error {
+	slog.Info("config ready",
+		"path", opts.configPath,
+		"source", configSource,
+		"version", cfg.Version,
+		"collector_interval", cfg.CollectorInterval.Duration(),
+		"history", cfg.History,
+		"cache_ttl_count", len(cfg.CacheTTL),
 	)
 
-	a, err := app.New()
+	a, err := app.New(ctx)
 	if err != nil {
-		log.Fatal("Failed to create agent: ", err)
+		return fmt.Errorf("failed to create agent: %w", err)
 	}
 	a.SetLiveCurrentTTLs(config.ToDurationMap(cfg.CacheTTL))
 
-	if err := a.Start(app.RunOptions{
+	if err := a.StartContext(ctx, app.RunOptions{
 		Addr:              app.GetAddress(cfg.Listen),
 		CollectorInterval: cfg.CollectorInterval.Duration(),
 		History:           cfg.History,
@@ -393,8 +415,9 @@ func startAgent(opts cmdOptions, cfg config.Config, configSource string) {
 			}, nil
 		},
 	}); err != nil {
-		log.Fatal("Failed to start standalone agent: ", err)
+		return fmt.Errorf("failed to start standalone agent: %w", err)
 	}
+	return nil
 }
 
 func resolveDataDir(path string) (string, error) {
@@ -509,25 +532,33 @@ func handleDBReset(dataDir string, force bool) error {
 	return nil
 }
 
-func main() {
+// Run executes the go-monitoring CLI and returns the process exit code.
+// os.Exit must only be called by main so deferred cleanup always runs.
+func Run(ctx context.Context, argv []string) int {
 	var opts cmdOptions
-	if opts.parse() {
-		return
+	if done, code := opts.parse(argv); done {
+		return code
+	}
+	logging.Configure("go-monitoring")
+	if opts.command == commandMenu {
+		return runMainMenu(ctx, opts)
 	}
 	if opts.command == commandConfig && opts.configAction == "path" {
 		fmt.Println(opts.configPath)
-		return
+		return 0
 	}
 	if opts.command == commandDB {
 		if err := handleDBCommand(opts); err != nil {
-			log.Fatal("Database command failed: ", err)
+			fmt.Fprintln(os.Stderr, "Database command failed:", err)
+			return 1
 		}
-		return
+		return 0
 	}
 
 	effective, err := loadEffectiveConfig(opts)
 	if err != nil {
-		log.Fatal("Invalid config: ", err)
+		fmt.Fprintln(os.Stderr, "Invalid config:", err)
+		return 1
 	}
 	cfg := effective.cfg
 	configSource := effective.source
@@ -539,21 +570,40 @@ func main() {
 	if opts.command == commandConfig {
 		run, updatedCfg, updatedSource, cmdErr := handleConfigCommand(opts, cfg, effective.loaded, configSource)
 		if cmdErr != nil {
-			log.Fatal(cmdErr)
+			return configCommandErrorCode(cmdErr)
 		}
 		if !run {
-			return
+			return 0
 		}
 		cfg = updatedCfg
 		configSource = updatedSource
 	}
 
 	if opts.command == commandStatus {
-		if err := printStatus(cfg); err != nil {
-			log.Fatal("Status check failed: ", err)
+		if err := printStatus(ctx, cfg); err != nil {
+			fmt.Fprintln(os.Stderr, "Status check failed:", err)
+			return 1
 		}
-		return
+		return 0
 	}
 
-	startAgent(opts, cfg, configSource)
+	return startAgentExit(ctx, opts, cfg, configSource)
+}
+
+// startAgentExit runs the agent until it stops and maps the result to a
+// process exit code.
+func startAgentExit(ctx context.Context, opts cmdOptions, cfg config.Config, configSource string) int {
+	if err := startAgent(ctx, opts, cfg, configSource); err != nil {
+		slog.Error("agent failed", "error", err)
+		return 1
+	}
+	return 0
+}
+
+func configCommandErrorCode(err error) int {
+	if errors.Is(err, errConfigMenuInterrupted) {
+		return 130
+	}
+	fmt.Fprintln(os.Stderr, err)
+	return 1
 }

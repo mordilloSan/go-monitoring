@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -25,7 +26,8 @@ func TestGatherStatsDoesNotAttachDetailsToCachedRequests(t *testing.T) {
 	}
 	agent.cache.Set(cached, defaultDataCacheTimeMs)
 
-	response := agent.gatherStats(common.DataRequestOptions{CacheTimeMs: defaultDataCacheTimeMs})
+	response, err := agent.gatherStats(context.Background(), common.DataRequestOptions{CacheTimeMs: defaultDataCacheTimeMs})
+	require.NoError(t, err)
 
 	assert.Same(t, cached, response)
 	assert.Nil(t, response.Details)
@@ -33,7 +35,8 @@ func TestGatherStatsDoesNotAttachDetailsToCachedRequests(t *testing.T) {
 	assert.Equal(t, "cached-host", response.Info.Hostname)
 	assert.Nil(t, cached.Details)
 
-	secondResponse := agent.gatherStats(common.DataRequestOptions{CacheTimeMs: defaultDataCacheTimeMs})
+	secondResponse, err := agent.gatherStats(context.Background(), common.DataRequestOptions{CacheTimeMs: defaultDataCacheTimeMs})
+	require.NoError(t, err)
 	assert.Same(t, cached, secondResponse)
 	assert.Nil(t, secondResponse.Details)
 }

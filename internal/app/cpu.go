@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"math"
 
 	"github.com/shirou/gopsutil/v4/cpu"
@@ -10,15 +11,14 @@ import (
 
 var lastCpuTimes = make(map[uint16]cpu.TimesStat)
 var lastPerCoreCpuTimes = make(map[uint16][]cpu.TimesStat)
-var cpuTimes = cpu.Times
+var cpuTimes = cpu.TimesWithContext
 
-// init initializes the CPU monitoring by storing the initial CPU times
-// for the default 60-second cache interval.
-func init() {
-	if times, err := cpuTimes(false); err == nil && len(times) > 0 {
+// initializeCpuMetrics stores initial CPU times for the default 60-second cache interval.
+func initializeCpuMetrics(ctx context.Context) {
+	if times, err := cpuTimes(ctx, false); err == nil && len(times) > 0 {
 		lastCpuTimes[60000] = times[0]
 	}
-	if perCoreTimes, err := cpuTimes(true); err == nil && len(perCoreTimes) > 0 {
+	if perCoreTimes, err := cpuTimes(ctx, true); err == nil && len(perCoreTimes) > 0 {
 		lastPerCoreCpuTimes[60000] = perCoreTimes
 	}
 }
@@ -35,13 +35,16 @@ type CpuMetrics struct {
 
 // getCpuMetrics calculates detailed CPU usage metrics using cached previous measurements.
 // It returns percentages for total, user, system, iowait, and steal time.
-func getCpuMetrics(cacheTimeMs uint16) (CpuMetrics, error) {
-	times, err := cpuTimes(false)
+func getCpuMetrics(ctx context.Context, cacheTimeMs uint16) (CpuMetrics, error) {
+	times, err := cpuTimes(ctx, false)
 	if err != nil || len(times) == 0 {
 		return CpuMetrics{}, err
 	}
 	// if cacheTimeMs is not in lastCpuTimes, use 60000 as fallback lastCpuTime
 	if _, ok := lastCpuTimes[cacheTimeMs]; !ok {
+		if _, hasDefault := lastCpuTimes[60000]; !hasDefault {
+			lastCpuTimes[60000] = times[0]
+		}
 		lastCpuTimes[cacheTimeMs] = lastCpuTimes[60000]
 	}
 
@@ -76,14 +79,17 @@ func clampPercent(value float64) float64 {
 
 // getPerCoreCpuUsage calculates per-core CPU busy usage as integer percentages (0-100).
 // It uses cached previous measurements for the provided cache interval.
-func getPerCoreCpuUsage(cacheTimeMs uint16) (system.Uint8Slice, error) {
-	perCoreTimes, err := cpuTimes(true)
+func getPerCoreCpuUsage(ctx context.Context, cacheTimeMs uint16) (system.Uint8Slice, error) {
+	perCoreTimes, err := cpuTimes(ctx, true)
 	if err != nil || len(perCoreTimes) == 0 {
 		return nil, err
 	}
 
 	// Initialize cache if needed
 	if _, ok := lastPerCoreCpuTimes[cacheTimeMs]; !ok {
+		if _, hasDefault := lastPerCoreCpuTimes[60000]; !hasDefault {
+			lastPerCoreCpuTimes[60000] = perCoreTimes
+		}
 		lastPerCoreCpuTimes[cacheTimeMs] = lastPerCoreCpuTimes[60000]
 	}
 

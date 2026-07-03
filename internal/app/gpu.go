@@ -147,13 +147,6 @@ func (gm *GPUManager) startCollector(fn func()) {
 	})
 }
 
-func (gm *GPUManager) collectorContext() context.Context {
-	if gm.ctx != nil {
-		return gm.ctx
-	}
-	return context.Background()
-}
-
 func (gm *GPUManager) Stop() {
 	if gm == nil {
 		return
@@ -629,8 +622,7 @@ func gpuDiscoveryLogMessage(mode string, selected []collectorSource, reason stri
 	return "No GPU collector detected"
 }
 
-func (gm *GPUManager) startIntelCollector() {
-	ctx := gm.collectorContext()
+func (gm *GPUManager) startIntelCollector(ctx context.Context) {
 	gm.startCollector(func() {
 		runRetryingCollector(ctx, retryWaitTime, func() error {
 			return gm.collectIntelStats(ctx)
@@ -641,7 +633,7 @@ func (gm *GPUManager) startIntelCollector() {
 	})
 }
 
-func (gm *GPUManager) startNvidiaSmiCollector(intervalSeconds string) {
+func (gm *GPUManager) startNvidiaSmiCollector(ctx context.Context, intervalSeconds string) {
 	collector := gpuCollector{
 		name:    nvidiaSmiCmd,
 		bufSize: 10 * 1024,
@@ -652,33 +644,30 @@ func (gm *GPUManager) startNvidiaSmiCollector(intervalSeconds string) {
 		},
 		parse: gm.parseNvidiaData,
 	}
-	ctx := gm.collectorContext()
 	gm.startCollector(func() {
 		collector.start(ctx)
 	})
 }
 
-func (gm *GPUManager) startTegraStatsCollector(intervalMilliseconds string) {
+func (gm *GPUManager) startTegraStatsCollector(ctx context.Context, intervalMilliseconds string) {
 	collector := gpuCollector{
 		name:    tegraStatsCmd,
 		bufSize: 10 * 1024,
 		cmdArgs: []string{"--interval", intervalMilliseconds},
 		parse:   gm.getJetsonParser(),
 	}
-	ctx := gm.collectorContext()
 	gm.startCollector(func() {
 		collector.start(ctx)
 	})
 }
 
-func (gm *GPUManager) startRocmSmiCollector(pollInterval time.Duration) {
+func (gm *GPUManager) startRocmSmiCollector(ctx context.Context, pollInterval time.Duration) {
 	collector := gpuCollector{
 		name:    rocmSmiCmd,
 		bufSize: 10 * 1024,
 		cmdArgs: []string{"--showid", "--showtemp", "--showuse", "--showpower", "--showproductname", "--showmeminfo", "vram", "--json"},
 		parse:   gm.parseAmdData,
 	}
-	ctx := gm.collectorContext()
 	gm.startCollector(func() {
 		failures := 0
 		for {
@@ -702,20 +691,20 @@ func (gm *GPUManager) startRocmSmiCollector(pollInterval time.Duration) {
 	})
 }
 
-func (gm *GPUManager) collectorDefinitions(caps gpuCapabilities) map[collectorSource]collectorDefinition {
+func (gm *GPUManager) collectorDefinitions(ctx context.Context, caps gpuCapabilities) map[collectorSource]collectorDefinition {
 	return map[collectorSource]collectorDefinition{
 		collectorSourceNVML: {
 			group:     collectorGroupNvidia,
 			available: true,
 			start: func(_ func()) bool {
-				return gm.startNvmlCollector()
+				return gm.startNvmlCollector(ctx)
 			},
 		},
 		collectorSourceNvidiaSMI: {
 			group:     collectorGroupNvidia,
 			available: caps.hasNvidiaSmi,
 			start: func(_ func()) bool {
-				gm.startNvidiaSmiCollector("4") // seconds
+				gm.startNvidiaSmiCollector(ctx, "4") // seconds
 				return true
 			},
 		},
@@ -723,7 +712,7 @@ func (gm *GPUManager) collectorDefinitions(caps gpuCapabilities) map[collectorSo
 			group:     collectorGroupIntel,
 			available: caps.hasIntelGpuTop,
 			start: func(_ func()) bool {
-				gm.startIntelCollector()
+				gm.startIntelCollector(ctx)
 				return true
 			},
 		},
@@ -731,7 +720,7 @@ func (gm *GPUManager) collectorDefinitions(caps gpuCapabilities) map[collectorSo
 			group:     collectorGroupAmd,
 			available: caps.hasAmdSysfs,
 			start: func(_ func()) bool {
-				return gm.startAmdSysfsCollector()
+				return gm.startAmdSysfsCollector(ctx)
 			},
 		},
 		collectorSourceRocmSMI: {
@@ -739,14 +728,14 @@ func (gm *GPUManager) collectorDefinitions(caps gpuCapabilities) map[collectorSo
 			available:          caps.hasRocmSmi,
 			deprecationWarning: "rocm-smi is deprecated and may be removed in a future release",
 			start: func(_ func()) bool {
-				gm.startRocmSmiCollector(4300 * time.Millisecond)
+				gm.startRocmSmiCollector(ctx, 4300*time.Millisecond)
 				return true
 			},
 		},
 		collectorSourceNVTop: {
 			available: caps.hasNvtop,
 			start: func(onFailure func()) bool {
-				gm.startNvtopCollector("30", onFailure) // tens of milliseconds
+				gm.startNvtopCollector(ctx, "30", onFailure) // tens of milliseconds
 				return true
 			},
 		},
@@ -771,13 +760,12 @@ func parseCollectorPriority(value string) []collectorSource {
 }
 
 // startNvmlCollector initializes NVML and starts its polling loop.
-func (gm *GPUManager) startNvmlCollector() bool {
+func (gm *GPUManager) startNvmlCollector(ctx context.Context) bool {
 	collector := &nvmlCollector{gm: gm}
 	if err := collector.init(); err != nil {
 		slog.Warn("Failed to initialize NVML", "err", err)
 		return false
 	}
-	ctx := gm.collectorContext()
 	gm.startCollector(func() {
 		collector.start(ctx)
 	})
@@ -785,8 +773,7 @@ func (gm *GPUManager) startNvmlCollector() bool {
 }
 
 // startAmdSysfsCollector starts AMD GPU collection via sysfs.
-func (gm *GPUManager) startAmdSysfsCollector() bool {
-	ctx := gm.collectorContext()
+func (gm *GPUManager) startAmdSysfsCollector(ctx context.Context) bool {
 	gm.startCollector(func() {
 		if err := gm.collectAmdStats(ctx); err != nil && ctx.Err() == nil {
 			slog.Warn("Error collecting AMD GPU data via sysfs", "err", err)
@@ -796,8 +783,8 @@ func (gm *GPUManager) startAmdSysfsCollector() bool {
 }
 
 // startCollectorsByPriority starts collectors in order with one source per vendor group.
-func (gm *GPUManager) startCollectorsByPriority(priorities []collectorSource, caps gpuCapabilities) []collectorSource {
-	definitions := gm.collectorDefinitions(caps)
+func (gm *GPUManager) startCollectorsByPriority(ctx context.Context, priorities []collectorSource, caps gpuCapabilities) []collectorSource {
+	definitions := gm.collectorDefinitions(ctx, caps)
 	selectedGroups := make(map[string]bool, 3)
 	started := make([]collectorSource, 0, len(priorities))
 	for i, source := range priorities {
@@ -814,7 +801,7 @@ func (gm *GPUManager) startCollectorsByPriority(priorities []collectorSource, ca
 			// if nvtop fails, fall back to remaining collectors.
 			remaining := append([]collectorSource(nil), priorities[i+1:]...)
 			if definition.start(func() {
-				gm.startCollectorsByPriority(remaining, caps)
+				gm.startCollectorsByPriority(ctx, remaining, caps)
 			}) {
 				started = append(started, source)
 				return started
@@ -885,21 +872,19 @@ func (gm *GPUManager) Start(ctx context.Context) error {
 	if gm == nil {
 		return nil
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	gm.lifecycleMu.Lock()
 	if gm.cancel != nil {
 		gm.lifecycleMu.Unlock()
 		return nil
 	}
 	gm.ctx, gm.cancel = context.WithCancel(ctx)
+	collectorCtx := gm.ctx
 	gm.lifecycleMu.Unlock()
 	caps := gm.caps
 
 	// Jetson devices should always use tegrastats (ignore GPU_COLLECTOR).
 	if caps.hasTegrastats {
-		gm.startTegraStatsCollector("3700")
+		gm.startTegraStatsCollector(collectorCtx, "3700")
 		logGPUDiscovery("auto", caps, nil, []collectorSource{collectorSource(tegraStatsCmd)}, "tegrastats detected")
 		return nil
 	}
@@ -907,7 +892,7 @@ func (gm *GPUManager) Start(ctx context.Context) error {
 	// Respect explicit collector selection before capability auto-detection.
 	if collectorConfig, ok := utils.GetEnv("GPU_COLLECTOR"); ok && strings.TrimSpace(collectorConfig) != "" {
 		priorities := parseCollectorPriority(collectorConfig)
-		started := gm.startCollectorsByPriority(priorities, caps)
+		started := gm.startCollectorsByPriority(collectorCtx, priorities, caps)
 		if len(started) == 0 {
 			logGPUDiscovery("configured", caps, priorities, nil, "no configured GPU collectors started")
 			gm.Stop()
@@ -925,7 +910,7 @@ func (gm *GPUManager) Start(ctx context.Context) error {
 
 	// auto-detect and start collectors when GPU_COLLECTOR is unset.
 	autoPriorities := gm.resolveAutoCollectorPriority(caps)
-	started := gm.startCollectorsByPriority(autoPriorities, caps)
+	started := gm.startCollectorsByPriority(collectorCtx, autoPriorities, caps)
 	if len(started) == 0 {
 		logGPUDiscovery("auto", caps, autoPriorities, nil, "no GPU collectors started")
 		gm.Stop()

@@ -6,7 +6,7 @@ package health
 
 import (
 	"errors"
-	"log"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -46,11 +46,19 @@ func FilePath() string {
 }
 
 func updateHealthFile(path string) error {
-	file, err := os.Create(path)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o666)
 	if err != nil {
 		return err
 	}
-	return file.Close()
+	closeErr := file.Close()
+	chmodErr := os.Chmod(path, 0o666)
+	if closeErr != nil {
+		return closeErr
+	}
+	if chmodErr != nil && !errors.Is(chmodErr, os.ErrPermission) {
+		return chmodErr
+	}
+	return nil
 }
 
 func GetStatus() (Status, error) {
@@ -73,18 +81,34 @@ func Check() error {
 		return err
 	}
 	if !status.Healthy {
-		log.Println("over 90 seconds since last successful persist")
-		return errors.New("unhealthy")
+		return errors.New("unhealthy: over 90 seconds since last successful persist")
 	}
 	return nil
 }
 
 // Update updates the modification time of the health file.
 func Update() error {
-	return updateHealthFile(healthFile)
+	if err := updateHealthFile(healthFile); err != nil {
+		if !errors.Is(err, os.ErrPermission) {
+			return err
+		}
+		fallback := permissionFallbackHealthFilePath()
+		if fallback == healthFile {
+			return err
+		}
+		if fallbackErr := updateHealthFile(fallback); fallbackErr != nil {
+			return errors.Join(err, fallbackErr)
+		}
+		healthFile = fallback
+	}
+	return nil
 }
 
 // CleanUp removes the health file
 func CleanUp() error {
 	return os.Remove(healthFile)
+}
+
+func permissionFallbackHealthFilePath() string {
+	return filepath.Join(os.TempDir(), fmt.Sprintf("%s_%d", healthFilename, os.Geteuid()))
 }

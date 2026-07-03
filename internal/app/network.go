@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"path"
@@ -93,41 +94,30 @@ func isValidNic(nicName string, cfg *NicConfig) bool {
 	return cfg.isBlacklist
 }
 
-func (m *networkManager) updateNetworkStats(cacheTimeMs uint16, systemStats *system.Stats) {
-	// network stats
-	m.ensureNetInterfacesInitialized()
-
+func (m *networkManager) updateNetworkStats(ctx context.Context, cacheTimeMs uint16, systemStats *system.Stats) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	m.ensureNetworkInterfacesMap(systemStats)
 
-	if netIO, err := psutilNet.IOCounters(true); err == nil {
+	if netIO, err := psutilNet.IOCountersWithContext(ctx, true); err == nil {
+		m.refreshNetInterfaces(netIO)
 		nis, msElapsed := m.loadAndTickNetBaseline(cacheTimeMs)
 		totalBytesSent, totalBytesRecv := m.sumAndTrackPerNicDeltas(cacheTimeMs, msElapsed, netIO, systemStats)
 		bytesSentPerSecond, bytesRecvPerSecond := m.computeBytesPerSecond(msElapsed, totalBytesSent, totalBytesRecv, nis)
-		m.applyNetworkTotals(cacheTimeMs, netIO, systemStats, nis, totalBytesSent, totalBytesRecv, bytesSentPerSecond, bytesRecvPerSecond)
+		m.applyNetworkTotals(ctx, cacheTimeMs, netIO, systemStats, nis, totalBytesSent, totalBytesRecv, bytesSentPerSecond, bytesRecvPerSecond)
+	} else if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
 	}
+	return nil
 }
 
-func (m *networkManager) initializeNetIoStats() {
+func (m *networkManager) initializeNetIoStats(ctx context.Context) {
 	// reset valid network interfaces
 	m.netInterfaces = make(map[string]struct{}, 0)
 
-	// parse NICS env var for whitelist / blacklist
-	nicsEnvVal, nicsEnvExists := utils.GetEnv("NICS")
-	var nicCfg *NicConfig
-	if nicsEnvExists {
-		nicCfg = newNicConfig(nicsEnvVal)
-	}
-
-	// get current network I/O stats and record valid interfaces
-	if netIO, err := psutilNet.IOCounters(true); err == nil {
-		for _, v := range netIO {
-			if skipNetworkInterface(v, nicCfg) {
-				continue
-			}
-			slog.Info("Detected network interface", "name", v.Name, "sent", v.BytesSent, "recv", v.BytesRecv)
-			// store as a valid network interface
-			m.netInterfaces[v.Name] = struct{}{}
-		}
+	if netIO, err := psutilNet.IOCountersWithContext(ctx, true); err == nil {
+		m.refreshNetInterfaces(netIO)
 	}
 
 	// Reset per-cache-time trackers and baselines so they will reinitialize on next use
@@ -135,14 +125,32 @@ func (m *networkManager) initializeNetIoStats() {
 	m.netIoStats = make(map[uint16]system.NetIoStats)
 }
 
-// ensureNetInterfacesInitialized re-initializes NICs if none are currently tracked
-func (m *networkManager) ensureNetInterfacesInitialized() {
-	if len(m.netInterfaces) == 0 {
-		// if no network interfaces, initialize again
-		// this is a fix if agent started before network is online (#466)
-		// maybe refactor this in the future to not cache interface names at all so we
-		// don't miss an interface that's been added after agent started in any circumstance
-		m.initializeNetIoStats()
+func (m *networkManager) refreshNetInterfaces(netIO []psutilNet.IOCountersStat) {
+	if m.netInterfaces == nil {
+		m.netInterfaces = make(map[string]struct{})
+	}
+
+	nicsEnvVal, nicsEnvExists := utils.GetEnv("NICS")
+	var nicCfg *NicConfig
+	if nicsEnvExists {
+		nicCfg = newNicConfig(nicsEnvVal)
+	}
+
+	seen := make(map[string]struct{}, len(netIO))
+	for _, v := range netIO {
+		if skipNetworkInterface(v, nicCfg) {
+			continue
+		}
+		seen[v.Name] = struct{}{}
+		if _, exists := m.netInterfaces[v.Name]; !exists {
+			slog.Info("Detected network interface", "name", v.Name, "sent", v.BytesSent, "recv", v.BytesRecv)
+		}
+		m.netInterfaces[v.Name] = struct{}{}
+	}
+	for name := range m.netInterfaces {
+		if _, ok := seen[name]; !ok {
+			delete(m.netInterfaces, name)
+		}
 	}
 }
 
@@ -225,6 +233,7 @@ func (m *networkManager) computeBytesPerSecond(msElapsed, totalBytesSent, totalB
 
 // applyNetworkTotals validates and writes computed network stats, or resets on anomaly
 func (m *networkManager) applyNetworkTotals(
+	ctx context.Context,
 	cacheTimeMs uint16,
 	netIO []psutilNet.IOCountersStat,
 	systemStats *system.Stats,
@@ -240,7 +249,7 @@ func (m *networkManager) applyNetworkTotals(
 			}
 			slog.Info(v.Name, "recv", v.BytesRecv, "sent", v.BytesSent)
 		}
-		m.initializeNetIoStats()
+		m.initializeNetIoStats(ctx)
 		delete(m.netIoStats, cacheTimeMs)
 		delete(m.netInterfaceDeltaTrackers, cacheTimeMs)
 		systemStats.Bandwidth[0], systemStats.Bandwidth[1] = 0, 0
@@ -272,9 +281,7 @@ func skipNetworkInterface(v psutilNet.IOCountersStat, nicCfg *NicConfig) bool {
 		strings.HasPrefix(v.Name, "br-"),
 		strings.HasPrefix(v.Name, "veth"),
 		strings.HasPrefix(v.Name, "bond"),
-		strings.HasPrefix(v.Name, "cali"),
-		v.BytesRecv == 0,
-		v.BytesSent == 0:
+		strings.HasPrefix(v.Name, "cali"):
 		return true
 	default:
 		return false

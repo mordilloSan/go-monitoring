@@ -61,11 +61,15 @@ type deviceKey struct {
 var errNoValidSmartData = fmt.Errorf("no valid SMART data found") // Error for missing data
 
 // Refresh updates SMART data for all known devices
-func (sm *SmartManager) Refresh(forceScan bool) error {
+func (sm *SmartManager) Refresh(ctx context.Context, forceScan bool) error {
 	sm.refreshMutex.Lock()
 	defer sm.refreshMutex.Unlock()
 
-	scanErr := sm.ScanDevices(false)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	scanErr := sm.ScanDevices(ctx, forceScan)
 	if scanErr != nil {
 		slog.Debug("smartctl scan failed", "err", scanErr)
 	}
@@ -76,7 +80,13 @@ func (sm *SmartManager) Refresh(forceScan bool) error {
 		if deviceInfo == nil {
 			continue
 		}
-		if err := sm.CollectSmart(deviceInfo); err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := sm.CollectSmart(ctx, deviceInfo); err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
 			collectErr = fmt.Errorf("%s: %w", deviceInfo.Name, err)
 		}
 	}
@@ -146,11 +156,13 @@ func (sm *SmartManager) GetCurrentData() map[string]smart.SmartData {
 // Scan devices using `smartctl --scan -j`
 // If scan fails, return error
 // If scan succeeds, parse the output and update the SmartDevices slice
-func (sm *SmartManager) ScanDevices(force bool) error {
+func (sm *SmartManager) ScanDevices(ctx context.Context, force bool) error {
 	if !force && time.Since(sm.lastScanTime) < 30*time.Minute {
 		return nil
 	}
-	sm.lastScanTime = time.Now()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	currentDevices := sm.devicesSnapshot()
 
 	var configuredDevices []*DeviceInfo
@@ -175,14 +187,16 @@ func (sm *SmartManager) ScanDevices(force bool) error {
 	)
 
 	if sm.smartctlPath != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-
-		cmd := exec.CommandContext(ctx, sm.smartctlPath, "--scan", "-j")
+		cmd := exec.CommandContext(cmdCtx, sm.smartctlPath, "--scan", "-j")
 		output, err := cmd.Output()
-		if err != nil {
+		switch {
+		case cmdCtx.Err() != nil:
+			scanErr = cmdCtx.Err()
+		case err != nil:
 			scanErr = err
-		} else {
+		default:
 			scannedDevices, hasValidScan = sm.parseScan(output)
 			if !hasValidScan {
 				scanErr = errNoValidSmartData
@@ -218,6 +232,7 @@ func (sm *SmartManager) ScanDevices(force bool) error {
 		return errNoValidSmartData
 	}
 
+	sm.lastScanTime = time.Now()
 	slog.Info("Discovered SMART device candidates", "devices", smartDeviceLabels(finalDevices), "source", smartDeviceSource(scannedDevices, configuredDevices))
 	return nil
 }
@@ -483,7 +498,10 @@ func (sm *SmartManager) parseSmartOutput(deviceInfo *DeviceInfo, output []byte) 
 // for initial data collection when no cached data exists
 //
 //nolint:gocognit // SMART collection coordinates command execution, fallback parsing, and device-specific refresh logic.
-func (sm *SmartManager) CollectSmart(deviceInfo *DeviceInfo) error {
+func (sm *SmartManager) CollectSmart(ctx context.Context, deviceInfo *DeviceInfo) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if deviceInfo != nil && sm.isExcludedDevice(deviceInfo.Name) {
 		return errNoValidSmartData
 	}
@@ -511,13 +529,12 @@ func (sm *SmartManager) CollectSmart(deviceInfo *DeviceInfo) error {
 	// Check if we have any existing data for this device
 	hasExistingData := sm.hasDataForDevice(deviceInfo.Name)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
 	// Try with -n standby first if we have existing data
 	args := sm.smartctlArgs(deviceInfo, hasExistingData)
-	cmd := exec.CommandContext(ctx, sm.smartctlPath, args...)
-	output, err := cmd.CombinedOutput()
+	output, err := sm.runSmartctl(ctx, 15*time.Second, args...)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
 
 	// Check if device is in standby (exit status 2)
 	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok && exitErr.ExitCode() == 2 {
@@ -526,11 +543,11 @@ func (sm *SmartManager) CollectSmart(deviceInfo *DeviceInfo) error {
 			return nil
 		}
 		// No cached data, need to collect initial data by bypassing standby
-		ctx2, cancel2 := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel2()
 		args = sm.smartctlArgs(deviceInfo, false)
-		cmd = exec.CommandContext(ctx2, sm.smartctlPath, args...)
-		output, err = cmd.CombinedOutput()
+		output, err = sm.runSmartctl(ctx, 15*time.Second, args...)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
 	}
 
 	hasValidData := sm.parseSmartOutput(deviceInfo, output)
@@ -543,11 +560,11 @@ func (sm *SmartManager) CollectSmart(deviceInfo *DeviceInfo) error {
 		if !sm.isExcludedDevice(namespacePath) {
 			deviceInfo.Name = namespacePath
 
-			ctx3, cancel3 := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel3()
 			args = sm.smartctlArgs(deviceInfo, false)
-			cmd = exec.CommandContext(ctx3, sm.smartctlPath, args...)
-			output, err = cmd.CombinedOutput()
+			output, err = sm.runSmartctl(ctx, 15*time.Second, args...)
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
 			hasValidData = sm.parseSmartOutput(deviceInfo, output)
 
 			// Auto-exclude the controller path so future scans don't re-add it
@@ -571,6 +588,17 @@ func (sm *SmartManager) CollectSmart(deviceInfo *DeviceInfo) error {
 	}
 
 	return nil
+}
+
+func (sm *SmartManager) runSmartctl(ctx context.Context, timeout time.Duration, args ...string) ([]byte, error) {
+	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(cmdCtx, sm.smartctlPath, args...)
+	output, err := cmd.CombinedOutput()
+	if cmdCtx.Err() != nil {
+		return output, cmdCtx.Err()
+	}
+	return output, err
 }
 
 // smartctlArgs returns the arguments for the smartctl command

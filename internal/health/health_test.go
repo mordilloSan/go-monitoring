@@ -56,7 +56,7 @@ func TestHealth(t *testing.T) {
 			// The check should now fail as unhealthy.
 			err := Check()
 			require.Error(t, err, "Check() should have failed after 91s")
-			assert.Equal(t, "unhealthy", err.Error(), "Check() returned wrong error")
+			assert.Equal(t, "unhealthy: over 90 seconds since last successful persist", err.Error(), "Check() returned wrong error")
 		})
 	})
 }
@@ -79,4 +79,26 @@ func TestHealthFilePathUsesFallbackWhenPreferredMissing(t *testing.T) {
 	path := healthFilePath(missingPreferredDir, fallbackDir)
 
 	assert.Equal(t, filepath.Join(fallbackDir, healthFilename), path)
+}
+
+func TestUpdateUsesPermissionFallback(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write through the permission setup used by this test")
+	}
+
+	originalHealthFile := healthFile
+	t.Cleanup(func() { healthFile = originalHealthFile })
+
+	blockedDir := filepath.Join(t.TempDir(), "blocked")
+	require.NoError(t, os.Mkdir(blockedDir, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(blockedDir, 0o700) })
+
+	fallbackDir := t.TempDir()
+	t.Setenv("TMPDIR", fallbackDir)
+	healthFile = filepath.Join(blockedDir, healthFilename)
+
+	require.NoError(t, Update())
+
+	assert.Equal(t, permissionFallbackHealthFilePath(), healthFile)
+	assert.FileExists(t, healthFile)
 }

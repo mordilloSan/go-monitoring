@@ -19,7 +19,11 @@ if [ ! -x "$binary" ]; then
 	exit 1
 fi
 
-version="$(printf '%s' "$version" | sed 's/^v//; s/-/./g; s/[^A-Za-z0-9.+~:]/./g')"
+version="${version#v}"
+if [[ "$version" == *-* ]]; then
+	version="${version%%-*}~${version#*-}"
+fi
+version="$(printf '%s' "$version" | sed 's/[^A-Za-z0-9.+~:]/./g')"
 if [ -z "$version" ]; then
 	echo "Package version is empty" >&2
 	exit 1

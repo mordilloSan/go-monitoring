@@ -323,21 +323,21 @@ func (d *diskDiscovery) addExtraFilesystemFolders(folderNames []string) {
 }
 
 // Sets up the filesystems to monitor for disk usage and I/O.
-func (m *fsManager) initializeDiskInfo() {
+func (m *fsManager) initializeDiskInfo(ctx context.Context) {
 	filesystem, _ := utils.GetEnv("FILESYSTEM")
 
-	partitions, err := disk.PartitionsWithContext(context.Background(), true)
+	partitions, err := disk.PartitionsWithContext(ctx, true)
 	if err != nil {
 		slog.Error("Error getting disk partitions", "err", err)
 	}
 	slog.Debug("Disk partitions discovered", "count", len(partitions))
 
-	diskIoCounters, err := disk.IOCounters()
+	diskIoCounters, err := disk.IOCountersWithContext(ctx)
 	if err != nil {
 		slog.Error("Error getting diskstats", "err", err)
 	}
 	slog.Debug("Disk I/O counters discovered", "count", len(diskIoCounters), "devices", diskCounterNames(diskIoCounters))
-	ctx := fsRegistrationContext{
+	fsCtx := fsRegistrationContext{
 		filesystem:     filesystem,
 		diskIoCounters: diskIoCounters,
 		efPath:         "/extra-filesystems",
@@ -348,8 +348,10 @@ func (m *fsManager) initializeDiskInfo() {
 		manager:        m,
 		rootMountPoint: m.getRootMountPoint(),
 		partitions:     partitions,
-		usageFn:        disk.Usage,
-		ctx:            ctx,
+		usageFn: func(path string) (*disk.UsageStat, error) {
+			return disk.UsageWithContext(ctx, path)
+		},
+		ctx: fsCtx,
 	}
 
 	hasRoot := discovery.addConfiguredRootFs()
@@ -384,7 +386,7 @@ func (m *fsManager) initializeDiskInfo() {
 		discovery.addLastResortRootFs()
 	}
 
-	m.pruneDuplicateRootExtraFilesystems()
+	m.pruneDuplicateRootExtraFilesystems(ctx)
 	m.initializeDiskIoStats(diskIoCounters)
 }
 
@@ -398,7 +400,7 @@ func diskCounterNames(counters map[string]disk.IOCountersStat) []string {
 }
 
 // Removes extra filesystems that mirror root usage (https://github.com/mordilloSan/go-monitoring/issues/1428).
-func (m *fsManager) pruneDuplicateRootExtraFilesystems() {
+func (m *fsManager) pruneDuplicateRootExtraFilesystems(ctx context.Context) {
 	var rootMountpoint string
 	for _, stats := range m.fsStats {
 		if stats != nil && stats.Root {
@@ -409,7 +411,7 @@ func (m *fsManager) pruneDuplicateRootExtraFilesystems() {
 	if rootMountpoint == "" {
 		return
 	}
-	rootUsage, err := disk.Usage(rootMountpoint)
+	rootUsage, err := disk.UsageWithContext(ctx, rootMountpoint)
 	if err != nil {
 		return
 	}
@@ -417,7 +419,7 @@ func (m *fsManager) pruneDuplicateRootExtraFilesystems() {
 		if stats == nil || stats.Root {
 			continue
 		}
-		extraUsage, err := disk.Usage(stats.Mountpoint)
+		extraUsage, err := disk.UsageWithContext(ctx, stats.Mountpoint)
 		if err != nil {
 			continue
 		}
@@ -574,7 +576,10 @@ func (m *fsManager) initializeDiskIoStats(diskIoCounters map[string]disk.IOCount
 }
 
 // Updates disk usage statistics for all monitored filesystems
-func (m *fsManager) updateDiskUsage(systemStats *system.Stats) {
+func (m *fsManager) updateDiskUsage(ctx context.Context, systemStats *system.Stats) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// Check if we should skip extra filesystem collection to avoid waking sleeping disks.
 	// Root filesystem is always updated since it can't be sleeping while the agent runs.
 	// Always collect on first call (lastDiskUsageUpdate is zero) or if caching is disabled.
@@ -588,7 +593,7 @@ func (m *fsManager) updateDiskUsage(systemStats *system.Stats) {
 		if cacheExtraFs && !stats.Root {
 			continue
 		}
-		if d, err := disk.Usage(stats.Mountpoint); err == nil {
+		if d, err := disk.UsageWithContext(ctx, stats.Mountpoint); err == nil {
 			stats.DiskTotal = utils.BytesToGigabytes(d.Total)
 			stats.DiskUsed = utils.BytesToGigabytes(d.Used)
 			if stats.Root {
@@ -596,6 +601,8 @@ func (m *fsManager) updateDiskUsage(systemStats *system.Stats) {
 				systemStats.DiskUsed = utils.BytesToGigabytes(d.Used)
 				systemStats.DiskPct = utils.TwoDecimals(d.UsedPercent)
 			}
+		} else if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
 		} else {
 			// reset stats if error (likely unmounted)
 			slog.Error("Error getting disk stats", "name", stats.Mountpoint, "err", err)
@@ -610,14 +617,18 @@ func (m *fsManager) updateDiskUsage(systemStats *system.Stats) {
 	if !cacheExtraFs {
 		m.lastDiskUsageUpdate = time.Now()
 	}
+	return nil
 }
 
 // Updates disk I/O statistics for all monitored filesystems
-func (m *fsManager) updateDiskIo(cacheTimeMs uint16, systemStats *system.Stats) {
+func (m *fsManager) updateDiskIo(ctx context.Context, cacheTimeMs uint16, systemStats *system.Stats) error {
 	// disk i/o (cache-aware per interval)
-	if ioCounters, err := disk.IOCounters(m.fsNames...); err == nil {
+	if ioCounters, err := disk.IOCountersWithContext(ctx, m.fsNames...); err == nil {
 		m.applyDiskIoCounters(cacheTimeMs, systemStats, ioCounters, time.Now())
+	} else if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
 	}
+	return nil
 }
 
 //nolint:gocognit // Disk I/O delta application handles reset, validation, and root propagation together.

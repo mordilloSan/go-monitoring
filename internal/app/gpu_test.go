@@ -1367,13 +1367,13 @@ echo '[{"device_name":"NVIDIA Test GPU","temp":"52C","power_draw":"31W","gpu_uti
 			t.Cleanup(tt.gm.Stop)
 			switch tt.command {
 			case nvidiaSmiCmd:
-				tt.gm.startNvidiaSmiCollector("4")
+				tt.gm.startNvidiaSmiCollector(tt.gm.ctx, "4")
 			case rocmSmiCmd:
-				tt.gm.startRocmSmiCollector(4300 * time.Millisecond)
+				tt.gm.startRocmSmiCollector(tt.gm.ctx, 4300*time.Millisecond)
 			case tegraStatsCmd:
-				tt.gm.startTegraStatsCollector("3700")
+				tt.gm.startTegraStatsCollector(tt.gm.ctx, "3700")
 			case nvtopCmd:
-				tt.gm.startNvtopCollector("30", nil)
+				tt.gm.startNvtopCollector(tt.gm.ctx, "30", nil)
 			default:
 				t.Fatalf("unknown test command %q", tt.command)
 			}
@@ -1492,7 +1492,7 @@ func TestNewGPUManagerConfiguredCollectorsMustStart(t *testing.T) {
 
 func TestCollectorDefinitionsNvmlDoesNotRequireNvidiaSmi(t *testing.T) {
 	gm := &GPUManager{}
-	definitions := gm.collectorDefinitions(gpuCapabilities{})
+	definitions := gm.collectorDefinitions(context.Background(), gpuCapabilities{})
 	require.Contains(t, definitions, collectorSourceNVML)
 	assert.True(t, definitions[collectorSourceNVML].available)
 }

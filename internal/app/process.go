@@ -34,14 +34,17 @@ func newProcessManager() *processManager {
 	}
 }
 
-func (m *processManager) collectProcessStats() (*procmodel.Count, []procmodel.Process, []procmodel.Program) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+func (m *processManager) collectProcessStats(ctx context.Context) (*procmodel.Count, []procmodel.Process, []procmodel.Program, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
 	procs, err := psutilProcess.ProcessesWithContext(ctx)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, nil, nil, ctxErr
+		}
 		slog.Warn("process collection failed", "err", err)
-		return &procmodel.Count{}, nil, nil
+		return &procmodel.Count{}, nil, nil, nil
 	}
 
 	now := time.Now()
@@ -50,10 +53,16 @@ func (m *processManager) collectProcessStats() (*procmodel.Count, []procmodel.Pr
 	seen := make(map[int32]struct{}, len(procs))
 
 	for _, proc := range procs {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, nil, err
+		}
 		if proc == nil {
 			continue
 		}
-		item, ok := m.collectOneProcess(ctx, proc, now, count)
+		item, ok, err := m.collectOneProcess(ctx, proc, now, count)
+		if err != nil {
+			return nil, nil, nil, err
+		}
 		if !ok {
 			continue
 		}
@@ -73,14 +82,17 @@ func (m *processManager) collectProcessStats() (*procmodel.Count, []procmodel.Pr
 	})
 
 	programs := groupProgramStats(items)
-	return count, items, programs
+	return count, items, programs, nil
 }
 
-func (m *processManager) collectOneProcess(ctx context.Context, proc *psutilProcess.Process, now time.Time, count *procmodel.Count) (procmodel.Process, bool) {
+func (m *processManager) collectOneProcess(ctx context.Context, proc *psutilProcess.Process, now time.Time, count *procmodel.Count) (procmodel.Process, bool, error) {
 	item := procmodel.Process{PID: proc.Pid}
 	createTime, err := proc.CreateTimeWithContext(ctx)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return item, false, ctxErr
+	}
 	if err != nil && errors.Is(err, psutilProcess.ErrorProcessNotRunning) {
-		return item, false
+		return item, false, nil
 	}
 	if err == nil {
 		item.CreateTime = createTime
@@ -136,9 +148,12 @@ func (m *processManager) collectOneProcess(ctx context.Context, proc *psutilProc
 	if times, err := proc.TimesWithContext(ctx); err == nil && times != nil {
 		item.CPUPercent = utils.TwoDecimals(m.processCPUPercent(proc.Pid, createTime, processTimesTotal(times), now))
 	}
+	if err := ctx.Err(); err != nil {
+		return item, false, err
+	}
 
 	count.Total++
-	return item, true
+	return item, true, nil
 }
 
 func (m *processManager) processCPUPercent(pid int32, createTime int64, total float64, now time.Time) float64 {

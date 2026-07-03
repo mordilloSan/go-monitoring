@@ -1,7 +1,10 @@
 package store
 
 import (
+	"context"
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -12,11 +15,23 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mordilloSan/go-monitoring/internal/domain/smart"
+	"github.com/mordilloSan/go-monitoring/internal/domain/system"
 	"github.com/mordilloSan/go-monitoring/internal/domain/systemd"
 	"github.com/mordilloSan/go-monitoring/internal/store/storetest"
 )
 
+func createStoreDBWithVersion(t *testing.T, dataDir string, version int) {
+	t.Helper()
+
+	db, err := sql.Open("sqlite", filepath.Join(dataDir, "metrics.db"))
+	require.NoError(t, err)
+	_, err = db.Exec(fmt.Sprintf("PRAGMA user_version = %d", version))
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+}
+
 func TestStoreSnapshotAndCurrentQueries(t *testing.T) {
+	ctx := context.Background()
 	tmpDir := t.TempDir()
 	store, err := OpenStore(tmpDir)
 	require.NoError(t, err)
@@ -32,7 +47,7 @@ func TestStoreSnapshotAndCurrentQueries(t *testing.T) {
 		},
 	}))
 
-	summaryCapturedAt, summary, err := store.Summary()
+	summaryCapturedAt, summary, err := store.Summary(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, capturedAt, summaryCapturedAt)
 	assert.InDelta(t, 42.0, summary.Stats.Cpu, 0.0001)
@@ -41,7 +56,7 @@ func TestStoreSnapshotAndCurrentQueries(t *testing.T) {
 	require.Len(t, summary.SystemdServices, 1)
 	assert.Equal(t, "nginx.service", summary.SystemdServices[0].Name)
 
-	systemSummaryCapturedAt, systemSummary, err := store.SystemSummary()
+	systemSummaryCapturedAt, systemSummary, err := store.SystemSummary(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, capturedAt, systemSummaryCapturedAt)
 	assert.Equal(t, "host-a", systemSummary.Hostname)
@@ -52,53 +67,53 @@ func TestStoreSnapshotAndCurrentQueries(t *testing.T) {
 	assert.InDelta(t, 8.0, systemSummary.MemoryUsedGB, 0.0001)
 	assert.Equal(t, uint64(16*1024*1024*1024), systemSummary.MemoryBytes)
 
-	containersCapturedAt, containers, err := store.CurrentContainers()
+	containersCapturedAt, containers, err := store.CurrentContainers(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, capturedAt, containersCapturedAt)
 	require.Len(t, containers, 1)
 	assert.Equal(t, "nginx", containers[0].Image)
 
-	systemdCapturedAt, systemdItems, err := store.CurrentSystemd()
+	systemdCapturedAt, systemdItems, err := store.CurrentSystemd(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, capturedAt, systemdCapturedAt)
 	require.Len(t, systemdItems, 1)
 	assert.Equal(t, systemd.StatusActive, systemdItems[0].State)
 
-	processCapturedAt, processCount, err := store.CurrentProcessCount()
+	processCapturedAt, processCount, err := store.CurrentProcessCount(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, capturedAt, processCapturedAt)
 	assert.Equal(t, 2, processCount.Total)
 
-	processesCapturedAt, processes, err := store.CurrentProcesses()
+	processesCapturedAt, processes, err := store.CurrentProcesses(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, capturedAt, processesCapturedAt)
 	require.Len(t, processes, 1)
 	assert.Equal(t, int32(10), processes[0].PID)
 
-	programsCapturedAt, programs, err := store.CurrentPrograms()
+	programsCapturedAt, programs, err := store.CurrentPrograms(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, capturedAt, programsCapturedAt)
 	require.Len(t, programs, 1)
 	assert.Equal(t, "nginx", programs[0].Name)
 
-	connectionsCapturedAt, connections, err := store.CurrentConnections()
+	connectionsCapturedAt, connections, err := store.CurrentConnections(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, capturedAt, connectionsCapturedAt)
 	assert.Equal(t, 3, connections.Total)
 
-	irqCapturedAt, irq, err := store.CurrentIRQ()
+	irqCapturedAt, irq, err := store.CurrentIRQ(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, capturedAt, irqCapturedAt)
 	require.Len(t, irq, 1)
 	assert.Equal(t, uint64(42), irq[0].Total)
 
-	smartCapturedAt, smartItems, err := store.CurrentSmartDevices()
+	smartCapturedAt, smartItems, err := store.CurrentSmartDevices(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, capturedAt, smartCapturedAt)
 	require.Len(t, smartItems, 1)
 	assert.Equal(t, "/dev/sda", smartItems[0].Data.DiskName)
 
-	cpuCapturedAt, cpuRaw, err := store.CurrentPlugin(PluginCPU)
+	cpuCapturedAt, cpuRaw, err := store.CurrentPlugin(ctx, PluginCPU)
 	require.NoError(t, err)
 	assert.Equal(t, capturedAt, cpuCapturedAt)
 	assert.Contains(t, string(cpuRaw), `"cpu_percent":42`)
@@ -111,7 +126,19 @@ func TestStoreSnapshotAndCurrentQueries(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestStoreResetsOldSchemaToPluginTables(t *testing.T) {
+func TestStoreRejectsNilSnapshot(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := OpenStore(tmpDir)
+	require.NoError(t, err)
+	defer store.Close()
+
+	err = store.WriteSnapshot(time.Now().UTC().UnixMilli(), nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "snapshot data is nil")
+}
+
+func TestStoreMigratesOldSchemaWithBackupAndArchivedTables(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "metrics.db")
 	db, err := sql.Open("sqlite", dbPath)
@@ -133,10 +160,17 @@ func TestStoreResetsOldSchemaToPluginTables(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close()
 
-	var oldTableCount int
-	err = store.db.QueryRow("SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'system_current'").Scan(&oldTableCount)
+	backupDBs, err := filepath.Glob(dbPath + ".backup-v3-*")
 	require.NoError(t, err)
-	assert.Zero(t, oldTableCount)
+	require.Len(t, backupDBs, 1)
+	info, err := os.Stat(backupDBs[0])
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+
+	var oldTableCount int
+	err = store.db.QueryRow("SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'legacy_v3_system_current'").Scan(&oldTableCount)
+	require.NoError(t, err)
+	assert.Equal(t, 1, oldTableCount)
 
 	var newTableCount int
 	err = store.db.QueryRow("SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'cpu_current'").Scan(&newTableCount)
@@ -146,6 +180,10 @@ func TestStoreResetsOldSchemaToPluginTables(t *testing.T) {
 	var version int
 	require.NoError(t, store.db.QueryRow("PRAGMA user_version").Scan(&version))
 	assert.Equal(t, storeSchemaVersion, version)
+
+	var backupMeta string
+	require.NoError(t, store.db.QueryRow("SELECT value FROM meta WHERE key = 'schema_migration_backup'").Scan(&backupMeta))
+	assert.Equal(t, backupDBs[0], backupMeta)
 }
 
 func TestStoreMovesAsideCorruptDatabaseAndRecreatesSchema(t *testing.T) {
@@ -197,6 +235,61 @@ func TestStoreDatabaseIntegrityMaintenanceAndReset(t *testing.T) {
 	require.NoError(t, CheckDatabase(tmpDir))
 }
 
+func TestCheckDatabaseErrors(t *testing.T) {
+	t.Run("missing database", func(t *testing.T) {
+		err := CheckDatabase(t.TempDir())
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "stat metrics.db")
+	})
+
+	t.Run("obsolete schema", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		createStoreDBWithVersion(t, tmpDir, 3)
+
+		err := CheckDatabase(tmpDir)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "obsolete metrics.db schema version 3")
+	})
+
+	t.Run("unsupported schema", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		createStoreDBWithVersion(t, tmpDir, 99)
+
+		err := CheckDatabase(tmpDir)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unsupported metrics.db schema version 99")
+	})
+}
+
+func TestStoreRepairValidDatabaseDoesNotMoveFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := OpenStore(tmpDir)
+	require.NoError(t, err)
+	require.NoError(t, store.Close())
+
+	repaired, moved, err := RepairDatabase(tmpDir)
+
+	require.NoError(t, err)
+	defer repaired.Close()
+	assert.Empty(t, moved)
+	require.NoError(t, repaired.IntegrityCheck())
+}
+
+func TestStoreResetDatabaseWithoutExistingDB(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	resetStore, moved, err := ResetDatabase(tmpDir)
+
+	require.NoError(t, err)
+	defer resetStore.Close()
+	assert.Empty(t, moved)
+	assert.FileExists(t, filepath.Join(tmpDir, "metrics.db"))
+	require.NoError(t, resetStore.IntegrityCheck())
+}
+
 func TestStoreRepairMovesAsideCorruptDatabase(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "metrics.db")
@@ -212,6 +305,26 @@ func TestStoreRepairMovesAsideCorruptDatabase(t *testing.T) {
 	require.Len(t, movedDBs, 1)
 	require.NoError(t, repaired.IntegrityCheck())
 	require.NoError(t, CheckDatabase(tmpDir))
+}
+
+func TestStoreUnknownPluginsAndEmptySmartFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := OpenStore(tmpDir)
+	require.NoError(t, err)
+	defer store.Close()
+
+	capturedAt, smartRaw, err := store.CurrentPlugin(context.Background(), PluginSmart)
+	require.NoError(t, err)
+	assert.Zero(t, capturedAt)
+	assert.JSONEq(t, `[]`, string(smartRaw))
+
+	_, _, err = store.CurrentPlugin(context.Background(), "nope")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unknown plugin "nope"`)
+
+	_, err = store.PluginHistory(context.Background(), "nope", resolution1m, 0, 1, 10)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unknown plugin "nope"`)
 }
 
 func TestStoreWritesHistoryOnlyForAllowlistedPlugins(t *testing.T) {
@@ -231,7 +344,7 @@ func TestStoreWritesHistoryOnlyForAllowlistedPlugins(t *testing.T) {
 	require.NoError(t, store.db.QueryRow("SELECT COUNT(1) FROM mem_history").Scan(&memRows))
 	assert.Zero(t, memRows)
 
-	_, err = store.PluginHistory(PluginMem, resolution1m, 0, capturedAt, 10)
+	_, err = store.PluginHistory(context.Background(), PluginMem, resolution1m, 0, capturedAt, 10)
 	assert.ErrorIs(t, err, sql.ErrNoRows)
 }
 
@@ -284,12 +397,12 @@ func TestStoreMaintenanceCreatesRollupsAndDeletesExpiredRows(t *testing.T) {
 
 	require.NoError(t, store.RunMaintenance(now))
 
-	rolled, err := store.SystemHistory(resolution10m, 0, now.UnixMilli(), 10)
+	rolled, err := store.SystemHistory(context.Background(), resolution10m, 0, now.UnixMilli(), 10)
 	require.NoError(t, err)
 	require.Len(t, rolled, 1)
 	assert.InDelta(t, 50.0, rolled[0].Stats.Cpu, 0.01)
 
-	current, err := store.SystemHistory(resolution1m, 0, now.UnixMilli(), 20)
+	current, err := store.SystemHistory(context.Background(), resolution1m, 0, now.UnixMilli(), 20)
 	require.NoError(t, err)
 	require.NotEmpty(t, current)
 	for _, item := range current {
@@ -321,13 +434,13 @@ func TestStoreConcurrentReadsDuringWriteSnapshot(t *testing.T) {
 	for range 4 {
 		wg.Go(func() {
 			for range 50 {
-				if _, _, readErr := store.CurrentPlugin(PluginCPU); readErr != nil {
+				if _, _, readErr := store.CurrentPlugin(context.Background(), PluginCPU); readErr != nil {
 					errs <- readErr
 				}
-				if _, _, readErr := store.SystemSummary(); readErr != nil {
+				if _, _, readErr := store.SystemSummary(context.Background()); readErr != nil {
 					errs <- readErr
 				}
-				if _, readErr := store.PluginHistory(PluginCPU, resolution1m, 0, time.Now().Add(time.Hour).UnixMilli(), 10); readErr != nil {
+				if _, readErr := store.PluginHistory(context.Background(), PluginCPU, resolution1m, 0, time.Now().Add(time.Hour).UnixMilli(), 10); readErr != nil {
 					errs <- readErr
 				}
 			}
@@ -395,35 +508,69 @@ func TestStoreMaintenanceDoesNotRollFutureRowsIntoCurrentWindow(t *testing.T) {
 	assert.Zero(t, tenMinuteRows)
 }
 
+func TestStoreMaintenanceDelayedTickDoesNotSkipRollupWindows(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := OpenStore(tmpDir, Options{HistoryPlugins: []string{PluginCPU}})
+	require.NoError(t, err)
+	defer store.Close()
+
+	start := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	for i := 1; i <= 10; i++ {
+		require.NoError(t, store.WriteSnapshot(start.Add(time.Duration(i)*time.Minute).UnixMilli(), storetest.SampleCombinedData(float64(i))))
+	}
+	require.NoError(t, store.RunMaintenance(start.Add(10*time.Minute)))
+
+	for i := 11; i <= 23; i++ {
+		require.NoError(t, store.WriteSnapshot(start.Add(time.Duration(i)*time.Minute).UnixMilli(), storetest.SampleCombinedData(float64(i))))
+	}
+	// Maintenance is late: the next tick lands 3 minutes past the window edge.
+	require.NoError(t, store.RunMaintenance(start.Add(23*time.Minute)))
+
+	rows, err := store.db.Query(`
+		SELECT captured_at
+		FROM cpu_history
+		WHERE resolution = ?
+		ORDER BY captured_at ASC
+	`, resolution10m)
+	require.NoError(t, err)
+	defer rows.Close()
+
+	var capturedAts []int64
+	for rows.Next() {
+		var capturedAt int64
+		require.NoError(t, rows.Scan(&capturedAt))
+		capturedAts = append(capturedAts, capturedAt)
+	}
+	require.NoError(t, rows.Err())
+
+	// Windows must chain off the previous rollup, not the delayed tick time,
+	// so no 1m row falls between two aggregated windows.
+	assert.Equal(t, []int64{
+		start.Add(10 * time.Minute).UnixMilli(),
+		start.Add(20 * time.Minute).UnixMilli(),
+	}, capturedAts)
+}
+
 func TestStoreMaintenanceAppliesRetentionToAllHistoryTables(t *testing.T) {
 	tmpDir := t.TempDir()
-	store, err := OpenStore(tmpDir, Options{HistoryPlugins: []string{PluginCPU, PluginContainers}})
+	store, err := OpenStore(tmpDir, Options{HistoryPlugins: PluginNames()})
 	require.NoError(t, err)
 	defer store.Close()
 
 	now := time.Now().UTC().Truncate(time.Minute)
-	data := storetest.SampleCombinedData(42)
-	payloads := snapshotPluginPayloads(data)
-	cpuJSON, err := marshalJSON(payloads[PluginCPU])
-	require.NoError(t, err)
-	containerJSON, err := marshalJSON(payloads[PluginContainers])
-	require.NoError(t, err)
+	historyJSON := `{"retention":"test"}`
 
 	for resolution, retention := range historyRetention {
 		expiredAt := now.Add(-retention - time.Millisecond).UnixMilli()
 		boundaryAt := now.Add(-retention).UnixMilli()
 
-		_, err = store.db.Exec(`
-			INSERT INTO cpu_history (resolution, captured_at, stats_json)
-			VALUES (?, ?, ?), (?, ?, ?)
-		`, resolution, expiredAt, cpuJSON, resolution, boundaryAt, cpuJSON)
-		require.NoError(t, err)
-
-		_, err = store.db.Exec(`
-			INSERT INTO containers_history (resolution, captured_at, stats_json)
-			VALUES (?, ?, ?), (?, ?, ?)
-		`, resolution, expiredAt, containerJSON, resolution, boundaryAt, containerJSON)
-		require.NoError(t, err)
+		for _, plugin := range PluginNames() {
+			_, err = store.db.Exec(fmt.Sprintf(`
+				INSERT INTO %s (resolution, captured_at, stats_json)
+				VALUES (?, ?, ?), (?, ?, ?)
+			`, pluginHistoryTable(plugin)), resolution, expiredAt, historyJSON, resolution, boundaryAt, historyJSON)
+			require.NoError(t, err)
+		}
 	}
 
 	require.NoError(t, store.RunMaintenance(now))
@@ -431,40 +578,73 @@ func TestStoreMaintenanceAppliesRetentionToAllHistoryTables(t *testing.T) {
 	for resolution, retention := range historyRetention {
 		cutoff := now.Add(-retention).UnixMilli()
 
-		var expiredSystemRows int
-		err = store.db.QueryRow(`
-			SELECT COUNT(1)
-			FROM cpu_history
-			WHERE resolution = ? AND captured_at < ?
-		`, resolution, cutoff).Scan(&expiredSystemRows)
-		require.NoError(t, err)
-		assert.Zero(t, expiredSystemRows, "expired system rows should be deleted for %s", resolution)
+		for _, plugin := range PluginNames() {
+			var expiredRows int
+			err = store.db.QueryRow(fmt.Sprintf(`
+				SELECT COUNT(1)
+				FROM %s
+				WHERE resolution = ? AND captured_at < ?
+			`, pluginHistoryTable(plugin)), resolution, cutoff).Scan(&expiredRows)
+			require.NoError(t, err)
+			assert.Zero(t, expiredRows, "expired %s rows should be deleted for %s", plugin, resolution)
 
-		var expiredContainerRows int
-		err = store.db.QueryRow(`
-			SELECT COUNT(1)
-			FROM containers_history
-			WHERE resolution = ? AND captured_at < ?
-		`, resolution, cutoff).Scan(&expiredContainerRows)
-		require.NoError(t, err)
-		assert.Zero(t, expiredContainerRows, "expired container rows should be deleted for %s", resolution)
+			var keptRows int
+			err = store.db.QueryRow(fmt.Sprintf(`
+				SELECT COUNT(1)
+				FROM %s
+				WHERE resolution = ? AND captured_at = ?
+			`, pluginHistoryTable(plugin)), resolution, cutoff).Scan(&keptRows)
+			require.NoError(t, err)
+			assert.Equal(t, 1, keptRows, "boundary %s row should be kept for %s", plugin, resolution)
+		}
+	}
+}
 
-		var keptSystemRows int
-		err = store.db.QueryRow(`
-			SELECT COUNT(1)
-			FROM cpu_history
-			WHERE resolution = ? AND captured_at = ?
-		`, resolution, cutoff).Scan(&keptSystemRows)
-		require.NoError(t, err)
-		assert.Equal(t, 1, keptSystemRows, "boundary system row should be kept for %s", resolution)
+func TestAggregatePluginHistoryJSONCoversAllPlugins(t *testing.T) {
+	first := storetest.SampleCombinedData(10)
+	first.Stats.Swap = 2
+	first.Stats.SwapUsed = 1
+	first.Stats.NetworkSent = 3
+	first.Stats.NetworkRecv = 4
+	first.Stats.Temperatures = map[string]float64{"cpu": 50}
+	first.Stats.GPUData = map[string]system.GPUData{"0": {Name: "gpu0", Usage: 20, MemoryUsed: 100}}
+	second := storetest.SampleCombinedData(30)
+	second.Stats.Swap = 4
+	second.Stats.SwapUsed = 2
+	second.Stats.NetworkSent = 9
+	second.Stats.NetworkRecv = 10
+	second.Stats.Temperatures = map[string]float64{"cpu": 70}
+	second.Stats.GPUData = map[string]system.GPUData{"0": {Name: "gpu0", Usage: 60, MemoryUsed: 300}}
 
-		var keptContainerRows int
-		err = store.db.QueryRow(`
-			SELECT COUNT(1)
-			FROM containers_history
-			WHERE resolution = ? AND captured_at = ?
-		`, resolution, cutoff).Scan(&keptContainerRows)
-		require.NoError(t, err)
-		assert.Equal(t, 1, keptContainerRows, "boundary container row should be kept for %s", resolution)
+	firstPayloads := snapshotPluginPayloads(first)
+	secondPayloads := snapshotPluginPayloads(second)
+	passThroughPlugins := map[string]struct{}{
+		PluginSystemd:     {},
+		PluginProcesses:   {},
+		PluginPrograms:    {},
+		PluginConnections: {},
+		PluginIRQ:         {},
+	}
+
+	for _, plugin := range PluginNames() {
+		t.Run(plugin, func(t *testing.T) {
+			firstRaw := `{"first":true}`
+			secondRaw := `{"second":true}`
+			if plugin != PluginSmart {
+				var err error
+				firstRaw, err = marshalJSON(firstPayloads[plugin])
+				require.NoError(t, err)
+				secondRaw, err = marshalJSON(secondPayloads[plugin])
+				require.NoError(t, err)
+			}
+
+			aggregated, err := aggregatePluginHistoryJSON(plugin, []string{firstRaw, secondRaw})
+
+			require.NoError(t, err)
+			assert.True(t, json.Valid([]byte(aggregated)), "aggregate should be valid JSON: %s", aggregated)
+			if _, passThrough := passThroughPlugins[plugin]; passThrough || plugin == PluginSmart {
+				assert.JSONEq(t, secondRaw, aggregated)
+			}
+		})
 	}
 }
