@@ -6,6 +6,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+# Must run as root: SMART, Docker socket, DBus/systemd, and GPU collectors
+# need privileged access to devices and host APIs.
+User=root
+Group=root
 Environment=CONFIG_FILE=/etc/go-monitoring/config.json
 Environment=DATA_DIR=/var/lib/go-monitoring
 ExecStart=/usr/bin/go-monitoring run --config /etc/go-monitoring/config.json
