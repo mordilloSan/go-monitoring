@@ -21,7 +21,7 @@ func TestLoadMissingReturnsDefaults(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, loaded)
 	assert.Equal(t, CurrentVersion, cfg.Version)
-	assert.Equal(t, ":45876", cfg.Listen)
+	assert.Equal(t, "127.0.0.1:45876", cfg.Listen)
 	assert.Equal(t, app.DefaultCollectorInterval, cfg.CollectorInterval.Duration())
 	assert.Equal(t, 5*time.Second, cfg.CacheTTL[store.PluginContainers].Duration())
 }

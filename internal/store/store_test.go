@@ -138,7 +138,7 @@ func TestStoreRejectsNilSnapshot(t *testing.T) {
 	assert.Contains(t, err.Error(), "snapshot data is nil")
 }
 
-func TestStoreResetsOldSchemaToPluginTables(t *testing.T) {
+func TestStoreMigratesOldSchemaWithBackupAndArchivedTables(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "metrics.db")
 	db, err := sql.Open("sqlite", dbPath)
@@ -160,10 +160,17 @@ func TestStoreResetsOldSchemaToPluginTables(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close()
 
-	var oldTableCount int
-	err = store.db.QueryRow("SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'system_current'").Scan(&oldTableCount)
+	backupDBs, err := filepath.Glob(dbPath + ".backup-v3-*")
 	require.NoError(t, err)
-	assert.Zero(t, oldTableCount)
+	require.Len(t, backupDBs, 1)
+	info, err := os.Stat(backupDBs[0])
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+
+	var oldTableCount int
+	err = store.db.QueryRow("SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'legacy_v3_system_current'").Scan(&oldTableCount)
+	require.NoError(t, err)
+	assert.Equal(t, 1, oldTableCount)
 
 	var newTableCount int
 	err = store.db.QueryRow("SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'cpu_current'").Scan(&newTableCount)
@@ -173,6 +180,10 @@ func TestStoreResetsOldSchemaToPluginTables(t *testing.T) {
 	var version int
 	require.NoError(t, store.db.QueryRow("PRAGMA user_version").Scan(&version))
 	assert.Equal(t, storeSchemaVersion, version)
+
+	var backupMeta string
+	require.NoError(t, store.db.QueryRow("SELECT value FROM meta WHERE key = 'schema_migration_backup'").Scan(&backupMeta))
+	assert.Equal(t, backupDBs[0], backupMeta)
 }
 
 func TestStoreMovesAsideCorruptDatabaseAndRecreatesSchema(t *testing.T) {

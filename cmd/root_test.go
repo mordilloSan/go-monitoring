@@ -52,9 +52,10 @@ func TestGetAddress(t *testing.T) {
 		envVars  map[string]string
 		expected string
 	}{
-		{name: "default port", expected: ":45876"},
-		{name: "port only", listen: "8080", expected: ":8080"},
+		{name: "default port", expected: "127.0.0.1:45876"},
+		{name: "port only", listen: "8080", expected: "127.0.0.1:8080"},
 		{name: "explicit address", listen: "127.0.0.1:9000", expected: "127.0.0.1:9000"},
+		{name: "explicit all interfaces", listen: ":9000", expected: ":9000"},
 		{
 			name: "listen env",
 			envVars: map[string]string{
@@ -67,7 +68,7 @@ func TestGetAddress(t *testing.T) {
 			envVars: map[string]string{
 				"PORT": "7000",
 			},
-			expected: ":7000",
+			expected: "127.0.0.1:7000",
 		},
 	}
 

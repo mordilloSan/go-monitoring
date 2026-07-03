@@ -104,10 +104,11 @@ The package installs:
 - `/var/lib/go-monitoring` for `metrics.db`
 
 Change the listen port or collection interval through the config CLI, then reload
-the service:
+the service. Bare ports are localhost-only; use an explicit host if you need a
+different bind address:
 
 ```sh
-sudo go-monitoring config --config /etc/go-monitoring/config.json --listen :9000
+sudo go-monitoring config --config /etc/go-monitoring/config.json --listen 9000
 sudo go-monitoring config --config /etc/go-monitoring/config.json --collector-interval 30s
 sudo systemctl reload go-monitoring.service
 ```
@@ -116,8 +117,9 @@ sudo systemctl reload go-monitoring.service
 
 ```sh
 ./go-monitoring                       # show CLI help
-./go-monitoring run                   # listens on :45876 and collects every 15s by default
-./go-monitoring run --listen :9000    # custom address/port
+./go-monitoring run                   # listens on 127.0.0.1:45876 and collects every 15s by default
+./go-monitoring run --listen 9000     # listen on 127.0.0.1:9000
+./go-monitoring run --listen :9000    # listen on all interfaces
 ./go-monitoring run --history cpu,mem # store history only for selected plugins
 ./go-monitoring health                # exit 0 if the latest tick is fresh
 ./go-monitoring status                # query a running local agent
@@ -173,7 +175,7 @@ sudo systemctl start go-monitoring.service
 Environment variables:
 
 - `CONFIG_FILE` — config file path
-- `LISTEN` / `PORT` — fallback listen address if `--listen` is not provided
+- `LISTEN` / `PORT` — fallback listen address if `--listen` is not provided; bare ports bind to `127.0.0.1`
 - `HISTORY` — comma-separated history plugin allowlist, or `all` / `none` (`cpu,mem,diskio,network,containers` by default)
 - `MEM_CALC` — memory calculation formula
 - `DISK_USAGE_CACHE` — cache duration for disk-usage polling (e.g. `15m`) to avoid waking sleeping disks
@@ -205,7 +207,7 @@ and devices.
 
 ## HTTP API
 
-Base URL: `http://<listen>`
+Base URL: `http://127.0.0.1:45876` by default, or `http://<listen>` when configured.
 
 - `GET /healthz` — liveness / freshness
 - `GET /api/v1/meta` — agent metadata, effective config metadata, and collector interval
