@@ -357,7 +357,7 @@ func systemdUnitUnavailable(detail string) bool {
 	return strings.Contains(detail, "Unit go-monitoring.service not found")
 }
 
-func (m *configMenu) startDetachedAgentProcess(ctx context.Context, opts cmdOptions) error {
+func (m *configMenu) startDetachedAgentProcess(ctx context.Context, opts cmdOptions) (retErr error) {
 	exe, err := os.Executable()
 	if err != nil {
 		fmt.Fprintln(m.out, "Could not resolve current executable:", err)
@@ -373,7 +373,15 @@ func (m *configMenu) startDetachedAgentProcess(ctx context.Context, opts cmdOpti
 		fmt.Fprintln(m.out, "Could not open detached agent log:", err)
 		return m.pause(ctx)
 	}
-	defer logFile.Close()
+	defer func() {
+		if cerr := logFile.Close(); cerr != nil {
+			if retErr == nil {
+				retErr = fmt.Errorf("closing detached agent log file: %w", cerr)
+			} else {
+				fmt.Fprintln(m.out, "Warning: could not close detached agent log file:", cerr)
+			}
+		}
+	}()
 	pidPath, err := detachedAgentPIDPath(true)
 	if err != nil {
 		fmt.Fprintln(m.out, "Could not prepare detached agent pid file:", err)
