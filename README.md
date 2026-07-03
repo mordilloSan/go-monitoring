@@ -46,6 +46,7 @@ Requires Go (see [go.mod](go.mod) for the pinned toolchain).
 
 ```sh
 make build        # produces ./go-monitoring
+sudo make install # installs to /usr/local/bin (override with PREFIX/DESTDIR)
 make test         # runs the full backend check suite
 make check-backend
 make test-backend # runs Go unit tests only

@@ -94,7 +94,7 @@ AGENT_GO_TAGS := -tags glibc
 endif
 endif
 
-.PHONY: build clean test check-backend test-backend dev golint golint-only deadcode deadcode-only ensure-go ensure-golint ensure-deadcode
+.PHONY: build clean test check-backend test-backend dev install uninstall golint golint-only deadcode deadcode-only ensure-go ensure-golint ensure-deadcode
 .DEFAULT_GOAL := build
 
 ensure-go:
@@ -219,6 +219,18 @@ test: check-backend
 
 build:
 	@( cd "$(BACKEND_DIR)" && GOOS=$(OS) GOARCH=$(ARCH) $(GOAMD64_ENV) $(GO_CMD_ENV) "$(GO_BIN)" build $(AGENT_GO_TAGS) -o "$(BUILD_OUTPUT)" -ldflags "$(LDFLAGS)" $(AGENT_PKG) )
+
+# Standard GNU-style install: `sudo make install` puts the binary on PATH at
+# /usr/local/bin; override with PREFIX/DESTDIR for packaging or custom layouts.
+PREFIX ?= /usr/local
+BINDIR  = $(DESTDIR)$(PREFIX)/bin
+
+install: build
+	install -d "$(BINDIR)"
+	install -m 0755 "$(BUILD_OUTPUT)" "$(BINDIR)/go-monitoring"
+
+uninstall:
+	rm -f "$(BINDIR)/go-monitoring"
 
 dev:
 	@if command -v entr >/dev/null 2>&1; then \
