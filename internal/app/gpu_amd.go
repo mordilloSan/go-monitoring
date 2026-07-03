@@ -228,6 +228,9 @@ func lookupAmdgpuNameInFile(deviceID, revisionID, filePath string) (name string,
 			return productName, true, true
 		}
 	}
+	if scanner.Err() != nil {
+		return "", false, false
+	}
 	if byDevice != "" {
 		return byDevice, false, true
 	}

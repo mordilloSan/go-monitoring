@@ -317,6 +317,9 @@ func getOsPrettyName() (string, error) {
 			return value, nil
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		return "", err
+	}
 
 	return "", errors.New("pretty name not found")
 }
