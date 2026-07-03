@@ -20,7 +20,29 @@ GOLANGCI_LINT_OPTS ?= --modules-download-mode=mod
 AGENT_PKG    := .
 BUILD_OUTPUT  = $(REPO_ROOT)/go-monitoring
 VERSION_PKG  := github.com/mordilloSan/go-monitoring/internal/version
-GIT_VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "untracked")
+GIT_VERSION  ?= $(shell \
+	exact="$$(git describe --exact-match --tags --match 'v[0-9]*' HEAD 2>/dev/null || true)"; \
+	if [ -n "$$exact" ]; then printf '%s' "$$exact"; exit 0; fi; \
+	branch="$$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"; \
+	version=""; \
+	if [ "$${branch#dev/v}" != "$$branch" ]; then \
+		version="v$${branch#dev/v}"; \
+	elif [ "$${branch#release/v}" != "$$branch" ]; then \
+		version="v$${branch#release/v}"; \
+	elif [ "$${branch#v}" != "$$branch" ]; then \
+		version="$$branch"; \
+	fi; \
+	if [ -n "$$version" ] && ! printf '%s' "$$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z][0-9A-Za-z.-]*)?$$'; then \
+		version=""; \
+	fi; \
+	if [ -n "$$version" ]; then \
+		if ! git diff --quiet --ignore-submodules -- 2>/dev/null || ! git diff --cached --quiet --ignore-submodules -- 2>/dev/null; then \
+			version="$$version-dirty"; \
+		fi; \
+		printf '%s' "$$version"; \
+	else \
+		git describe --tags --always --dirty 2>/dev/null || echo "untracked"; \
+	fi)
 GIT_COMMIT   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "")
 BUILD_TIME   ?= $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 LDFLAGS      := -w -s \
@@ -218,7 +240,30 @@ clean:
 test: check-backend
 
 build:
-	@( cd "$(BACKEND_DIR)" && GOOS=$(OS) GOARCH=$(ARCH) $(GOAMD64_ENV) $(GO_CMD_ENV) "$(GO_BIN)" build $(AGENT_GO_TAGS) -o "$(BUILD_OUTPUT)" -ldflags "$(LDFLAGS)" $(AGENT_PKG) )
+	@set -euo pipefail; \
+	target="$(OS)/$(ARCH)"; \
+	if [ -n "$(GOAMD64_ENV)" ]; then target="$$target $(GOAMD64_ENV)"; fi; \
+	tags="$(AGENT_GO_TAGS)"; \
+	if [ -z "$$tags" ]; then tags="none"; fi; \
+	commit="$(GIT_COMMIT)"; \
+	if [ -z "$$commit" ]; then commit="unknown"; fi; \
+	echo "Building $(AGENT_PKG)"; \
+	echo "  target:  $$target"; \
+	echo "  tags:    $$tags"; \
+	echo "  version: $(GIT_VERSION)"; \
+	echo "  commit:  $$commit"; \
+	echo "  output:  $(BUILD_OUTPUT)"; \
+	( cd "$(BACKEND_DIR)" && GOOS=$(OS) GOARCH=$(ARCH) $(GOAMD64_ENV) $(GO_CMD_ENV) "$(GO_BIN)" build $(AGENT_GO_TAGS) -o "$(BUILD_OUTPUT)" -ldflags "$(LDFLAGS)" $(AGENT_PKG) ); \
+	size_bytes="$$(stat -c '%s' "$(BUILD_OUTPUT)")"; \
+	size_human="$$(numfmt --to=iec --suffix=B "$$size_bytes" 2>/dev/null || printf '%s bytes' "$$size_bytes")"; \
+	mode="$$(stat -c '%A' "$(BUILD_OUTPUT)")"; \
+	modified="$$(stat -c '%y' "$(BUILD_OUTPUT)" | cut -d. -f1)"; \
+	sha256="$$(sha256sum "$(BUILD_OUTPUT)" | awk '{print $$1}')"; \
+	echo "Built $(BUILD_OUTPUT)"; \
+	echo "  size:    $$size_human ($$size_bytes bytes)"; \
+	echo "  mode:    $$mode"; \
+	echo "  mtime:   $$modified"; \
+	echo "  sha256:  $$sha256"
 
 # Standard GNU-style install: `sudo make install` puts the binary on PATH at
 # /usr/local/bin; override with PREFIX/DESTDIR for packaging or custom layouts.
