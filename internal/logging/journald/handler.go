@@ -28,12 +28,11 @@ var normalizedFieldComponentCache sync.Map
 
 // Options configures the native journald slog handler.
 type Options struct {
-	Identifier     string
-	Level          slog.Leveler
-	AddSource      bool
-	Sender         Sender
-	FieldPrefix    string
-	SuppressFields []string
+	Identifier  string
+	Level       slog.Leveler
+	AddSource   bool
+	Sender      Sender
+	FieldPrefix string
 }
 
 // Handler writes slog records to the native journald socket.
@@ -43,7 +42,6 @@ type Handler struct {
 	addSource      bool
 	sender         Sender
 	fieldPrefix    string
-	suppressFields map[string]struct{}
 	fieldNameCache *sync.Map
 	attrs          []slog.Attr
 	groups         []string
@@ -77,12 +75,6 @@ func NewHandler(opts Options) (*Handler, error) {
 	}
 
 	fieldPrefix := normalizeFieldComponent(opts.FieldPrefix)
-	suppressFields := make(map[string]struct{}, len(opts.SuppressFields))
-	for _, field := range opts.SuppressFields {
-		if normalized := normalizeFieldComponent(field); normalized != "" {
-			suppressFields[normalized] = struct{}{}
-		}
-	}
 
 	statePool := &sync.Pool{
 		New: func() any {
@@ -100,7 +92,6 @@ func NewHandler(opts Options) (*Handler, error) {
 		addSource:      opts.AddSource,
 		sender:         sender,
 		fieldPrefix:    fieldPrefix,
-		suppressFields: suppressFields,
 		fieldNameCache: &sync.Map{},
 		statePool:      statePool,
 	}, nil
@@ -277,9 +268,6 @@ func (h *Handler) ungroupedFieldName(key string) string {
 
 func (h *Handler) finalFieldName(name string) string {
 	if name == "" {
-		return ""
-	}
-	if _, ok := h.suppressFields[name]; ok {
 		return ""
 	}
 	if _, ok := standardPassthroughFields[name]; ok {

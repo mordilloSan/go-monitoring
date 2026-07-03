@@ -20,18 +20,17 @@ func (m *mockSender) Send(fields []Field) error {
 func TestHandlerMapsLevelIdentifierAndAppFields(t *testing.T) {
 	sender := &mockSender{}
 	handler, err := NewHandler(Options{
-		Identifier:     "go-monitoring",
-		Level:          slog.LevelDebug,
-		FieldPrefix:    "GOMON",
-		SuppressFields: []string{"SESSION_ID"},
-		Sender:         sender,
+		Identifier:  "go-monitoring",
+		Level:       slog.LevelDebug,
+		FieldPrefix: "GOMON",
+		Sender:      sender,
 	})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
 
 	logger := slog.New(handler)
-	logger.Warn("bridge start timeout", "session_id", "abc", "privileged", true)
+	logger.Warn("collector tick overrun", "plugin", "smart", "cached", true)
 
 	got := fieldMap(sender.fields)
 	if got["SYSLOG_IDENTIFIER"] != "go-monitoring" {
@@ -40,14 +39,14 @@ func TestHandlerMapsLevelIdentifierAndAppFields(t *testing.T) {
 	if got["PRIORITY"] != "4" {
 		t.Fatalf("priority = %q", got["PRIORITY"])
 	}
-	if got["MESSAGE"] != "bridge start timeout" {
+	if got["MESSAGE"] != "collector tick overrun" {
 		t.Fatalf("message = %q", got["MESSAGE"])
 	}
-	if _, ok := got["GOMON_SESSION_ID"]; ok {
-		t.Fatalf("session field unexpectedly present: %q", got["GOMON_SESSION_ID"])
+	if got["GOMON_PLUGIN"] != "smart" {
+		t.Fatalf("plugin field = %q", got["GOMON_PLUGIN"])
 	}
-	if got["GOMON_PRIVILEGED"] != "true" {
-		t.Fatalf("privileged field = %q", got["GOMON_PRIVILEGED"])
+	if got["GOMON_CACHED"] != "true" {
+		t.Fatalf("cached field = %q", got["GOMON_CACHED"])
 	}
 }
 
@@ -70,53 +69,6 @@ func TestHandlerDefaultsToUnprefixedAppFields(t *testing.T) {
 	}
 	if _, ok := got["GOMON_USER"]; ok {
 		t.Fatalf("GOMON_USER unexpectedly present: %q", got["GOMON_USER"])
-	}
-}
-
-func TestHandlerSuppressesFieldsIndependentOfPrefix(t *testing.T) {
-	tests := []struct {
-		name          string
-		fieldPrefix   string
-		suppressedKey string
-		visibleKey    string
-	}{
-		{
-			name:          "unprefixed",
-			suppressedKey: "SESSION_ID",
-			visibleKey:    "USER",
-		},
-		{
-			name:          "prefixed",
-			fieldPrefix:   "GOMON",
-			suppressedKey: "GOMON_SESSION_ID",
-			visibleKey:    "GOMON_USER",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			sender := &mockSender{}
-			handler, err := NewHandler(Options{
-				Identifier:     "go-monitoring",
-				Level:          slog.LevelDebug,
-				FieldPrefix:    tt.fieldPrefix,
-				SuppressFields: []string{"SESSION_ID"},
-				Sender:         sender,
-			})
-			if err != nil {
-				t.Fatalf("NewHandler: %v", err)
-			}
-
-			slog.New(handler).Info("bridge start timeout", "session_id", "abc", "user", "miguelmariz")
-
-			got := fieldMap(sender.fields)
-			if _, ok := got[tt.suppressedKey]; ok {
-				t.Fatalf("%s unexpectedly present: %q", tt.suppressedKey, got[tt.suppressedKey])
-			}
-			if got[tt.visibleKey] != "miguelmariz" {
-				t.Fatalf("%s = %q", tt.visibleKey, got[tt.visibleKey])
-			}
-		})
 	}
 }
 
@@ -185,7 +137,7 @@ func TestHandlerAllowsStandardFieldPassthroughAndLastWriteWins(t *testing.T) {
 		t.Fatalf("NewHandler: %v", err)
 	}
 
-	record := slog.NewRecord(testTime, slog.LevelError, "bridge exec failed", 0)
+	record := slog.NewRecord(testTime, slog.LevelError, "smart scan failed", 0)
 	record.AddAttrs(
 		slog.String("message_id", "gomon.test"),
 		slog.String("code_file", "/override/file.go"),
@@ -208,7 +160,7 @@ func TestHandlerAllowsStandardFieldPassthroughAndLastWriteWins(t *testing.T) {
 	}
 }
 
-func TestHandlerBridgeBootFieldNamesAreUnprefixedAtCallSite(t *testing.T) {
+func TestHandlerFieldNamesAreUnprefixedAtCallSite(t *testing.T) {
 	sender := &mockSender{}
 	handler, err := NewHandler(Options{
 		Identifier:  "go-monitoring",
@@ -220,7 +172,7 @@ func TestHandlerBridgeBootFieldNamesAreUnprefixedAtCallSite(t *testing.T) {
 		t.Fatalf("NewHandler: %v", err)
 	}
 
-	slog.New(handler).Info("bridge boot",
+	slog.New(handler).Info("agent boot",
 		"effective_uid", 0,
 		"uid", 1000,
 		"gid", 1000,

@@ -17,8 +17,9 @@ import (
 	"github.com/mordilloSan/go-monitoring/internal/logging/journald"
 )
 
-// FieldPrefix namespaces journal fields (for example GOMON_PLUGIN),
-// mirroring LinuxIO's LINUXIO_* convention.
+// FieldPrefix namespaces this agent's journal fields (for example
+// GOMON_PLUGIN) so they never collide with journald's own or another
+// service's fields.
 const FieldPrefix = "GOMON"
 
 // level is the shared handler level; SetLevel adjusts it at runtime.
