@@ -116,15 +116,27 @@ sudo systemctl reload go-monitoring.service
 ## Run
 
 ```sh
-./go-monitoring                       # show CLI help
+./go-monitoring                       # interactive menu on a terminal; CLI help otherwise
 ./go-monitoring run                   # listens on 127.0.0.1:45876 and collects every 15s by default
 ./go-monitoring run --listen 9000     # listen on 127.0.0.1:9000
 ./go-monitoring run --listen :9000    # listen on all interfaces
+./go-monitoring run --listen unix:/run/go-monitoring/agent.sock  # serve the API on a unix socket
+./go-monitoring run --listen none     # collect and store history without the HTTP API
 ./go-monitoring run --history cpu,mem # store history only for selected plugins
 ./go-monitoring health                # exit 0 if the latest tick is fresh
-./go-monitoring status                # query a running local agent
+./go-monitoring status                # query a running local agent (TCP or unix socket)
 ./go-monitoring --version
 ```
+
+Started with no arguments on a terminal, the CLI opens an interactive menu
+(also available as `go-monitoring menu`) covering the agent, status, the
+config editor, and database operations. Listen addresses take four forms: a
+bare port (localhost-only), `host:port`, `unix:/path` (or a bare absolute
+path) for a unix socket restricted to the agent's user and group, and `none` /
+`off` to disable the HTTP API entirely while the collector keeps recording
+history. `status` reaches the agent over TCP or the unix socket automatically;
+with the API disabled, use `go-monitoring health` for the file-based liveness
+check.
 
 Dash-prefixed command aliases are also accepted: `./go-monitoring -run` and
 `./go-monitoring -config`.
@@ -175,7 +187,7 @@ sudo systemctl start go-monitoring.service
 Environment variables:
 
 - `CONFIG_FILE` — config file path
-- `LISTEN` / `PORT` — fallback listen address if `--listen` is not provided; bare ports bind to `127.0.0.1`
+- `LISTEN` / `PORT` — fallback listen address if `--listen` is not provided; bare ports bind to `127.0.0.1`, `unix:/path` selects a unix socket, `none` disables the HTTP API
 - `HISTORY` — comma-separated history plugin allowlist, or `all` / `none` (`cpu,mem,diskio,network,containers` by default)
 - `MEM_CALC` — memory calculation formula
 - `DISK_USAGE_CACHE` — cache duration for disk-usage polling (e.g. `15m`) to avoid waking sleeping disks
@@ -199,7 +211,9 @@ The Debian package installs
 If you built from source and installed the binary to `/usr/local/bin`, copy
 that unit and change `ExecStart` accordingly. The unit runs as root, pins
 `CONFIG_FILE=/etc/go-monitoring/config.json` and
-`DATA_DIR=/var/lib/go-monitoring`, and includes conservative hardening. It
+`DATA_DIR=/var/lib/go-monitoring`, and includes conservative hardening. Its
+`RuntimeDirectory=go-monitoring` provides `/run/go-monitoring` for a unix
+socket listener (`"listen": "unix:/run/go-monitoring/agent.sock"`). It
 intentionally avoids stronger sandboxing such as `PrivateDevices`, `ProtectProc`,
 `PrivateNetwork`, and a tight capability bounding set because host metrics,
 Docker/DBus, SMART, and GPU collectors may need host `/proc`, `/sys`, sockets,
@@ -208,6 +222,11 @@ and devices.
 ## HTTP API
 
 Base URL: `http://127.0.0.1:45876` by default, or `http://<listen>` when configured.
+With a unix socket listener, point the client at the socket instead:
+
+```sh
+curl --unix-socket /run/go-monitoring/agent.sock http://localhost/api/v1/meta
+```
 
 - `GET /healthz` — liveness / freshness
 - `GET /api/v1/meta` — agent metadata, effective config metadata, and collector interval

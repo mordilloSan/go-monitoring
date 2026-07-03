@@ -18,6 +18,9 @@ Restart=on-failure
 RestartSec=5s
 StateDirectory=go-monitoring
 ConfigurationDirectory=go-monitoring
+# Provides /run/go-monitoring for a unix socket listener
+# (listen: "unix:/run/go-monitoring/agent.sock").
+RuntimeDirectory=go-monitoring
 
 # Host metrics, DBus, SMART, and GPU collectors need real host /proc, /sys,
 # sockets, and devices, so the hardening avoids private devices/network/proc.

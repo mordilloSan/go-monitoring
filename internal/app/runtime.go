@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -100,28 +99,32 @@ func (a *App) StartContext(ctx context.Context, opts RunOptions) error {
 		return collectErr
 	}
 
-	listener, err := net.Listen("tcp", opts.Addr)
-	if err != nil {
-		return err
-	}
-	defer listener.Close()
-
-	a.httpRuntime = &httpRuntime{
-		listenAddr: listener.Addr().String(),
-		server: &http.Server{
-			Addr:              opts.Addr,
-			Handler:           a.apiServer().Handler(a.CollectorInterval),
-			ReadHeaderTimeout: 5 * time.Second,
-		},
-	}
-	slog.Info("HTTP server starting", "addr", a.httpRuntime.listenAddr, "request_logging", a.requestLogging)
-
 	serverErr := make(chan error, 1)
-	go func() {
-		if err := a.httpRuntime.server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serverErr <- err
+	if IsListenDisabled(opts.Addr) {
+		slog.Info("HTTP server disabled", "listen", opts.Addr)
+	} else {
+		listener, err := openListener(opts.Addr)
+		if err != nil {
+			return err
 		}
-	}()
+		defer listener.Close()
+
+		a.httpRuntime = &httpRuntime{
+			listenAddr: listener.Addr().String(),
+			server: &http.Server{
+				Addr:              opts.Addr,
+				Handler:           a.apiServer().Handler(a.CollectorInterval),
+				ReadHeaderTimeout: 5 * time.Second,
+			},
+		}
+		slog.Info("HTTP server starting", "addr", a.httpRuntime.listenAddr, "request_logging", a.requestLogging)
+
+		go func() {
+			if err := a.httpRuntime.server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				serverErr <- err
+			}
+		}()
+	}
 
 	// The child context also stops the collector on the server-error path where
 	// the caller's context may still be live.
@@ -137,10 +140,12 @@ func (a *App) StartContext(ctx context.Context, opts RunOptions) error {
 
 	runErr := a.runEventLoop(runCtx, hupCh, serverErr, opts.ReloadConfig, collectorIntervalUpdates)
 
-	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-	if err := a.httpRuntime.server.Shutdown(shutdownCtx); err != nil {
-		return err
+	if a.httpRuntime != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := a.httpRuntime.server.Shutdown(shutdownCtx); err != nil {
+			return err
+		}
 	}
 	if err := health.CleanUp(); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err

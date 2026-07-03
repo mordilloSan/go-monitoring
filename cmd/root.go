@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -26,6 +27,7 @@ const (
 	commandConfig command = "config"
 	commandDB     command = "db"
 	commandStatus command = "status"
+	commandMenu   command = "menu"
 )
 
 type cmdOptions struct {
@@ -52,10 +54,20 @@ type cmdOptions struct {
 
 // parse fills opts from argv (argv[0] is the program name). It returns
 // done=true when the command was fully handled, along with the exit code.
+//
+//nolint:gocognit // CLI parsing keeps legacy aliases, command dispatch, and flag wiring together.
 func (opts *cmdOptions) parse(argv []string) (bool, int) {
 	name := argv[0]
 	args := argv[1:]
 	if len(args) == 0 {
+		// On a terminal, no arguments opens the interactive menu; scripts and
+		// pipes keep getting the usage text.
+		if shouldRunConfigMenu() {
+			opts.command = commandMenu
+			opts.configPath = config.DefaultPath()
+			opts.cacheTTL = durationMapFlag{values: make(map[string]time.Duration)}
+			return false, 0
+		}
 		printUsage(name)
 		return true, 0
 	}
@@ -87,8 +99,8 @@ func (opts *cmdOptions) parse(argv []string) (bool, int) {
 	version := fs.BoolP("version", "v", false, "Show version information")
 	help := fs.BoolP("help", "h", false, "Show this help message")
 
-	if opts.command == commandRun || opts.command == commandConfig || opts.command == commandStatus {
-		fs.StringVarP(&opts.listen, "listen", "l", "", "Address or port to listen on")
+	if opts.command == commandRun || opts.command == commandConfig || opts.command == commandStatus || opts.command == commandMenu {
+		fs.StringVarP(&opts.listen, "listen", "l", "", "Address, port, unix:/path socket, or none to disable the HTTP API")
 		fs.DurationVar(&opts.collectorInterval, "collector-interval", 0, "Collector interval, for example 30s or 1m")
 		fs.StringVar(&opts.history, "history", "", "Comma-separated history plugin allowlist, or all/none")
 		fs.DurationVar(&opts.apiCacheDefault, "api-cache-default", 0, "Set every live API cache TTL")
@@ -99,8 +111,10 @@ func (opts *cmdOptions) parse(argv []string) (bool, int) {
 		fs.BoolVar(&opts.configPrint, "print", false, "Print the effective config")
 		fs.BoolVar(&opts.configInit, "init", false, "Write the current defaults if the config file is absent")
 	}
-	if opts.command == commandDB {
+	if opts.command == commandDB || opts.command == commandMenu {
 		fs.StringVar(&opts.dataDir, "data-dir", "", "Data directory containing metrics.db")
+	}
+	if opts.command == commandDB {
 		fs.BoolVar(&opts.dbForce, "force", false, "Confirm destructive database actions")
 	}
 	fs.Usage = func() { printUsage(name) }
@@ -136,7 +150,7 @@ func (opts *cmdOptions) parse(argv []string) (bool, int) {
 func parseCommand(raw string) (string, bool) {
 	normalized := strings.ToLower(strings.TrimLeft(raw, "-"))
 	switch normalized {
-	case "run", "config", "db", "health", "help", "status":
+	case "run", "config", "db", "health", "help", "status", "menu":
 		return normalized, true
 	default:
 		return "help", false
@@ -168,6 +182,8 @@ func printUsage(name string) {
 	builder.WriteString(" <command> [flags]\n\n")
 	builder.WriteString("Commands:\n")
 	builder.WriteString("  run          Start the monitoring agent\n")
+	builder.WriteString("  menu         Interactive menu: run, status, config, and database operations\n")
+	builder.WriteString("               (also the default when started on a terminal with no arguments)\n")
 	builder.WriteString("  config       Open the config menu, print, initialize, or update the config file\n")
 	builder.WriteString("  db           Check, maintain, repair, reset, or print the metrics database path\n")
 	builder.WriteString("  health       Check if the latest persisted collection tick is fresh\n")
@@ -180,7 +196,7 @@ func printUsage(name string) {
 	builder.WriteString("  -h, --help                    Show this help message\n")
 	builder.WriteString("  -v, --version                 Show version information\n\n")
 	builder.WriteString("Run/config flags:\n")
-	builder.WriteString("  -l, --listen address          Address or port to listen on\n")
+	builder.WriteString("  -l, --listen address          Address, port, unix:/path socket, or none to disable the HTTP API\n")
 	builder.WriteString("  --collector-interval duration Collector interval, for example 30s or 1m\n")
 	builder.WriteString("  --history list                History plugin allowlist, all, or none\n")
 	builder.WriteString("  --api-cache-default duration  Set every live API cache TTL\n")
@@ -524,6 +540,9 @@ func Run(ctx context.Context, argv []string) int {
 		return code
 	}
 	logging.Configure("go-monitoring")
+	if opts.command == commandMenu {
+		return runMainMenu(ctx, opts)
+	}
 	if opts.command == commandConfig && opts.configAction == "path" {
 		fmt.Println(opts.configPath)
 		return 0
@@ -551,8 +570,7 @@ func Run(ctx context.Context, argv []string) int {
 	if opts.command == commandConfig {
 		run, updatedCfg, updatedSource, cmdErr := handleConfigCommand(opts, cfg, effective.loaded, configSource)
 		if cmdErr != nil {
-			fmt.Fprintln(os.Stderr, cmdErr)
-			return 1
+			return configCommandErrorCode(cmdErr)
 		}
 		if !run {
 			return 0
@@ -569,9 +587,23 @@ func Run(ctx context.Context, argv []string) int {
 		return 0
 	}
 
+	return startAgentExit(ctx, opts, cfg, configSource)
+}
+
+// startAgentExit runs the agent until it stops and maps the result to a
+// process exit code.
+func startAgentExit(ctx context.Context, opts cmdOptions, cfg config.Config, configSource string) int {
 	if err := startAgent(ctx, opts, cfg, configSource); err != nil {
 		slog.Error("agent failed", "error", err)
 		return 1
 	}
 	return 0
+}
+
+func configCommandErrorCode(err error) int {
+	if errors.Is(err, errConfigMenuInterrupted) {
+		return 130
+	}
+	fmt.Fprintln(os.Stderr, err)
+	return 1
 }

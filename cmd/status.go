@@ -21,24 +21,23 @@ type healthResponse struct {
 }
 
 func printStatus(ctx context.Context, cfg config.Config) error {
-	baseURL, err := statusBaseURL(cfg.Listen)
+	target, err := statusTarget(cfg.Listen)
 	if err != nil {
 		return err
 	}
 
-	client := &http.Client{Timeout: 5 * time.Second}
 	var health healthResponse
-	healthCode, err := getJSON(ctx, client, baseURL+"/healthz", &health)
+	healthCode, err := getJSON(ctx, target.client, target.baseURL+"/healthz", &health)
 	if err != nil {
 		return err
 	}
 	var meta apimodel.MetaResponse
-	metaCode, err := getJSON(ctx, client, baseURL+"/api/v1/meta", &meta)
+	metaCode, err := getJSON(ctx, target.client, target.baseURL+"/api/v1/meta", &meta)
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("Agent: %s\n", baseURL)
+	fmt.Printf("Agent: %s\n", target.display)
 	fmt.Printf("Health: %t (status=%d age=%.1fs last_updated=%s)\n", health.Healthy, healthCode, health.AgeSeconds, health.LastUpdated)
 	fmt.Printf("Version: %s\n", meta.Version)
 	fmt.Printf("Collector interval: %s\n", meta.CollectorInterval)
@@ -74,8 +73,42 @@ func getJSON(ctx context.Context, client *http.Client, url string, target any) (
 	return resp.StatusCode, nil
 }
 
-func statusBaseURL(listen string) (string, error) {
+// agentTarget is how the status command reaches a running agent: an HTTP
+// client wired for TCP or a unix socket, the base URL for requests, and the
+// address to show the user.
+type agentTarget struct {
+	client  *http.Client
+	baseURL string
+	display string
+}
+
+func statusTarget(listen string) (agentTarget, error) {
 	addr := app.GetAddress(listen)
+	if app.IsListenDisabled(addr) {
+		return agentTarget{}, fmt.Errorf("the HTTP API is disabled (listen=%s); use \"go-monitoring health\" for a local liveness check", addr)
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	network, address := app.SplitListenAddress(addr)
+	if network == "unix" {
+		client.Transport = &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var dialer net.Dialer
+				return dialer.DialContext(ctx, "unix", address)
+			},
+		}
+		return agentTarget{client: client, baseURL: "http://unix", display: "unix:" + address}, nil
+	}
+
+	baseURL, err := statusBaseURL(address)
+	if err != nil {
+		return agentTarget{}, err
+	}
+	return agentTarget{client: client, baseURL: baseURL, display: baseURL}, nil
+}
+
+// statusBaseURL turns a TCP listen address into a dialable local base URL.
+func statusBaseURL(addr string) (string, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return "", err
@@ -84,8 +117,6 @@ func statusBaseURL(listen string) (string, error) {
 	case "", "0.0.0.0", "::", "[::]":
 		host = "127.0.0.1"
 	}
-	if strings.Contains(host, ":") {
-		host = "[" + strings.Trim(host, "[]") + "]"
-	}
+	// net.JoinHostPort brackets IPv6 hosts itself.
 	return "http://" + net.JoinHostPort(host, port), nil
 }

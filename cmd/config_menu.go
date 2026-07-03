@@ -2,14 +2,17 @@ package cmd
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"strings"
 	"time"
 
 	"golang.org/x/term"
 
+	"github.com/mordilloSan/go-monitoring/internal/app"
 	"github.com/mordilloSan/go-monitoring/internal/config"
 	"github.com/mordilloSan/go-monitoring/internal/store"
 )
@@ -24,17 +27,55 @@ const (
 	menuKeyEscape
 	menuKeyQuit
 	menuKeySave
+	menuKeyInterrupt
 )
 
+const (
+	ansiHideCursor = "\x1b[?25l"
+	ansiShowCursor = "\x1b[?25h"
+	ansiDim        = "\x1b[2m"
+	ansiReset      = "\x1b[0m"
+)
+
+const (
+	defaultTCPListen        = "127.0.0.1:45876"
+	defaultAllTCPListen     = ":45876"
+	defaultUnixSocketPath   = "/run/go-monitoring/agent.sock"
+	defaultUnixSocketListen = "unix:" + defaultUnixSocketPath
+)
+
+// configMenu doubles as a small raw-terminal menu engine; the top-level
+// interactive menu in main_menu.go reuses it.
 type configMenu struct {
 	in       *os.File
 	out      io.Writer
+	hint     string // footer hint; empty means the config-menu default
 	rawState *term.State
 }
 
+type menuItem struct {
+	label    string
+	disabled bool
+}
+
 type configMenuResult struct {
-	run bool
-	cfg config.Config
+	run   bool
+	pause bool
+	cfg   config.Config
+}
+
+var errConfigMenuInterrupted = errors.New("interrupted")
+
+type configMenuOptions struct {
+	exitLabel      string
+	printNoChanges bool
+}
+
+func defaultConfigMenuOptions() configMenuOptions {
+	return configMenuOptions{
+		exitLabel:      "Exit without saving",
+		printNoChanges: true,
+	}
 }
 
 func shouldRunConfigMenu() bool {
@@ -42,14 +83,22 @@ func shouldRunConfigMenu() bool {
 }
 
 func runConfigMenu(path string, cfg config.Config, loaded bool) (configMenuResult, error) {
+	return runConfigMenuWithOptions(path, cfg, loaded, defaultConfigMenuOptions())
+}
+
+func runConfigSectionMenu(path string, cfg config.Config, loaded bool) (configMenuResult, error) {
+	return runConfigMenuWithOptions(path, cfg, loaded, configMenuOptions{exitLabel: "Back"})
+}
+
+func runConfigMenuWithOptions(path string, cfg config.Config, loaded bool, opts configMenuOptions) (configMenuResult, error) {
 	menu := &configMenu{
 		in:  os.Stdin,
 		out: os.Stdout,
 	}
-	return menu.run(path, cfg, loaded)
+	return menu.runWithOptions(path, cfg, loaded, opts)
 }
 
-func (m *configMenu) run(path string, cfg config.Config, loaded bool) (configMenuResult, error) {
+func (m *configMenu) runWithOptions(path string, cfg config.Config, loaded bool, opts configMenuOptions) (configMenuResult, error) {
 	if err := m.enterRaw(); err != nil {
 		return configMenuResult{}, err
 	}
@@ -57,7 +106,7 @@ func (m *configMenu) run(path string, cfg config.Config, loaded bool) (configMen
 
 	cursor := 0
 	for {
-		items := mainMenuItems(cfg)
+		items := mainMenuItems(cfg, opts.exitLabel)
 		m.render("go-monitoring config", path, loaded, items, cursor)
 
 		key, err := m.readKey()
@@ -70,15 +119,15 @@ func (m *configMenu) run(path string, cfg config.Config, loaded bool) (configMen
 		case menuKeyDown:
 			cursor = (cursor + 1) % len(items)
 		case menuKeyQuit, menuKeyEscape:
-			m.exitRaw()
-			fmt.Fprintln(m.out, "No changes saved.")
-			return configMenuResult{}, nil
+			return m.leaveConfigMenu(opts), nil
+		case menuKeyInterrupt:
+			return configMenuResult{}, m.interrupt()
 		case menuKeySave:
 			if saved, saveErr := m.save(path, cfg); saveErr != nil || saved {
-				return configMenuResult{cfg: cfg}, saveErr
+				return configMenuResult{pause: saved, cfg: cfg}, saveErr
 			}
 		case menuKeyEnter:
-			result, done, err := m.handleRunEnter(cursor, &cfg, path)
+			result, done, err := m.handleRunEnter(cursor, &cfg, path, opts)
 			if done || err != nil {
 				return result, err
 			}
@@ -86,30 +135,20 @@ func (m *configMenu) run(path string, cfg config.Config, loaded bool) (configMen
 	}
 }
 
-func mainMenuItems(cfg config.Config) []string {
+func mainMenuItems(cfg config.Config, exitLabel string) []string {
 	return []string{
-		fmt.Sprintf("Listen address: %s", cfg.Listen),
 		fmt.Sprintf("Collector interval: %s", cfg.CollectorInterval.Duration()),
 		fmt.Sprintf("History plugins: %s", cfg.History),
-		"Live API cache TTLs",
-		"Reset to defaults",
+		"Reset general settings",
 		"Save and exit",
 		"Save and run",
-		"Exit without saving",
+		exitLabel,
 	}
 }
 
-func (m *configMenu) handleRunEnter(cursor int, cfg *config.Config, path string) (configMenuResult, bool, error) {
+func (m *configMenu) handleRunEnter(cursor int, cfg *config.Config, path string, opts configMenuOptions) (configMenuResult, bool, error) {
 	switch cursor {
 	case 0:
-		next, changed, err := m.promptString("Listen address", cfg.Listen, validateListen)
-		if err != nil {
-			return configMenuResult{}, true, err
-		}
-		if changed {
-			cfg.Listen = next
-		}
-	case 1:
 		next, changed, err := m.promptDuration("Collector interval", cfg.CollectorInterval.Duration(), validateCollectorInterval)
 		if err != nil {
 			return configMenuResult{}, true, err
@@ -117,31 +156,155 @@ func (m *configMenu) handleRunEnter(cursor int, cfg *config.Config, path string)
 		if changed {
 			cfg.CollectorInterval = config.Duration(next)
 		}
-	case 2:
+	case 1:
 		if err := m.historyMenu(cfg); err != nil {
 			return configMenuResult{}, true, err
 		}
+	case 2:
+		resetGeneralConfig(cfg)
 	case 3:
-		if err := m.cacheMenu(cfg); err != nil {
-			return configMenuResult{}, true, err
+		if saved, err := m.save(path, *cfg); err != nil || saved {
+			return configMenuResult{pause: saved, cfg: *cfg}, true, err
 		}
 	case 4:
-		*cfg = config.Default()
-	case 5:
-		if saved, err := m.save(path, *cfg); err != nil || saved {
-			return configMenuResult{cfg: *cfg}, true, err
-		}
-	case 6:
 		if saved, err := m.save(path, *cfg); err != nil || saved {
 			return configMenuResult{run: saved, cfg: *cfg}, true, err
 		}
 		_ = m.enterRaw()
-	case 7:
-		m.exitRaw()
-		fmt.Fprintln(m.out, "No changes saved.")
-		return configMenuResult{}, true, nil
+	case 5:
+		return m.leaveConfigMenu(opts), true, nil
 	}
 	return configMenuResult{}, false, nil
+}
+
+func (m *configMenu) leaveConfigMenu(opts configMenuOptions) configMenuResult {
+	m.exitRaw()
+	if opts.printNoChanges {
+		fmt.Fprintln(m.out, "No changes saved.")
+	}
+	return configMenuResult{}
+}
+
+func resetGeneralConfig(cfg *config.Config) {
+	defaults := config.Default()
+	cfg.CollectorInterval = defaults.CollectorInterval
+	cfg.History = defaults.History
+}
+
+func (m *configMenu) listenMenu(cfg *config.Config) error {
+	cursor := 0
+	for {
+		items := buildListenItems(cfg.Listen)
+		m.render("HTTP API Config", apiListenSummary(cfg.Listen), true, items, cursor)
+
+		key, err := m.readKey()
+		if err != nil {
+			return err
+		}
+		switch key {
+		case menuKeyUp:
+			cursor = (cursor + len(items) - 1) % len(items)
+		case menuKeyDown:
+			cursor = (cursor + 1) % len(items)
+		case menuKeyEscape, menuKeyQuit:
+			return nil
+		case menuKeyInterrupt:
+			return m.interrupt()
+		case menuKeyEnter:
+			done, err := m.handleListenEnter(cursor, cfg, len(items))
+			if err != nil {
+				return err
+			}
+			if done {
+				return nil
+			}
+		}
+	}
+}
+
+func buildListenItems(listen string) []string {
+	tcpEnabled, unixEnabled := listenMode(listen)
+	return []string{
+		fmt.Sprintf("HTTP listener: %s", yesNo(tcpEnabled)),
+		"HTTP bind: localhost (127.0.0.1:45876)",
+		"HTTP bind: all interfaces (:45876)",
+		fmt.Sprintf("HTTP address/port: %s", tcpListenPromptDefault(listen)),
+		fmt.Sprintf("Unix socket: %s", yesNo(unixEnabled)),
+		fmt.Sprintf("Unix socket path: %s", unixSocketPromptDefault(listen)),
+		"Disable API",
+		"Back",
+	}
+}
+
+func (m *configMenu) handleListenEnter(cursor int, cfg *config.Config, itemCount int) (bool, error) {
+	if cursor == itemCount-1 {
+		return true, nil
+	}
+	switch cursor {
+	case 0:
+		if tcpEnabled, _ := listenMode(cfg.Listen); tcpEnabled {
+			cfg.Listen = app.ListenDisabled
+		} else {
+			cfg.Listen = defaultTCPListen
+		}
+	case 1:
+		cfg.Listen = defaultTCPListen
+	case 2:
+		cfg.Listen = defaultAllTCPListen
+	case 3:
+		next, changed, err := m.promptString("TCP listen address or port", tcpListenPromptDefault(cfg.Listen), validateTCPListen)
+		if err != nil {
+			return false, err
+		}
+		if changed {
+			cfg.Listen = next
+		}
+	case 4:
+		if _, unixEnabled := listenMode(cfg.Listen); unixEnabled {
+			cfg.Listen = app.ListenDisabled
+		} else {
+			cfg.Listen = defaultUnixSocketListen
+		}
+	case 5:
+		next, changed, err := m.promptString("Unix socket path", unixSocketPromptDefault(cfg.Listen), validateUnixSocketPath)
+		if err != nil {
+			return false, err
+		}
+		if changed {
+			cfg.Listen = unixSocketListenValue(next)
+		}
+	case 6:
+		cfg.Listen = app.ListenDisabled
+	}
+	return false, nil
+}
+
+func apiListenSummary(listen string) string {
+	normalized := app.GetAddress(listen)
+	if app.IsListenDisabled(normalized) {
+		return "unix: no; HTTP: no"
+	}
+	network, address := app.SplitListenAddress(normalized)
+	if network == "unix" {
+		return "unix: yes (" + address + "); HTTP: no"
+	}
+	return "unix: no; HTTP: yes (" + address + ")"
+}
+
+func listenMode(listen string) (tcpEnabled bool, unixEnabled bool) {
+	normalized := app.GetAddress(listen)
+	if app.IsListenDisabled(normalized) {
+		return false, false
+	}
+	network, _ := app.SplitListenAddress(normalized)
+	return network == "tcp", network == "unix"
+}
+
+func yesNo(value bool) string {
+	if value {
+		return "yes"
+	}
+	return "no"
 }
 
 func (m *configMenu) historyMenu(cfg *config.Config) error {
@@ -167,6 +330,8 @@ func (m *configMenu) historyMenu(cfg *config.Config) error {
 		case menuKeyEscape, menuKeyQuit:
 			cfg.History = historyFromSelection(selected)
 			return nil
+		case menuKeyInterrupt:
+			return m.interrupt()
 		case menuKeyEnter:
 			done := applyHistoryEnter(cursor, plugins, selected, len(items))
 			cfg.History = historyFromSelection(selected)
@@ -227,6 +392,8 @@ func (m *configMenu) cacheMenu(cfg *config.Config) error {
 			cursor = (cursor + 1) % len(items)
 		case menuKeyEscape, menuKeyQuit:
 			return nil
+		case menuKeyInterrupt:
+			return m.interrupt()
 		case menuKeyEnter:
 			done, err := m.handleCacheEnter(cursor, keys, cfg, len(items))
 			if err != nil {
@@ -291,6 +458,14 @@ func (m *configMenu) setCacheTTL(key string, cfg *config.Config) error {
 }
 
 func (m *configMenu) render(title, subtitle string, loaded bool, items []string, cursor int) {
+	m.renderMenu(title, subtitle, loaded, menuItemsFromLabels(items), cursor)
+}
+
+func (m *configMenu) clearScreen() {
+	fmt.Fprint(m.out, "\x1b[H\x1b[2J")
+}
+
+func (m *configMenu) renderMenu(title, subtitle string, loaded bool, items []menuItem, cursor int) {
 	var builder strings.Builder
 	builder.WriteString("\x1b[H\x1b[2J")
 	builder.WriteString(title)
@@ -306,7 +481,11 @@ func (m *configMenu) render(title, subtitle string, loaded bool, items []string,
 		builder.WriteString("\n")
 	}
 	builder.WriteString("\n")
-	builder.WriteString("Use Up/Down, Enter to edit/select, s to save, q or Esc to exit.")
+	hint := m.hint
+	if hint == "" {
+		hint = "Use Up/Down, Enter to edit/select, s to save, q or Esc to exit."
+	}
+	builder.WriteString(hint)
 	builder.WriteString("\n\n")
 
 	for i, item := range items {
@@ -315,10 +494,24 @@ func (m *configMenu) render(title, subtitle string, loaded bool, items []string,
 			prefix = "> "
 		}
 		builder.WriteString(prefix)
-		builder.WriteString(item)
+		if item.disabled {
+			builder.WriteString(ansiDim)
+		}
+		builder.WriteString(item.label)
+		if item.disabled {
+			builder.WriteString(ansiReset)
+		}
 		builder.WriteString("\n")
 	}
 	fmt.Fprint(m.out, strings.ReplaceAll(builder.String(), "\n", "\r\n"))
+}
+
+func menuItemsFromLabels(labels []string) []menuItem {
+	items := make([]menuItem, 0, len(labels))
+	for _, label := range labels {
+		items = append(items, menuItem{label: label})
+	}
+	return items
 }
 
 func (m *configMenu) readKey() (menuKey, error) {
@@ -334,6 +527,8 @@ func (m *configMenu) readKey() (menuKey, error) {
 		return menuKeyQuit, nil
 	case 's', 'S':
 		return menuKeySave, nil
+	case 0x03:
+		return menuKeyInterrupt, nil
 	case 0x1b:
 		n, err = m.in.Read(buf[1:2])
 		if err != nil || n == 0 {
@@ -354,6 +549,12 @@ func (m *configMenu) readKey() (menuKey, error) {
 		}
 	}
 	return menuKeyUnknown, nil
+}
+
+func (m *configMenu) interrupt() error {
+	m.exitRaw()
+	fmt.Fprintln(m.out, "\nInterrupted.")
+	return errConfigMenuInterrupted
 }
 
 func (m *configMenu) promptString(label, current string, validate func(string) error) (string, bool, error) {
@@ -438,6 +639,17 @@ func (m *configMenu) save(path string, cfg config.Config) (bool, error) {
 	return true, nil
 }
 
+func (m *configMenu) withRaw(fn func() error) error {
+	alreadyRaw := m.rawState != nil
+	if !alreadyRaw {
+		if err := m.enterRaw(); err != nil {
+			return err
+		}
+		defer m.exitRaw()
+	}
+	return fn()
+}
+
 func (m *configMenu) enterRaw() error {
 	if m.rawState != nil {
 		return nil
@@ -447,6 +659,7 @@ func (m *configMenu) enterRaw() error {
 		return err
 	}
 	m.rawState = state
+	m.hideCursor()
 	return nil
 }
 
@@ -456,6 +669,19 @@ func (m *configMenu) exitRaw() {
 	}
 	_ = term.Restore(int(m.in.Fd()), m.rawState)
 	m.rawState = nil
+	m.showCursor()
+}
+
+func (m *configMenu) hideCursor() {
+	if m.out != nil {
+		fmt.Fprint(m.out, ansiHideCursor)
+	}
+}
+
+func (m *configMenu) showCursor() {
+	if m.out != nil {
+		fmt.Fprint(m.out, ansiShowCursor)
+	}
 }
 
 func validateListen(value string) error {
@@ -463,6 +689,61 @@ func validateListen(value string) error {
 		return fmt.Errorf("listen address cannot be empty")
 	}
 	return nil
+}
+
+func validateTCPListen(value string) error {
+	if err := validateListen(value); err != nil {
+		return err
+	}
+	normalized := app.GetAddress(value)
+	if app.IsListenDisabled(normalized) {
+		return fmt.Errorf("use Disable HTTP API to turn the API off")
+	}
+	if network, _ := app.SplitListenAddress(normalized); network != "tcp" {
+		return fmt.Errorf("tcp listen value must be a port or host:port")
+	}
+	if _, _, err := net.SplitHostPort(normalized); err != nil {
+		return fmt.Errorf("tcp listen value must be a port or host:port: %w", err)
+	}
+	return nil
+}
+
+func validateUnixSocketPath(value string) error {
+	if err := validateListen(value); err != nil {
+		return err
+	}
+	network, address := app.SplitListenAddress(strings.TrimSpace(value))
+	if network != "unix" {
+		return fmt.Errorf("unix socket path must be absolute or unix:/absolute/path")
+	}
+	if !strings.HasPrefix(address, "/") {
+		return fmt.Errorf("unix socket path must be absolute")
+	}
+	return nil
+}
+
+func tcpListenPromptDefault(listen string) string {
+	normalized := app.GetAddress(listen)
+	if app.IsListenDisabled(normalized) {
+		return defaultTCPListen
+	}
+	if network, _ := app.SplitListenAddress(normalized); network != "tcp" {
+		return defaultTCPListen
+	}
+	return normalized
+}
+
+func unixSocketPromptDefault(listen string) string {
+	normalized := app.GetAddress(listen)
+	if network, address := app.SplitListenAddress(normalized); network == "unix" && address != "" {
+		return address
+	}
+	return defaultUnixSocketPath
+}
+
+func unixSocketListenValue(value string) string {
+	_, address := app.SplitListenAddress(strings.TrimSpace(value))
+	return "unix:" + address
 }
 
 func validateCollectorInterval(d time.Duration) error {
