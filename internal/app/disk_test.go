@@ -3,6 +3,7 @@
 package app
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/shirou/gopsutil/v4/disk"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/mordilloSan/go-monitoring/internal/domain/system"
 )
@@ -886,7 +888,7 @@ func TestDiskUsageCaching(t *testing.T) {
 		}
 
 		var stats system.Stats
-		manager.updateDiskUsage(&stats)
+		require.NoError(t, manager.updateDiskUsage(context.Background(), &stats))
 
 		// Both should be updated (non-zero values from disk.Usage)
 		// Root stats should be populated in systemStats
@@ -909,7 +911,7 @@ func TestDiskUsageCaching(t *testing.T) {
 		originalExtraUsed := manager.fsStats["sdb"].DiskUsed
 
 		var stats system.Stats
-		manager.updateDiskUsage(&stats)
+		require.NoError(t, manager.updateDiskUsage(context.Background(), &stats))
 
 		// Root should be updated (systemStats populated from disk.Usage call)
 		// We can't easily check if disk.Usage was called, but we verify the flow works
@@ -932,7 +934,7 @@ func TestDiskUsageCaching(t *testing.T) {
 		}
 
 		var stats system.Stats
-		manager.updateDiskUsage(&stats)
+		require.NoError(t, manager.updateDiskUsage(context.Background(), &stats))
 
 		// After first call, lastDiskUsageUpdate should be set
 		assert.False(t, manager.lastDiskUsageUpdate.IsZero(),
@@ -950,7 +952,7 @@ func TestDiskUsageCaching(t *testing.T) {
 		}
 
 		var stats system.Stats
-		manager.updateDiskUsage(&stats)
+		require.NoError(t, manager.updateDiskUsage(context.Background(), &stats))
 
 		// lastDiskUsageUpdate should be refreshed since cache expired
 		assert.True(t, time.Since(manager.lastDiskUsageUpdate) < time.Second,

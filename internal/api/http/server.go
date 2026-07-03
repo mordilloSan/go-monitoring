@@ -27,17 +27,17 @@ const (
 
 type MetricsReader interface {
 	Path() string
-	PluginHistory(plugin, resolution string, from, to int64, limit int) ([]store.HistoryRecord[json.RawMessage], error)
+	PluginHistory(context.Context, string, string, int64, int64, int) ([]store.HistoryRecord[json.RawMessage], error)
 	HistoryEnabled(plugin string) bool
 }
 
 type CurrentReader interface {
-	CurrentPlugin(plugin string) (int64, json.RawMessage, error)
-	SystemSummary() (int64, system.Summary, error)
+	CurrentPlugin(context.Context, string) (int64, json.RawMessage, error)
+	SystemSummary(context.Context) (int64, system.Summary, error)
 }
 
 type SmartRefresher interface {
-	RefreshSmartNow() error
+	RefreshSmartNow(context.Context) error
 }
 
 type Options struct {
@@ -212,21 +212,16 @@ func (s *Server) handleSystemSummary(w http.ResponseWriter, r *http.Request) {
 
 type missingCurrentReader struct{}
 
-func (missingCurrentReader) CurrentPlugin(string) (int64, json.RawMessage, error) {
+func (missingCurrentReader) CurrentPlugin(context.Context, string) (int64, json.RawMessage, error) {
 	return 0, nil, errors.New("current provider not configured")
 }
 
-func (missingCurrentReader) SystemSummary() (int64, system.Summary, error) {
+func (missingCurrentReader) SystemSummary(context.Context) (int64, system.Summary, error) {
 	return 0, system.Summary{}, errors.New("current provider not configured")
 }
 
 func (s *Server) systemSummary(ctx context.Context) (int64, system.Summary, error) {
-	if reader, ok := s.current.(interface {
-		SystemSummaryContext(context.Context) (int64, system.Summary, error)
-	}); ok {
-		return reader.SystemSummaryContext(ctx)
-	}
-	return s.current.SystemSummary()
+	return s.current.SystemSummary(ctx)
 }
 
 func (s *Server) metaResponse(collectorInterval time.Duration) apimodel.MetaResponse {

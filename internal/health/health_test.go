@@ -56,7 +56,7 @@ func TestHealth(t *testing.T) {
 			// The check should now fail as unhealthy.
 			err := Check()
 			require.Error(t, err, "Check() should have failed after 91s")
-			assert.Equal(t, "unhealthy", err.Error(), "Check() returned wrong error")
+			assert.Equal(t, "unhealthy: over 90 seconds since last successful persist", err.Error(), "Check() returned wrong error")
 		})
 	})
 }

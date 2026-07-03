@@ -6,7 +6,6 @@ package health
 
 import (
 	"errors"
-	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -73,8 +72,7 @@ func Check() error {
 		return err
 	}
 	if !status.Healthy {
-		log.Println("over 90 seconds since last successful persist")
-		return errors.New("unhealthy")
+		return errors.New("unhealthy: over 90 seconds since last successful persist")
 	}
 	return nil
 }

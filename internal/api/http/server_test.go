@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -26,7 +27,7 @@ type fakeSmartRefresher struct {
 	store *storepkg.Store
 }
 
-func (r fakeSmartRefresher) RefreshSmartNow() error {
+func (r fakeSmartRefresher) RefreshSmartNow(context.Context) error {
 	return r.store.WriteSmartDevices(time.Now().UTC().UnixMilli(), map[string]smart.SmartData{})
 }
 
@@ -38,7 +39,7 @@ type fakeCurrentReader struct {
 	summaryErr   error
 }
 
-func (r fakeCurrentReader) CurrentPlugin(plugin string) (int64, json.RawMessage, error) {
+func (r fakeCurrentReader) CurrentPlugin(_ context.Context, plugin string) (int64, json.RawMessage, error) {
 	if err := r.pluginErrors[plugin]; err != nil {
 		return 0, nil, err
 	}
@@ -48,7 +49,7 @@ func (r fakeCurrentReader) CurrentPlugin(plugin string) (int64, json.RawMessage,
 	return r.capturedAt, json.RawMessage(`{}`), nil
 }
 
-func (r fakeCurrentReader) SystemSummary() (int64, system.Summary, error) {
+func (r fakeCurrentReader) SystemSummary(context.Context) (int64, system.Summary, error) {
 	if r.summaryErr != nil {
 		return 0, system.Summary{}, r.summaryErr
 	}

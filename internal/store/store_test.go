@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 )
 
 func TestStoreSnapshotAndCurrentQueries(t *testing.T) {
+	ctx := context.Background()
 	tmpDir := t.TempDir()
 	store, err := OpenStore(tmpDir)
 	require.NoError(t, err)
@@ -32,7 +34,7 @@ func TestStoreSnapshotAndCurrentQueries(t *testing.T) {
 		},
 	}))
 
-	summaryCapturedAt, summary, err := store.Summary()
+	summaryCapturedAt, summary, err := store.Summary(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, capturedAt, summaryCapturedAt)
 	assert.InDelta(t, 42.0, summary.Stats.Cpu, 0.0001)
@@ -41,7 +43,7 @@ func TestStoreSnapshotAndCurrentQueries(t *testing.T) {
 	require.Len(t, summary.SystemdServices, 1)
 	assert.Equal(t, "nginx.service", summary.SystemdServices[0].Name)
 
-	systemSummaryCapturedAt, systemSummary, err := store.SystemSummary()
+	systemSummaryCapturedAt, systemSummary, err := store.SystemSummary(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, capturedAt, systemSummaryCapturedAt)
 	assert.Equal(t, "host-a", systemSummary.Hostname)
@@ -52,53 +54,53 @@ func TestStoreSnapshotAndCurrentQueries(t *testing.T) {
 	assert.InDelta(t, 8.0, systemSummary.MemoryUsedGB, 0.0001)
 	assert.Equal(t, uint64(16*1024*1024*1024), systemSummary.MemoryBytes)
 
-	containersCapturedAt, containers, err := store.CurrentContainers()
+	containersCapturedAt, containers, err := store.CurrentContainers(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, capturedAt, containersCapturedAt)
 	require.Len(t, containers, 1)
 	assert.Equal(t, "nginx", containers[0].Image)
 
-	systemdCapturedAt, systemdItems, err := store.CurrentSystemd()
+	systemdCapturedAt, systemdItems, err := store.CurrentSystemd(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, capturedAt, systemdCapturedAt)
 	require.Len(t, systemdItems, 1)
 	assert.Equal(t, systemd.StatusActive, systemdItems[0].State)
 
-	processCapturedAt, processCount, err := store.CurrentProcessCount()
+	processCapturedAt, processCount, err := store.CurrentProcessCount(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, capturedAt, processCapturedAt)
 	assert.Equal(t, 2, processCount.Total)
 
-	processesCapturedAt, processes, err := store.CurrentProcesses()
+	processesCapturedAt, processes, err := store.CurrentProcesses(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, capturedAt, processesCapturedAt)
 	require.Len(t, processes, 1)
 	assert.Equal(t, int32(10), processes[0].PID)
 
-	programsCapturedAt, programs, err := store.CurrentPrograms()
+	programsCapturedAt, programs, err := store.CurrentPrograms(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, capturedAt, programsCapturedAt)
 	require.Len(t, programs, 1)
 	assert.Equal(t, "nginx", programs[0].Name)
 
-	connectionsCapturedAt, connections, err := store.CurrentConnections()
+	connectionsCapturedAt, connections, err := store.CurrentConnections(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, capturedAt, connectionsCapturedAt)
 	assert.Equal(t, 3, connections.Total)
 
-	irqCapturedAt, irq, err := store.CurrentIRQ()
+	irqCapturedAt, irq, err := store.CurrentIRQ(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, capturedAt, irqCapturedAt)
 	require.Len(t, irq, 1)
 	assert.Equal(t, uint64(42), irq[0].Total)
 
-	smartCapturedAt, smartItems, err := store.CurrentSmartDevices()
+	smartCapturedAt, smartItems, err := store.CurrentSmartDevices(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, capturedAt, smartCapturedAt)
 	require.Len(t, smartItems, 1)
 	assert.Equal(t, "/dev/sda", smartItems[0].Data.DiskName)
 
-	cpuCapturedAt, cpuRaw, err := store.CurrentPlugin(PluginCPU)
+	cpuCapturedAt, cpuRaw, err := store.CurrentPlugin(ctx, PluginCPU)
 	require.NoError(t, err)
 	assert.Equal(t, capturedAt, cpuCapturedAt)
 	assert.Contains(t, string(cpuRaw), `"cpu_percent":42`)
@@ -231,7 +233,7 @@ func TestStoreWritesHistoryOnlyForAllowlistedPlugins(t *testing.T) {
 	require.NoError(t, store.db.QueryRow("SELECT COUNT(1) FROM mem_history").Scan(&memRows))
 	assert.Zero(t, memRows)
 
-	_, err = store.PluginHistory(PluginMem, resolution1m, 0, capturedAt, 10)
+	_, err = store.PluginHistory(context.Background(), PluginMem, resolution1m, 0, capturedAt, 10)
 	assert.ErrorIs(t, err, sql.ErrNoRows)
 }
 
@@ -284,12 +286,12 @@ func TestStoreMaintenanceCreatesRollupsAndDeletesExpiredRows(t *testing.T) {
 
 	require.NoError(t, store.RunMaintenance(now))
 
-	rolled, err := store.SystemHistory(resolution10m, 0, now.UnixMilli(), 10)
+	rolled, err := store.SystemHistory(context.Background(), resolution10m, 0, now.UnixMilli(), 10)
 	require.NoError(t, err)
 	require.Len(t, rolled, 1)
 	assert.InDelta(t, 50.0, rolled[0].Stats.Cpu, 0.01)
 
-	current, err := store.SystemHistory(resolution1m, 0, now.UnixMilli(), 20)
+	current, err := store.SystemHistory(context.Background(), resolution1m, 0, now.UnixMilli(), 20)
 	require.NoError(t, err)
 	require.NotEmpty(t, current)
 	for _, item := range current {
@@ -321,13 +323,13 @@ func TestStoreConcurrentReadsDuringWriteSnapshot(t *testing.T) {
 	for range 4 {
 		wg.Go(func() {
 			for range 50 {
-				if _, _, readErr := store.CurrentPlugin(PluginCPU); readErr != nil {
+				if _, _, readErr := store.CurrentPlugin(context.Background(), PluginCPU); readErr != nil {
 					errs <- readErr
 				}
-				if _, _, readErr := store.SystemSummary(); readErr != nil {
+				if _, _, readErr := store.SystemSummary(context.Background()); readErr != nil {
 					errs <- readErr
 				}
-				if _, readErr := store.PluginHistory(PluginCPU, resolution1m, 0, time.Now().Add(time.Hour).UnixMilli(), 10); readErr != nil {
+				if _, readErr := store.PluginHistory(context.Background(), PluginCPU, resolution1m, 0, time.Now().Add(time.Hour).UnixMilli(), 10); readErr != nil {
 					errs <- readErr
 				}
 			}

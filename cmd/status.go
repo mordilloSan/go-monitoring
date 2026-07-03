@@ -1,6 +1,7 @@
-package main
+package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -19,7 +20,7 @@ type healthResponse struct {
 	AgeSeconds  float64 `json:"age_seconds"`
 }
 
-func printStatus(cfg config.Config) error {
+func printStatus(ctx context.Context, cfg config.Config) error {
 	baseURL, err := statusBaseURL(cfg.Listen)
 	if err != nil {
 		return err
@@ -27,12 +28,12 @@ func printStatus(cfg config.Config) error {
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	var health healthResponse
-	healthCode, err := getJSON(client, baseURL+"/healthz", &health)
+	healthCode, err := getJSON(ctx, client, baseURL+"/healthz", &health)
 	if err != nil {
 		return err
 	}
 	var meta apimodel.MetaResponse
-	metaCode, err := getJSON(client, baseURL+"/api/v1/meta", &meta)
+	metaCode, err := getJSON(ctx, client, baseURL+"/api/v1/meta", &meta)
 	if err != nil {
 		return err
 	}
@@ -57,8 +58,12 @@ func printStatus(cfg config.Config) error {
 	return nil
 }
 
-func getJSON(client *http.Client, url string, target any) (int, error) {
-	resp, err := client.Get(url)
+func getJSON(ctx context.Context, client *http.Client, url string, target any) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return 0, err
 	}

@@ -1,6 +1,8 @@
 package app
 
 import (
+	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -32,4 +34,22 @@ func TestLiveCacheTimeKeyAvoidsCollectorKey(t *testing.T) {
 	assert.Equal(t, defaultDataCacheTimeMs-1, liveCacheTimeKey(time.Minute))
 	assert.Equal(t, uint16(1000), liveCacheTimeKey(0))
 	assert.Equal(t, uint16(65_000), liveCacheTimeKey(2*time.Minute))
+}
+
+func TestCurrentPluginCanceledContextWinsOverCache(t *testing.T) {
+	agent := &App{
+		liveCache: map[string]liveCacheEntry{
+			store.PluginCPU: {
+				capturedAt: 123,
+				raw:        json.RawMessage(`{"cpu":1}`),
+				expiresAt:  time.Now().Add(time.Hour),
+			},
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, err := agent.CurrentPlugin(ctx, store.PluginCPU)
+
+	assert.ErrorIs(t, err, context.Canceled)
 }

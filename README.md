@@ -26,7 +26,8 @@ Upstream Beszel is MIT-licensed. This fork's combined work is distributed under 
 
 ## Layout
 
-- [cmd/go-monitoring/](cmd/go-monitoring/) — entrypoint (`main` package)
+- [main.go](main.go) — entrypoint (`main` package); only place that calls `os.Exit`
+- [cmd/](cmd/) — CLI commands, flag parsing, and the interactive config menu (`cmd` package)
 - [internal/app/](internal/app/) — app lifecycle, collection orchestration, and remaining local samplers/managers
 - [internal/api/http/](internal/api/http/) — REST API routes, handlers, request logging, and query parsing
 - [internal/api/model/](internal/api/model/) — REST API response contracts

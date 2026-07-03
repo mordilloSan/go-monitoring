@@ -17,11 +17,11 @@ import (
 func TestStartContextCreatesDatabaseAndServesAPI(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	a, err := New(tmpDir)
-	require.NoError(t, err)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	a, err := New(ctx, tmpDir)
+	require.NoError(t, err)
 
 	errCh := make(chan error, 1)
 	go func() {

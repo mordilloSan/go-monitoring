@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -77,12 +78,12 @@ func TestGetCpuMetricsUsesDefaultBaselineForNewCacheInterval(t *testing.T) {
 		60000: {User: 10, System: 5, Idle: 85},
 	}
 	lastPerCoreCpuTimes = map[uint16][]cpu.TimesStat{}
-	cpuTimes = func(percpu bool) ([]cpu.TimesStat, error) {
+	cpuTimes = func(_ context.Context, percpu bool) ([]cpu.TimesStat, error) {
 		require.False(t, percpu)
 		return []cpu.TimesStat{{User: 20, System: 10, Idle: 110}}, nil
 	}
 
-	metrics, err := getCpuMetrics(15000)
+	metrics, err := getCpuMetrics(context.Background(), 15000)
 
 	require.NoError(t, err)
 	assert.InDelta(t, 37.5, metrics.Total, 0.0001)
@@ -96,18 +97,18 @@ func TestGetCpuMetricsHandlesEmptySamplesAndErrors(t *testing.T) {
 	restoreCPUState(t)
 	lastCpuTimes = map[uint16]cpu.TimesStat{60000: {}}
 
-	cpuTimes = func(bool) ([]cpu.TimesStat, error) {
+	cpuTimes = func(context.Context, bool) ([]cpu.TimesStat, error) {
 		return nil, nil
 	}
-	metrics, err := getCpuMetrics(60000)
+	metrics, err := getCpuMetrics(context.Background(), 60000)
 	require.NoError(t, err)
 	assert.Equal(t, CpuMetrics{}, metrics)
 
 	expectedErr := errors.New("cpu unavailable")
-	cpuTimes = func(bool) ([]cpu.TimesStat, error) {
+	cpuTimes = func(context.Context, bool) ([]cpu.TimesStat, error) {
 		return nil, expectedErr
 	}
-	_, err = getCpuMetrics(60000)
+	_, err = getCpuMetrics(context.Background(), 60000)
 	assert.ErrorIs(t, err, expectedErr)
 }
 
@@ -120,7 +121,7 @@ func TestGetPerCoreCpuUsageUsesDefaultBaseline(t *testing.T) {
 			{User: 20, System: 0, Idle: 80},
 		},
 	}
-	cpuTimes = func(percpu bool) ([]cpu.TimesStat, error) {
+	cpuTimes = func(_ context.Context, percpu bool) ([]cpu.TimesStat, error) {
 		require.True(t, percpu)
 		return []cpu.TimesStat{
 			{User: 20, System: 0, Idle: 100},
@@ -128,7 +129,7 @@ func TestGetPerCoreCpuUsageUsesDefaultBaseline(t *testing.T) {
 		}, nil
 	}
 
-	usage, err := getPerCoreCpuUsage(15000)
+	usage, err := getPerCoreCpuUsage(context.Background(), 15000)
 
 	require.NoError(t, err)
 	assert.Equal(t, []uint8{50, 25}, []uint8(usage))

@@ -3,7 +3,7 @@
 .vscode/
 
 /agent
-/go-monitoring
+go-monitoring
 /dist/
 /data/
 /temp/

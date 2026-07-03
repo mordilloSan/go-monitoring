@@ -53,12 +53,6 @@ type ReloadOptions struct {
 	ConfigVersion     int
 }
 
-func (a *App) Start(opts RunOptions) error {
-	sigCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stopSignals()
-	return a.StartContext(sigCtx, opts)
-}
-
 func (a *App) StartContext(ctx context.Context, opts RunOptions) error {
 	if err := a.validateAndNormalizeOpts(&opts); err != nil {
 		return err
@@ -102,7 +96,7 @@ func (a *App) StartContext(ctx context.Context, opts RunOptions) error {
 		}
 	}()
 
-	if collectErr := a.collectAndPersist(time.Now().UTC()); collectErr != nil {
+	if collectErr := a.collectAndPersist(runCtx, time.Now().UTC()); collectErr != nil {
 		return collectErr
 	}
 
@@ -143,7 +137,7 @@ func (a *App) StartContext(ctx context.Context, opts RunOptions) error {
 
 	runErr := a.runEventLoop(runCtx, hupCh, serverErr, opts.ReloadConfig, collectorIntervalUpdates)
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	if err := a.httpRuntime.server.Shutdown(shutdownCtx); err != nil {
 		return err
@@ -254,20 +248,26 @@ func (a *App) runCollector(ctx context.Context, interval time.Duration, interval
 			}
 			ticker.Reset(nextInterval)
 		case tickTime := <-ticker.C:
-			if err := a.collectAndPersist(tickTime.UTC()); err != nil {
+			if err := a.collectAndPersist(ctx, tickTime.UTC()); err != nil {
 				slog.Error("collector tick failed", "err", err)
 			}
 		}
 	}
 }
 
-func (a *App) collectAndPersist(now time.Time) error {
-	data := a.gatherStats(common.DataRequestOptions{
+func (a *App) collectAndPersist(ctx context.Context, now time.Time) error {
+	data, err := a.gatherStats(ctx, common.DataRequestOptions{
 		CacheTimeMs:    defaultDataCacheTimeMs,
 		IncludeDetails: true,
 	})
+	if err != nil {
+		return err
+	}
 	capturedAt := now.UnixMilli()
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := a.store.WriteSnapshot(capturedAt, data); err != nil {
 		return err
 	}
@@ -277,7 +277,7 @@ func (a *App) collectAndPersist(now time.Time) error {
 
 	// SMART refresh failures are logged when the refresh state changes so
 	// persistent probe failures do not emit the same warning every cycle.
-	_ = a.refreshSmartIfDue(now)
+	_ = a.refreshSmartIfDue(ctx, now)
 	if err := a.store.RunMaintenance(now); err != nil {
 		return fmt.Errorf("maintenance failed: %w", err)
 	}
@@ -287,7 +287,7 @@ func (a *App) collectAndPersist(now time.Time) error {
 	return nil
 }
 
-func (a *App) refreshSmartIfDue(now time.Time) error {
+func (a *App) refreshSmartIfDue(ctx context.Context, now time.Time) error {
 	if a.smartManager == nil {
 		return nil
 	}
@@ -299,23 +299,29 @@ func (a *App) refreshSmartIfDue(now time.Time) error {
 		return nil
 	}
 
-	err := a.refreshSmart(now, false)
+	err := a.refreshSmart(ctx, now, false)
 	a.logSmartRefreshResult(err)
 	return err
 }
 
-func (a *App) RefreshSmartNow() error {
-	err := a.refreshSmart(time.Now().UTC(), true)
+func (a *App) RefreshSmartNow(ctx context.Context) error {
+	err := a.refreshSmart(ctx, time.Now().UTC(), true)
 	a.logSmartRefreshResult(err)
 	return err
 }
 
-func (a *App) refreshSmart(now time.Time, forceScan bool) error {
+func (a *App) refreshSmart(ctx context.Context, now time.Time, forceScan bool) error {
 	if a.smartManager == nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return a.store.WriteSmartDevices(now.UnixMilli(), map[string]smart.SmartData{})
 	}
 
-	if err := a.smartManager.Refresh(forceScan); err != nil {
+	if err := a.smartManager.Refresh(ctx, forceScan); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if err := a.store.WriteSmartDevices(now.UnixMilli(), a.smartManager.GetCurrentData()); err != nil {

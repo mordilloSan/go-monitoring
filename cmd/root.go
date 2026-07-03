@@ -1,8 +1,9 @@
-package main
+package cmd
 
 import (
+	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -48,11 +49,14 @@ type cmdOptions struct {
 	dbAction             string
 }
 
-func (opts *cmdOptions) parse() bool {
-	args := os.Args[1:]
+// parse fills opts from argv (argv[0] is the program name). It returns
+// done=true when the command was fully handled, along with the exit code.
+func (opts *cmdOptions) parse(argv []string) (bool, int) {
+	name := argv[0]
+	args := argv[1:]
 	if len(args) == 0 {
-		printUsage(os.Args[0])
-		return true
+		printUsage(name)
+		return true, 0
 	}
 
 	subcommand, commandFound := parseCommand(args[0])
@@ -60,19 +64,20 @@ func (opts *cmdOptions) parse() bool {
 		args = args[1:]
 	} else if !strings.HasPrefix(args[0], "-") {
 		fmt.Fprintf(os.Stderr, "Unknown command %q\n\n", args[0])
-		printUsage(os.Args[0])
-		return true
+		printUsage(name)
+		return true, 1
 	}
 
 	if subcommand == "health" {
 		if err := health.Check(); err != nil {
-			log.Fatal(err)
+			fmt.Fprintln(os.Stderr, err)
+			return true, 1
 		}
 		fmt.Print("ok")
-		return true
+		return true, 0
 	}
 
-	fs := pflag.NewFlagSet(os.Args[0], pflag.ContinueOnError)
+	fs := pflag.NewFlagSet(name, pflag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	opts.command = command(subcommand)
 	opts.cacheTTL = durationMapFlag{values: make(map[string]time.Duration)}
@@ -97,11 +102,11 @@ func (opts *cmdOptions) parse() bool {
 		fs.StringVar(&opts.dataDir, "data-dir", "", "Data directory containing metrics.db")
 		fs.BoolVar(&opts.dbForce, "force", false, "Confirm destructive database actions")
 	}
-	fs.Usage = func() { printUsage(os.Args[0]) }
+	fs.Usage = func() { printUsage(name) }
 
 	args = normalizeLegacyArgs(args)
 	if err := fs.Parse(args); err != nil {
-		return true
+		return true, 2
 	}
 	opts.listenSet = flagChanged(fs, "listen")
 	opts.collectorIntervalSet = flagChanged(fs, "collector-interval")
@@ -118,13 +123,13 @@ func (opts *cmdOptions) parse() bool {
 	switch {
 	case *version:
 		fmt.Println(buildinfo.RepoName+"-agent", buildinfo.Version)
-		return true
+		return true, 0
 	case *help || subcommand == "help":
 		fs.Usage()
-		return true
+		return true, 0
 	}
 
-	return false
+	return false, 0
 }
 
 func parseCommand(raw string) (string, bool) {
@@ -297,11 +302,11 @@ func loadEffectiveConfig(opts cmdOptions) (effectiveConfig, error) {
 func maybeSaveDefaultConfig(path string, cfg config.Config, source string) string {
 	created, err := config.SaveIfMissing(path, cfg)
 	if err != nil {
-		log.Printf("Failed to create default config at %s; using effective in-memory config: %v", path, err)
+		slog.Warn("failed to create default config; using effective in-memory config", "path", path, "error", err)
 		return source
 	}
 	if created {
-		log.Printf("Created default config: %s", path)
+		slog.Info("created default config", "path", path)
 		return "created"
 	}
 	return source
@@ -353,23 +358,23 @@ func handleConfigCommand(opts cmdOptions, cfg config.Config, loaded bool, config
 	return false, cfg, configSource, nil
 }
 
-func startAgent(opts cmdOptions, cfg config.Config, configSource string) {
-	log.Printf("Config ready path=%s source=%s version=%d collector_interval=%s history=%q cache_ttl_count=%d",
-		opts.configPath,
-		configSource,
-		cfg.Version,
-		cfg.CollectorInterval.Duration(),
-		cfg.History,
-		len(cfg.CacheTTL),
+func startAgent(ctx context.Context, opts cmdOptions, cfg config.Config, configSource string) error {
+	slog.Info("config ready",
+		"path", opts.configPath,
+		"source", configSource,
+		"version", cfg.Version,
+		"collector_interval", cfg.CollectorInterval.Duration(),
+		"history", cfg.History,
+		"cache_ttl_count", len(cfg.CacheTTL),
 	)
 
-	a, err := app.New()
+	a, err := app.New(ctx)
 	if err != nil {
-		log.Fatal("Failed to create agent: ", err)
+		return fmt.Errorf("failed to create agent: %w", err)
 	}
 	a.SetLiveCurrentTTLs(config.ToDurationMap(cfg.CacheTTL))
 
-	if err := a.Start(app.RunOptions{
+	if err := a.StartContext(ctx, app.RunOptions{
 		Addr:              app.GetAddress(cfg.Listen),
 		CollectorInterval: cfg.CollectorInterval.Duration(),
 		History:           cfg.History,
@@ -393,8 +398,9 @@ func startAgent(opts cmdOptions, cfg config.Config, configSource string) {
 			}, nil
 		},
 	}); err != nil {
-		log.Fatal("Failed to start standalone agent: ", err)
+		return fmt.Errorf("failed to start standalone agent: %w", err)
 	}
+	return nil
 }
 
 func resolveDataDir(path string) (string, error) {
@@ -509,25 +515,29 @@ func handleDBReset(dataDir string, force bool) error {
 	return nil
 }
 
-func main() {
+// Run executes the go-monitoring CLI and returns the process exit code.
+// os.Exit must only be called by main so deferred cleanup always runs.
+func Run(ctx context.Context, argv []string) int {
 	var opts cmdOptions
-	if opts.parse() {
-		return
+	if done, code := opts.parse(argv); done {
+		return code
 	}
 	if opts.command == commandConfig && opts.configAction == "path" {
 		fmt.Println(opts.configPath)
-		return
+		return 0
 	}
 	if opts.command == commandDB {
 		if err := handleDBCommand(opts); err != nil {
-			log.Fatal("Database command failed: ", err)
+			fmt.Fprintln(os.Stderr, "Database command failed:", err)
+			return 1
 		}
-		return
+		return 0
 	}
 
 	effective, err := loadEffectiveConfig(opts)
 	if err != nil {
-		log.Fatal("Invalid config: ", err)
+		fmt.Fprintln(os.Stderr, "Invalid config:", err)
+		return 1
 	}
 	cfg := effective.cfg
 	configSource := effective.source
@@ -539,21 +549,27 @@ func main() {
 	if opts.command == commandConfig {
 		run, updatedCfg, updatedSource, cmdErr := handleConfigCommand(opts, cfg, effective.loaded, configSource)
 		if cmdErr != nil {
-			log.Fatal(cmdErr)
+			fmt.Fprintln(os.Stderr, cmdErr)
+			return 1
 		}
 		if !run {
-			return
+			return 0
 		}
 		cfg = updatedCfg
 		configSource = updatedSource
 	}
 
 	if opts.command == commandStatus {
-		if err := printStatus(cfg); err != nil {
-			log.Fatal("Status check failed: ", err)
+		if err := printStatus(ctx, cfg); err != nil {
+			fmt.Fprintln(os.Stderr, "Status check failed:", err)
+			return 1
 		}
-		return
+		return 0
 	}
 
-	startAgent(opts, cfg, configSource)
+	if err := startAgent(ctx, opts, cfg, configSource); err != nil {
+		slog.Error("agent failed", "error", err)
+		return 1
+	}
+	return 0
 }

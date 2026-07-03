@@ -3,6 +3,7 @@
 package app
 
 import (
+	"context"
 	"log/slog"
 	"strings"
 	"sync"
@@ -51,7 +52,10 @@ type App struct {
 
 // New creates a new app with the given data directory for persisting data.
 // If the data directory is not set, it will attempt to find the optimal directory.
-func New(dataDir ...string) (app *App, err error) {
+func New(ctx context.Context, dataDir ...string) (app *App, err error) {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
 	app = &App{
 		systemInfoManager: newSystemInfoManager(),
 		cache:             NewSystemDataCache(),
@@ -80,20 +84,22 @@ func New(dataDir ...string) (app *App, err error) {
 	app.sensorConfig = app.newSensorConfig()
 
 	// initialize docker manager
-	app.dockerManager = dockerintegration.NewManager(func() {
+	app.dockerManager = dockerintegration.NewManager(ctx, func() {
 		app.systemInfoManager.updateSystemDetails(func(details *system.Details) {
 			details.Podman = true
 		})
 	})
 
 	// initialize system info
-	app.systemInfoManager.refreshSystemDetails(app.dockerManager)
+	app.systemInfoManager.refreshSystemDetails(ctx, app.dockerManager)
 
 	// initialize disk info
-	app.fsManager.initializeDiskInfo()
+	app.fsManager.initializeDiskInfo(ctx)
 
 	// initialize net io stats
-	app.networkManager.initializeNetIoStats()
+	app.networkManager.initializeNetIoStats(ctx)
+
+	initializeCpuMetrics(ctx)
 
 	app.systemdManager, err = newSystemdManager()
 	if err != nil {
@@ -143,72 +149,102 @@ func (app *App) configureLogging() {
 	}
 }
 
-func (a *App) gatherStats(options common.DataRequestOptions) *system.CombinedData {
+func (a *App) gatherStats(ctx context.Context, options common.DataRequestOptions) (*system.CombinedData, error) {
 	a.Lock()
 	defer a.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	cacheTimeMs := options.CacheTimeMs
 	data, isCached := a.cache.Get(cacheTimeMs)
 	if isCached {
 		slog.Debug("Cached data", "cacheTimeMs", cacheTimeMs)
-		return data
+		return data, nil
 	}
 
+	stats, err := a.getSystemStats(ctx, cacheTimeMs)
+	if err != nil {
+		return nil, err
+	}
 	*data = system.CombinedData{
-		Stats: a.getSystemStats(cacheTimeMs),
+		Stats: stats,
 		Info:  a.systemInfoManager.systemInfo,
 	}
 
 	// slog.Info("System data", "data", data, "cacheTimeMs", cacheTimeMs)
 
-	if a.dockerManager != nil {
-		if containerStats, err := a.dockerManager.GetStats(cacheTimeMs); err == nil {
-			data.Containers = containerStats
-			slog.Debug("Containers", "count", len(data.Containers))
-		} else {
-			slog.Debug("Containers", "err", err)
-		}
+	if err := a.attachContainerStats(ctx, cacheTimeMs, data); err != nil {
+		return nil, err
 	}
-
-	// skip updating systemd services if cache time is not the default 60sec interval
-	if a.systemdManager != nil && cacheTimeMs == defaultDataCacheTimeMs {
-		services := a.systemdManager.getServiceStats(a.systemdManager.context(), nil, false)
-		totalCount := uint16(len(services))
-		if totalCount > 0 {
-			numFailed := a.systemdManager.getFailedServiceCount()
-			data.Info.Services = []uint16{totalCount, numFailed}
-		}
-		data.SystemdServices = services
+	if err := a.attachDefaultIntervalStats(ctx, cacheTimeMs, data); err != nil {
+		return nil, err
 	}
-
-	if cacheTimeMs == defaultDataCacheTimeMs {
-		data.ProcessCount, data.Processes, data.Programs = a.processManager.collectProcessStats()
-		data.Connections = collectConnectionStats()
-		data.IRQs = collectIRQStats()
-	}
-
-	data.Stats.ExtraFs = make(map[string]*system.FsStats)
-	data.Info.ExtraFsPct = make(map[string]float64)
-	for name, stats := range a.fsManager.fsStats {
-		if !stats.Root && stats.DiskTotal > 0 {
-			// Use custom name if available, otherwise use device name
-			key := name
-			if stats.Name != "" {
-				key = stats.Name
-			}
-			data.Stats.ExtraFs[key] = stats
-			// Add percentages to Info struct for dashboard
-			if stats.DiskTotal > 0 {
-				pct := utils.TwoDecimals((stats.DiskUsed / stats.DiskTotal) * 100)
-				data.Info.ExtraFsPct[key] = pct
-			}
-		}
-	}
+	a.attachFilesystemStats(data)
 	slog.Debug("Extra FS", "count", len(data.Stats.ExtraFs))
 
 	a.cache.Set(cacheableStatsData(data), cacheTimeMs)
 
-	return a.systemInfoManager.attachSystemDetails(data, cacheTimeMs, options.IncludeDetails)
+	return a.systemInfoManager.attachSystemDetails(data, cacheTimeMs, options.IncludeDetails), nil
+}
+
+func (a *App) attachContainerStats(ctx context.Context, cacheTimeMs uint16, data *system.CombinedData) error {
+	if a.dockerManager == nil {
+		return nil
+	}
+	containerStats, err := a.dockerManager.GetStats(ctx, cacheTimeMs)
+	if err == nil {
+		data.Containers = containerStats
+		slog.Debug("Containers", "count", len(data.Containers))
+		return nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	slog.Debug("Containers", "err", err)
+	return nil
+}
+
+func (a *App) attachDefaultIntervalStats(ctx context.Context, cacheTimeMs uint16, data *system.CombinedData) error {
+	if cacheTimeMs != defaultDataCacheTimeMs {
+		return nil
+	}
+	if err := a.attachSystemdStats(ctx, data); err != nil {
+		return err
+	}
+	return a.attachCurrentDetailStats(ctx, data)
+}
+
+func (a *App) attachSystemdStats(ctx context.Context, data *system.CombinedData) error {
+	if a.systemdManager == nil {
+		return nil
+	}
+	services, err := a.systemdManager.getServiceStats(ctx, nil, false)
+	if err != nil {
+		return err
+	}
+	totalCount := uint16(len(services))
+	if totalCount > 0 {
+		numFailed := a.systemdManager.getFailedServiceCount()
+		data.Info.Services = []uint16{totalCount, numFailed}
+	}
+	data.SystemdServices = services
+	return nil
+}
+
+func (a *App) attachCurrentDetailStats(ctx context.Context, data *system.CombinedData) error {
+	var err error
+	data.ProcessCount, data.Processes, data.Programs, err = a.processManager.collectProcessStats(ctx)
+	if err != nil {
+		return err
+	}
+	data.Connections, err = collectConnectionStats(ctx)
+	if err != nil {
+		return err
+	}
+	data.IRQs, err = collectIRQStats(ctx)
+	return err
 }
 
 func cacheableStatsData(data *system.CombinedData) *system.CombinedData {

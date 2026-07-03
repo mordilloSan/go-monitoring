@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -115,27 +116,33 @@ func parseAPICacheTTL(name, raw string) (time.Duration, bool) {
 	return ttl, true
 }
 
-func (a *App) CurrentPlugin(plugin string) (int64, json.RawMessage, error) {
+func (a *App) CurrentPlugin(ctx context.Context, plugin string) (int64, json.RawMessage, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, nil, err
+	}
 	if !store.IsPluginName(plugin) {
 		return 0, nil, fmt.Errorf("unknown plugin %q", plugin)
 	}
 	switch plugin {
 	case store.PluginProcesses, store.PluginPrograms:
-		return a.currentProcessPlugin(plugin)
+		return a.currentProcessPlugin(ctx, plugin)
 	default:
-		return a.currentCachedRaw(plugin, a.liveTTL(plugin), func() (int64, json.RawMessage, error) {
-			return a.collectCurrentPlugin(plugin)
+		return a.currentCachedRaw(ctx, plugin, a.liveTTL(plugin), func() (int64, json.RawMessage, error) {
+			return a.collectCurrentPlugin(ctx, plugin)
 		})
 	}
 }
 
-func (a *App) SystemSummary() (int64, system.Summary, error) {
-	capturedAt, raw, err := a.currentCachedRaw(LiveSystemSummaryKey, a.liveTTL(LiveSystemSummaryKey), func() (int64, json.RawMessage, error) {
+func (a *App) SystemSummary(ctx context.Context) (int64, system.Summary, error) {
+	capturedAt, raw, err := a.currentCachedRaw(ctx, LiveSystemSummaryKey, a.liveTTL(LiveSystemSummaryKey), func() (int64, json.RawMessage, error) {
 		cacheKey := liveCacheTimeKey(a.liveTTL(LiveSystemSummaryKey))
-		data := a.collectLiveCurrentData(cacheKey, true, false)
-		capturedAt := time.Now().UTC().UnixMilli()
-		if _, err := a.cachePluginPayloads(data, capturedAt, false); err != nil {
+		data, err := a.collectLiveCurrentData(ctx, cacheKey, true, false)
+		if err != nil {
 			return 0, nil, err
+		}
+		capturedAt := time.Now().UTC().UnixMilli()
+		if _, cacheErr := a.cachePluginPayloads(data, capturedAt, false); cacheErr != nil {
+			return 0, nil, cacheErr
 		}
 		summary := system.NewSummary(data)
 		raw, err := json.Marshal(summary)
@@ -154,33 +161,54 @@ func (a *App) SystemSummary() (int64, system.Summary, error) {
 	return capturedAt, summary, nil
 }
 
-func (a *App) collectCurrentPlugin(plugin string) (int64, json.RawMessage, error) {
+func (a *App) collectCurrentPlugin(ctx context.Context, plugin string) (int64, json.RawMessage, error) {
 	switch plugin {
 	case store.PluginConnections:
-		return marshalCurrentPlugin(collectConnectionStats())
+		stats, err := collectConnectionStats(ctx)
+		if err != nil {
+			return 0, nil, err
+		}
+		return marshalCurrentPlugin(stats)
 	case store.PluginIRQ:
-		return marshalCurrentPlugin(collectIRQStats())
+		stats, err := collectIRQStats(ctx)
+		if err != nil {
+			return 0, nil, err
+		}
+		return marshalCurrentPlugin(stats)
 	case store.PluginSystemd:
 		if a.systemdManager == nil {
 			return marshalCurrentPlugin([]any{})
 		}
-		return marshalCurrentPlugin(a.systemdManager.getServiceStats(a.systemdManager.context(), nil, true))
+		services, err := a.systemdManager.getServiceStats(ctx, nil, true)
+		if err != nil {
+			return 0, nil, err
+		}
+		return marshalCurrentPlugin(services)
 	case store.PluginSmart:
+		if err := ctx.Err(); err != nil {
+			return 0, nil, err
+		}
 		return marshalCurrentPlugin(a.currentSmartRecords())
 	}
 
 	cacheKey := liveCacheTimeKey(a.liveTTL(plugin))
-	return a.collectSystemPlugin(plugin, cacheKey, plugin == store.PluginContainers)
+	return a.collectSystemPlugin(ctx, plugin, cacheKey, plugin == store.PluginContainers)
 }
 
-func (a *App) currentProcessPlugin(plugin string) (int64, json.RawMessage, error) {
+func (a *App) currentProcessPlugin(ctx context.Context, plugin string) (int64, json.RawMessage, error) {
 	if capturedAt, raw, ok := a.getLiveCache(plugin); ok {
 		return capturedAt, raw, nil
 	}
+	if err := ctx.Err(); err != nil {
+		return 0, nil, err
+	}
 
 	a.Lock()
-	count, processes, programs := a.processManager.collectProcessStats()
+	count, processes, programs, err := a.processManager.collectProcessStats(ctx)
 	a.Unlock()
+	if err != nil {
+		return 0, nil, err
+	}
 
 	capturedAt := time.Now().UTC().UnixMilli()
 	processRaw, err := json.Marshal(store.ProcessesData{Count: count, Items: processes})
@@ -200,17 +228,23 @@ func (a *App) currentProcessPlugin(plugin string) (int64, json.RawMessage, error
 	return capturedAt, json.RawMessage(append([]byte(nil), processRaw...)), nil
 }
 
-func (a *App) collectLiveCurrentData(cacheKey uint16, includeDetails, includeContainers bool) *system.CombinedData {
+func (a *App) collectLiveCurrentData(ctx context.Context, cacheKey uint16, includeDetails, includeContainers bool) (*system.CombinedData, error) {
 	a.Lock()
 	defer a.Unlock()
 
+	stats, err := a.getSystemStats(ctx, cacheKey)
+	if err != nil {
+		return nil, err
+	}
 	data := &system.CombinedData{
-		Stats: a.getSystemStats(cacheKey),
+		Stats: stats,
 		Info:  a.systemInfoManager.systemInfo,
 	}
 	if includeContainers && a.dockerManager != nil {
-		if containerStats, err := a.dockerManager.GetStats(cacheKey); err == nil {
+		if containerStats, err := a.dockerManager.GetStats(ctx, cacheKey); err == nil {
 			data.Containers = containerStats
+		} else if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
 		} else {
 			slog.Debug("Containers", "err", err)
 		}
@@ -220,11 +254,14 @@ func (a *App) collectLiveCurrentData(cacheKey uint16, includeDetails, includeCon
 		details := a.systemInfoManager.systemDetails
 		data.Details = &details
 	}
-	return data
+	return data, nil
 }
 
-func (a *App) collectSystemPlugin(plugin string, cacheKey uint16, includeContainers bool) (int64, json.RawMessage, error) {
-	data := a.collectLiveCurrentData(cacheKey, false, includeContainers)
+func (a *App) collectSystemPlugin(ctx context.Context, plugin string, cacheKey uint16, includeContainers bool) (int64, json.RawMessage, error) {
+	data, err := a.collectLiveCurrentData(ctx, cacheKey, false, includeContainers)
+	if err != nil {
+		return 0, nil, err
+	}
 	capturedAt := time.Now().UTC().UnixMilli()
 	payloads, err := a.cachePluginPayloads(data, capturedAt, includeContainers)
 	if err != nil {
@@ -303,7 +340,10 @@ func marshalCurrentPlugin(payload any) (int64, json.RawMessage, error) {
 	return time.Now().UTC().UnixMilli(), raw, nil
 }
 
-func (a *App) currentCachedRaw(key string, ttl time.Duration, collect func() (int64, json.RawMessage, error)) (int64, json.RawMessage, error) {
+func (a *App) currentCachedRaw(ctx context.Context, key string, ttl time.Duration, collect func() (int64, json.RawMessage, error)) (int64, json.RawMessage, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, nil, err
+	}
 	if capturedAt, raw, ok := a.getLiveCache(key); ok {
 		return capturedAt, raw, nil
 	}

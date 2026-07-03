@@ -17,7 +17,7 @@ GO_VERSION ?= $(shell awk '/^go / {print $$2; exit}' "$(BACKEND_DIR)/go.mod")
 GO_TOOLS_DIR ?= $(HOME)/.go
 GO_INSTALL_DIR ?= $(GO_TOOLS_DIR)
 GOLANGCI_LINT_OPTS ?= --modules-download-mode=mod
-AGENT_PKG    := ./cmd/go-monitoring
+AGENT_PKG    := .
 BUILD_OUTPUT  = $(REPO_ROOT)/go-monitoring
 VERSION_PKG  := github.com/mordilloSan/go-monitoring/internal/version
 GIT_VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "untracked")

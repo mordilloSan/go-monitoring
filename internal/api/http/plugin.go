@@ -18,7 +18,7 @@ type Plugin interface {
 
 type RefreshablePlugin interface {
 	Plugin
-	Refresh() error
+	Refresh(context.Context) error
 }
 
 type Registry struct {
@@ -236,12 +236,13 @@ func (r *Registry) handleRefresh(w http.ResponseWriter, req *http.Request) {
 		http.NotFound(w, req)
 		return
 	}
-	if err := refreshable.Refresh(); err != nil {
-		writeInternalError(w, err)
-		return
-	}
 	ctx, cancel := requestContext(req)
 	defer cancel()
+
+	if err := refreshable.Refresh(ctx); err != nil {
+		writeStoreError(w, err)
+		return
+	}
 
 	current, err := plugin.Current(ctx)
 	if err != nil {
@@ -281,17 +282,12 @@ func (p currentPlugin) Current(ctx context.Context) (any, error) {
 	}
 }
 
-func (p refreshCurrentPlugin) Refresh() error {
-	return p.refresher.RefreshSmartNow()
+func (p refreshCurrentPlugin) Refresh(ctx context.Context) error {
+	return p.refresher.RefreshSmartNow(ctx)
 }
 
 func (p currentPlugin) currentRaw(ctx context.Context) (int64, json.RawMessage, error) {
-	if reader, ok := p.current.(interface {
-		CurrentPluginContext(context.Context, string) (int64, json.RawMessage, error)
-	}); ok {
-		return reader.CurrentPluginContext(ctx, p.name)
-	}
-	return p.current.CurrentPlugin(p.name)
+	return p.current.CurrentPlugin(ctx, p.name)
 }
 
 func (p currentPlugin) history(ctx context.Context, resolution string, from, to int64, limit int) (any, error) {
@@ -299,13 +295,7 @@ func (p currentPlugin) history(ctx context.Context, resolution string, from, to 
 		records []store.HistoryRecord[json.RawMessage]
 		err     error
 	)
-	if reader, ok := p.historyReader.(interface {
-		PluginHistoryContext(context.Context, string, string, int64, int64, int) ([]store.HistoryRecord[json.RawMessage], error)
-	}); ok {
-		records, err = reader.PluginHistoryContext(ctx, p.name, resolution, from, to, limit)
-	} else {
-		records, err = p.historyReader.PluginHistory(p.name, resolution, from, to, limit)
-	}
+	records, err = p.historyReader.PluginHistory(ctx, p.name, resolution, from, to, limit)
 	if err != nil {
 		return nil, err
 	}
