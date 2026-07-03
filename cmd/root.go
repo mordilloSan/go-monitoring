@@ -13,6 +13,7 @@ import (
 	"github.com/mordilloSan/go-monitoring/internal/app"
 	"github.com/mordilloSan/go-monitoring/internal/config"
 	"github.com/mordilloSan/go-monitoring/internal/health"
+	"github.com/mordilloSan/go-monitoring/internal/logging"
 	"github.com/mordilloSan/go-monitoring/internal/store"
 	"github.com/mordilloSan/go-monitoring/internal/utils"
 	buildinfo "github.com/mordilloSan/go-monitoring/internal/version"
@@ -522,6 +523,7 @@ func Run(ctx context.Context, argv []string) int {
 	if done, code := opts.parse(argv); done {
 		return code
 	}
+	logging.Configure("go-monitoring")
 	if opts.command == commandConfig && opts.configAction == "path" {
 		fmt.Println(opts.configPath)
 		return 0

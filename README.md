@@ -34,6 +34,7 @@ Upstream Beszel is MIT-licensed. This fork's combined work is distributed under 
 - [internal/integration/docker/](internal/integration/docker/) — Docker/Podman integration
 - [internal/integration/docker/dockerapi/](internal/integration/docker/dockerapi/) — Docker Engine API wire DTOs
 - [internal/domain/](internal/domain/) — shared domain data types (system, container, smart, systemd)
+- [internal/logging/](internal/logging/) — slog setup: native journald handler under systemd, text on stderr otherwise
 - [internal/store/](internal/store/) — SQLite persistence, history, and rollups
 - [internal/health/](internal/health/) — freshness check used by `go-monitoring health`
 - [internal/version/](internal/version/) — version/app metadata

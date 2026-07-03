@@ -13,6 +13,7 @@ import (
 	"github.com/mordilloSan/go-monitoring/internal/common"
 	"github.com/mordilloSan/go-monitoring/internal/domain/system"
 	dockerintegration "github.com/mordilloSan/go-monitoring/internal/integration/docker"
+	"github.com/mordilloSan/go-monitoring/internal/logging"
 	"github.com/mordilloSan/go-monitoring/internal/store"
 	"github.com/mordilloSan/go-monitoring/internal/utils"
 	"github.com/mordilloSan/go-monitoring/internal/version"
@@ -140,11 +141,11 @@ func (app *App) configureLogging() {
 		switch strings.ToLower(logLevelStr) {
 		case "debug":
 			app.debug = true
-			slog.SetLogLoggerLevel(slog.LevelDebug)
+			logging.SetLevel(slog.LevelDebug)
 		case "warn":
-			slog.SetLogLoggerLevel(slog.LevelWarn)
+			logging.SetLevel(slog.LevelWarn)
 		case "error":
-			slog.SetLogLoggerLevel(slog.LevelError)
+			logging.SetLevel(slog.LevelError)
 		}
 	}
 }
