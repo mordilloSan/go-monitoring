@@ -241,28 +241,13 @@ test: check-backend
 
 build:
 	@set -euo pipefail; \
-	target="$(OS)/$(ARCH)"; \
-	if [ -n "$(GOAMD64_ENV)" ]; then target="$$target $(GOAMD64_ENV)"; fi; \
-	tags="$(AGENT_GO_TAGS)"; \
-	if [ -z "$$tags" ]; then tags="none"; fi; \
-	commit="$(GIT_COMMIT)"; \
-	if [ -z "$$commit" ]; then commit="unknown"; fi; \
-	echo "Building $(AGENT_PKG)"; \
-	echo "  target:  $$target"; \
-	echo "  tags:    $$tags"; \
-	echo "  version: $(GIT_VERSION)"; \
-	echo "  commit:  $$commit"; \
-	echo "  output:  $(BUILD_OUTPUT)"; \
 	( cd "$(BACKEND_DIR)" && GOOS=$(OS) GOARCH=$(ARCH) $(GOAMD64_ENV) $(GO_CMD_ENV) "$(GO_BIN)" build $(AGENT_GO_TAGS) -o "$(BUILD_OUTPUT)" -ldflags "$(LDFLAGS)" $(AGENT_PKG) ); \
 	size_bytes="$$(stat -c '%s' "$(BUILD_OUTPUT)")"; \
 	size_human="$$(numfmt --to=iec --suffix=B "$$size_bytes" 2>/dev/null || printf '%s bytes' "$$size_bytes")"; \
-	mode="$$(stat -c '%A' "$(BUILD_OUTPUT)")"; \
-	modified="$$(stat -c '%y' "$(BUILD_OUTPUT)" | cut -d. -f1)"; \
 	sha256="$$(sha256sum "$(BUILD_OUTPUT)" | awk '{print $$1}')"; \
 	echo "Built $(BUILD_OUTPUT)"; \
+	echo "  version: $(GIT_VERSION)"; \
 	echo "  size:    $$size_human ($$size_bytes bytes)"; \
-	echo "  mode:    $$mode"; \
-	echo "  mtime:   $$modified"; \
 	echo "  sha256:  $$sha256"
 
 # Standard GNU-style install: `sudo make install` puts the binary on PATH at
