@@ -194,11 +194,11 @@ At startup the agent logs which GPU collectors were discovered and which ones we
 
 The Debian package installs
 [packaging/systemd/go-monitoring.service](packaging/systemd/go-monitoring.service).
-The source tree also keeps a manual sample at
-[contrib/systemd/go-monitoring.service](contrib/systemd/go-monitoring.service).
-Both pin `CONFIG_FILE=/etc/go-monitoring/config.json` and
-`DATA_DIR=/var/lib/go-monitoring` and include conservative hardening. They
-intentionally avoid stronger sandboxing such as `PrivateDevices`, `ProtectProc`,
+If you built from source and installed the binary to `/usr/local/bin`, copy
+that unit and change `ExecStart` accordingly. The unit runs as root, pins
+`CONFIG_FILE=/etc/go-monitoring/config.json` and
+`DATA_DIR=/var/lib/go-monitoring`, and includes conservative hardening. It
+intentionally avoids stronger sandboxing such as `PrivateDevices`, `ProtectProc`,
 `PrivateNetwork`, and a tight capability bounding set because host metrics,
 Docker/DBus, SMART, and GPU collectors may need host `/proc`, `/sys`, sockets,
 and devices.
