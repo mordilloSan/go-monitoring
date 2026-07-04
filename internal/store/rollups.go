@@ -163,6 +163,10 @@ func averageSystemStatsJSON(items []string) (*system.Stats, error) {
 		sum.MemZfsArc += temp.MemZfsArc
 		sum.Swap += temp.Swap
 		sum.SwapUsed += temp.SwapUsed
+		sum.SwapPct += temp.SwapPct
+		sum.MemAvailable += temp.MemAvailable
+		sum.MemCached += temp.MemCached
+		sum.MemBuffers += temp.MemBuffers
 		sum.DiskTotal += temp.DiskTotal
 		sum.DiskUsed += temp.DiskUsed
 		sum.DiskPct += temp.DiskPct
@@ -287,6 +291,10 @@ func averageSystemStatsJSON(items []string) (*system.Stats, error) {
 		sum.MemZfsArc = utils.TwoDecimals(sum.MemZfsArc / count)
 		sum.Swap = utils.TwoDecimals(sum.Swap / count)
 		sum.SwapUsed = utils.TwoDecimals(sum.SwapUsed / count)
+		sum.SwapPct = utils.TwoDecimals(sum.SwapPct / count)
+		sum.MemAvailable = utils.TwoDecimals(sum.MemAvailable / count)
+		sum.MemCached = utils.TwoDecimals(sum.MemCached / count)
+		sum.MemBuffers = utils.TwoDecimals(sum.MemBuffers / count)
 		sum.DiskTotal = utils.TwoDecimals(sum.DiskTotal / count)
 		sum.DiskUsed = utils.TwoDecimals(sum.DiskUsed / count)
 		sum.DiskPct = utils.TwoDecimals(sum.DiskPct / count)
