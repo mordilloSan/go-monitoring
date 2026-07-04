@@ -186,7 +186,7 @@ sudo systemctl start go-monitoring.service
 Environment variables:
 
 - `CONFIG_FILE` — config file path
-- `HISTORY` — comma-separated history plugin allowlist, or `all` / `none` (`cpu,mem,diskio,network,containers` by default)
+- `HISTORY` — comma-separated history plugin allowlist, or `all` / `none` (`cpu,mem,swap,diskio,network,containers` by default)
 - `MEM_CALC` — memory calculation formula
 - `DISK_USAGE_CACHE` — cache duration for disk-usage polling (e.g. `15m`) to avoid waking sleeping disks
 - `LOG_LEVEL` — set to `debug` for verbose logs
@@ -311,7 +311,7 @@ Returns agent, database, listener, config, and retention metadata:
     "source": "loaded",
     "version": 1,
     "collector_interval": "15s",
-    "history_plugins": ["cpu", "mem", "diskio", "network", "containers"],
+    "history_plugins": ["cpu", "mem", "swap", "diskio", "network", "containers"],
     "cache_ttl": {
       "cpu": "2s",
       "containers": "5s"
@@ -411,7 +411,7 @@ Response:
 }
 ```
 
-Default history plugins are `cpu`, `mem`, `diskio`, `network`, and
+Default history plugins are `cpu`, `mem`, `swap`, `diskio`, `network`, and
 `containers`. Change them with `history` in config, `--history`, or the config
 API. Plugins without enabled history return HTTP `404` for history routes.
 
@@ -482,7 +482,7 @@ Commands:
 ```json
 {
   "collector_interval": "30s",
-  "history": "cpu,mem,diskio,network,containers",
+  "history": "cpu,mem,swap,diskio,network,containers",
   "cache_ttl": {
     "cpu": "2s",
     "containers": "5s",

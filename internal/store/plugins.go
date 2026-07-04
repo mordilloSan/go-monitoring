@@ -54,6 +54,7 @@ var pluginNames = []string{
 var defaultHistoryPluginNames = []string{
 	PluginCPU,
 	PluginMem,
+	PluginSwap,
 	PluginDiskIO,
 	PluginNetwork,
 	PluginContainers,

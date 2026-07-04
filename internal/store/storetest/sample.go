@@ -19,6 +19,8 @@ func SampleCombinedData(cpu float64) *system.CombinedData {
 			Mem:       16,
 			MemUsed:   8,
 			MemPct:    50,
+			Swap:      cpu / 10,
+			SwapUsed:  cpu / 20,
 			DiskTotal: 100,
 			DiskUsed:  40,
 			DiskPct:   40,

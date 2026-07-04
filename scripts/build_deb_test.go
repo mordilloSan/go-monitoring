@@ -66,7 +66,7 @@ cat > "$config_file" <<'JSON'
 	  ],
 	  "collector_interval": "15s",
 	  "smart_refresh_interval": "1h",
-	  "history": "cpu,mem,diskio,network,containers",
+	  "history": "cpu,mem,swap,diskio,network,containers",
 	  "cache_ttl": {}
 	}
 JSON
