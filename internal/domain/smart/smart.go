@@ -322,19 +322,10 @@ type TemperatureInfoScsi struct {
 // 	LocalTime        LocalTime    `json:"local_time"`
 // }
 
-type SmartctlInfoLegacy struct {
-	Version      VersionInfo `json:"version"`
-	SvnRevision  string      `json:"svn_revision"`
-	PlatformInfo string      `json:"platform_info"`
-	BuildInfo    string      `json:"build_info"`
-	Argv         []string    `json:"argv"`
-	ExitStatus   int         `json:"exit_status"`
-}
-
 type SmartInfoForSata struct {
 	// JSONFormatVersion VersionInfo        `json:"json_format_version"`
-	Smartctl SmartctlInfoLegacy `json:"smartctl"`
-	Device   DeviceInfo         `json:"device"`
+	Smartctl SmartctlInfo `json:"smartctl"`
+	Device   DeviceInfo   `json:"device"`
 	// ModelFamily  string             `json:"model_family"`
 	ModelName    string `json:"model_name"`
 	SerialNumber string `json:"serial_number"`
@@ -397,7 +388,7 @@ type PowerOnTimeScsi struct {
 }
 
 type SmartInfoForScsi struct {
-	Smartctl                  SmartctlInfoLegacy        `json:"smartctl"`
+	Smartctl                  SmartctlInfo              `json:"smartctl"`
 	Device                    DeviceInfo                `json:"device"`
 	ScsiVendor                string                    `json:"scsi_vendor"`
 	ScsiProduct               string                    `json:"scsi_product"`

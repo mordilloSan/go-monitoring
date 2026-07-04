@@ -25,7 +25,6 @@ func newLiveCurrentTestApp() *App {
 		},
 		systemInfoManager: &systemInfoManager{
 			systemInfo: system.Info{
-				Hostname:     "live-host",
 				AgentVersion: "test-agent",
 				Threads:      2,
 			},

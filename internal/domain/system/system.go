@@ -30,18 +30,11 @@ type Stats struct {
 	DiskWritePs    float64             `json:"disk_write_mb_per_second,omitzero" cbor:"13,keyasint,omitzero"`
 	MaxDiskReadPs  float64             `json:"max_disk_read_mb_per_second,omitempty" cbor:"-"`
 	MaxDiskWritePs float64             `json:"max_disk_write_mb_per_second,omitempty" cbor:"-"`
-	NetworkSent    float64             `json:"network_sent_mb_per_second,omitzero" cbor:"16,keyasint,omitzero"`
-	NetworkRecv    float64             `json:"network_recv_mb_per_second,omitzero" cbor:"17,keyasint,omitzero"`
-	MaxNetworkSent float64             `json:"max_network_sent_mb_per_second,omitempty" cbor:"-"`
-	MaxNetworkRecv float64             `json:"max_network_recv_mb_per_second,omitempty" cbor:"-"`
 	Temperatures   map[string]float64  `json:"temperatures,omitempty" cbor:"20,keyasint,omitempty"`
 	ExtraFs        map[string]*FsStats `json:"extra_filesystems,omitempty" cbor:"21,keyasint,omitempty"`
 	GPUData        map[string]GPUData  `json:"gpus,omitempty" cbor:"22,keyasint,omitempty"`
-	// LoadAvg1       float64             `json:"l1,omitempty" cbor:"23,keyasint,omitempty"`
-	// LoadAvg5       float64             `json:"l5,omitempty" cbor:"24,keyasint,omitempty"`
-	// LoadAvg15      float64             `json:"l15,omitempty" cbor:"25,keyasint,omitempty"`
-	Bandwidth    [2]uint64 `json:"bandwidth_bytes_per_second,omitzero" cbor:"26,keyasint,omitzero"` // [sent bytes, recv bytes]
-	MaxBandwidth [2]uint64 `json:"max_bandwidth_bytes_per_second,omitzero" cbor:"-"`                // [sent bytes, recv bytes]
+	Bandwidth      [2]uint64           `json:"bandwidth_bytes_per_second,omitzero" cbor:"26,keyasint,omitzero"` // [sent bytes, recv bytes]
+	MaxBandwidth   [2]uint64           `json:"max_bandwidth_bytes_per_second,omitzero" cbor:"-"`                // [sent bytes, recv bytes]
 	// TODO: remove other load fields in future release in favor of load avg array
 	LoadAvg           [3]float64           `json:"load_average,omitempty" cbor:"28,keyasint"`
 	Battery           [2]uint8             `json:"battery,omitzero" cbor:"29,keyasint,omitzero"`                  // [percent, charge state, current]

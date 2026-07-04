@@ -22,7 +22,7 @@ func TestGatherStatsDoesNotAttachDetailsToCachedRequests(t *testing.T) {
 		},
 	}
 	cached := &system.CombinedData{
-		Info: system.Info{Hostname: "cached-host"},
+		Info: system.Info{Threads: 7},
 	}
 	agent.cache.Set(cached, defaultDataCacheTimeMs)
 
@@ -32,7 +32,7 @@ func TestGatherStatsDoesNotAttachDetailsToCachedRequests(t *testing.T) {
 	assert.Same(t, cached, response)
 	assert.Nil(t, response.Details)
 	assert.True(t, agent.systemInfoManager.detailsDirty)
-	assert.Equal(t, "cached-host", response.Info.Hostname)
+	assert.Equal(t, 7, response.Info.Threads)
 	assert.Nil(t, cached.Details)
 
 	secondResponse, err := agent.gatherStats(context.Background(), common.DataRequestOptions{CacheTimeMs: defaultDataCacheTimeMs})

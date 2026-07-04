@@ -168,8 +168,6 @@ func averageSystemStatsJSON(items []string) (*system.Stats, error) {
 		sum.DiskPct += temp.DiskPct
 		sum.DiskReadPs += temp.DiskReadPs
 		sum.DiskWritePs += temp.DiskWritePs
-		sum.NetworkSent += temp.NetworkSent
-		sum.NetworkRecv += temp.NetworkRecv
 		sum.LoadAvg[0] += temp.LoadAvg[0]
 		sum.LoadAvg[1] += temp.LoadAvg[1]
 		sum.LoadAvg[2] += temp.LoadAvg[2]
@@ -194,8 +192,6 @@ func averageSystemStatsJSON(items []string) (*system.Stats, error) {
 
 		sum.MaxCpu = max(sum.MaxCpu, temp.MaxCpu, temp.Cpu)
 		sum.MaxMem = max(sum.MaxMem, temp.MaxMem, temp.MemUsed)
-		sum.MaxNetworkSent = max(sum.MaxNetworkSent, temp.MaxNetworkSent, temp.NetworkSent)
-		sum.MaxNetworkRecv = max(sum.MaxNetworkRecv, temp.MaxNetworkRecv, temp.NetworkRecv)
 		sum.MaxDiskReadPs = max(sum.MaxDiskReadPs, temp.MaxDiskReadPs, temp.DiskReadPs)
 		sum.MaxDiskWritePs = max(sum.MaxDiskWritePs, temp.MaxDiskWritePs, temp.DiskWritePs)
 		sum.MaxBandwidth[0] = max(sum.MaxBandwidth[0], temp.MaxBandwidth[0], temp.Bandwidth[0])
@@ -301,8 +297,6 @@ func averageSystemStatsJSON(items []string) (*system.Stats, error) {
 		for i := range sum.DiskIoStats {
 			sum.DiskIoStats[i] = utils.TwoDecimals(sum.DiskIoStats[i] / count)
 		}
-		sum.NetworkSent = utils.TwoDecimals(sum.NetworkSent / count)
-		sum.NetworkRecv = utils.TwoDecimals(sum.NetworkRecv / count)
 		sum.LoadAvg[0] = utils.TwoDecimals(sum.LoadAvg[0] / count)
 		sum.LoadAvg[1] = utils.TwoDecimals(sum.LoadAvg[1] / count)
 		sum.LoadAvg[2] = utils.TwoDecimals(sum.LoadAvg[2] / count)
@@ -396,14 +390,8 @@ func averageContainerStatsJSON(items []string) ([]container.Stats, error) {
 			sums[stat.Name].Cpu += stat.Cpu
 			sums[stat.Name].Mem += stat.Mem
 
-			sentBytes := stat.Bandwidth[0]
-			recvBytes := stat.Bandwidth[1]
-			if sentBytes == 0 && recvBytes == 0 && (stat.NetworkSent != 0 || stat.NetworkRecv != 0) {
-				sentBytes = uint64(stat.NetworkSent * 1024 * 1024)
-				recvBytes = uint64(stat.NetworkRecv * 1024 * 1024)
-			}
-			sums[stat.Name].Bandwidth[0] += sentBytes
-			sums[stat.Name].Bandwidth[1] += recvBytes
+			sums[stat.Name].Bandwidth[0] += stat.Bandwidth[0]
+			sums[stat.Name].Bandwidth[1] += stat.Bandwidth[1]
 		}
 	}
 

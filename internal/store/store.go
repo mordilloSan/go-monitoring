@@ -79,17 +79,15 @@ type SmartDeviceRecord struct {
 }
 
 type containerCurrentRecord struct {
-	ID          string                 `json:"id"`
-	Name        string                 `json:"name"`
-	Image       string                 `json:"image,omitempty"`
-	Ports       string                 `json:"ports,omitempty"`
-	Status      string                 `json:"status,omitempty"`
-	Health      container.DockerHealth `json:"health,omitempty"`
-	Cpu         float64                `json:"cpu_percent"`
-	Mem         float64                `json:"memory_mb"`
-	NetworkSent float64                `json:"network_sent_mb,omitempty,omitzero"`
-	NetworkRecv float64                `json:"network_recv_mb,omitempty,omitzero"`
-	Bandwidth   [2]uint64              `json:"bandwidth_bytes,omitempty,omitzero"`
+	ID        string                 `json:"id"`
+	Name      string                 `json:"name"`
+	Image     string                 `json:"image,omitempty"`
+	Ports     string                 `json:"ports,omitempty"`
+	Status    string                 `json:"status,omitempty"`
+	Health    container.DockerHealth `json:"health,omitempty"`
+	Cpu       float64                `json:"cpu_percent"`
+	Mem       float64                `json:"memory_mb"`
+	Bandwidth [2]uint64              `json:"bandwidth_bytes,omitempty,omitzero"`
 }
 
 type Options struct {
@@ -609,17 +607,15 @@ func (s *Store) currentContainerStats(ctx context.Context) ([]*container.Stats, 
 	items := make([]*container.Stats, 0, len(currentItems))
 	for _, current := range currentItems {
 		items = append(items, &container.Stats{
-			Id:          current.ID,
-			Name:        current.Name,
-			Image:       current.Image,
-			Ports:       current.Ports,
-			Status:      current.Status,
-			Health:      current.Health,
-			Cpu:         current.Cpu,
-			Mem:         current.Mem,
-			NetworkSent: current.NetworkSent,
-			NetworkRecv: current.NetworkRecv,
-			Bandwidth:   current.Bandwidth,
+			Id:        current.ID,
+			Name:      current.Name,
+			Image:     current.Image,
+			Ports:     current.Ports,
+			Status:    current.Status,
+			Health:    current.Health,
+			Cpu:       current.Cpu,
+			Mem:       current.Mem,
+			Bandwidth: current.Bandwidth,
 		})
 	}
 	return items, nil

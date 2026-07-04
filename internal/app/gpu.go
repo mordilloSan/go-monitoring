@@ -726,7 +726,7 @@ func (gm *GPUManager) collectorDefinitions(ctx context.Context, caps gpuCapabili
 		collectorSourceRocmSMI: {
 			group:              collectorGroupAmd,
 			available:          caps.hasRocmSmi,
-			deprecationWarning: "rocm-smi is deprecated and may be removed in a future release",
+			deprecationWarning: "rocm-smi may be removed in a future release",
 			start: func(_ func()) bool {
 				gm.startRocmSmiCollector(ctx, 4300*time.Millisecond)
 				return true

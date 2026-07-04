@@ -57,17 +57,15 @@ type CurrentDataResponse[T any] struct {
 }
 
 type ContainerCurrent struct {
-	ID          string                 `json:"id"`
-	Name        string                 `json:"name"`
-	Image       string                 `json:"image,omitempty"`
-	Ports       string                 `json:"ports,omitempty"`
-	Status      string                 `json:"status,omitempty"`
-	Health      container.DockerHealth `json:"health,omitempty"`
-	Cpu         float64                `json:"cpu_percent"`
-	Mem         float64                `json:"memory_mb"`
-	NetworkSent float64                `json:"network_sent_mb,omitempty,omitzero"`
-	NetworkRecv float64                `json:"network_recv_mb,omitempty,omitzero"`
-	Bandwidth   [2]uint64              `json:"bandwidth_bytes,omitempty,omitzero"`
+	ID        string                 `json:"id"`
+	Name      string                 `json:"name"`
+	Image     string                 `json:"image,omitempty"`
+	Ports     string                 `json:"ports,omitempty"`
+	Status    string                 `json:"status,omitempty"`
+	Health    container.DockerHealth `json:"health,omitempty"`
+	Cpu       float64                `json:"cpu_percent"`
+	Mem       float64                `json:"memory_mb"`
+	Bandwidth [2]uint64              `json:"bandwidth_bytes,omitempty,omitzero"`
 }
 
 type SmartDeviceCurrent struct {

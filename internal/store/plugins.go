@@ -104,10 +104,6 @@ type FSData struct {
 }
 
 type NetworkData struct {
-	NetworkSent       float64              `json:"network_sent_mb_per_second,omitzero"`
-	NetworkRecv       float64              `json:"network_recv_mb_per_second,omitzero"`
-	MaxNetworkSent    float64              `json:"max_network_sent_mb_per_second,omitempty"`
-	MaxNetworkRecv    float64              `json:"max_network_recv_mb_per_second,omitempty"`
 	Bandwidth         [2]uint64            `json:"bandwidth_bytes_per_second,omitzero"`
 	MaxBandwidth      [2]uint64            `json:"max_bandwidth_bytes_per_second,omitzero"`
 	NetworkInterfaces map[string][4]uint64 `json:"network_interfaces,omitempty"`
@@ -198,10 +194,6 @@ func snapshotPluginPayloads(data *system.CombinedData) map[string]any {
 			ExtraFs: stats.ExtraFs,
 		},
 		PluginNetwork: NetworkData{
-			NetworkSent:       stats.NetworkSent,
-			NetworkRecv:       stats.NetworkRecv,
-			MaxNetworkSent:    stats.MaxNetworkSent,
-			MaxNetworkRecv:    stats.MaxNetworkRecv,
 			Bandwidth:         stats.Bandwidth,
 			MaxBandwidth:      stats.MaxBandwidth,
 			NetworkInterfaces: stats.NetworkInterfaces,
@@ -245,17 +237,15 @@ func containerCurrentRecords(items []*container.Stats) []containerCurrentRecord 
 			continue
 		}
 		out = append(out, containerCurrentRecord{
-			ID:          item.Id,
-			Name:        item.Name,
-			Image:       item.Image,
-			Ports:       item.Ports,
-			Status:      item.Status,
-			Health:      item.Health,
-			Cpu:         item.Cpu,
-			Mem:         item.Mem,
-			NetworkSent: item.NetworkSent,
-			NetworkRecv: item.NetworkRecv,
-			Bandwidth:   item.Bandwidth,
+			ID:        item.Id,
+			Name:      item.Name,
+			Image:     item.Image,
+			Ports:     item.Ports,
+			Status:    item.Status,
+			Health:    item.Health,
+			Cpu:       item.Cpu,
+			Mem:       item.Mem,
+			Bandwidth: item.Bandwidth,
 		})
 	}
 	return out
@@ -401,10 +391,6 @@ func aggregatePluginHistoryJSON(plugin string, items []string) (string, error) {
 			if err := json.Unmarshal(raw, &item); err != nil {
 				return err
 			}
-			stats.NetworkSent = item.NetworkSent
-			stats.NetworkRecv = item.NetworkRecv
-			stats.MaxNetworkSent = item.MaxNetworkSent
-			stats.MaxNetworkRecv = item.MaxNetworkRecv
 			stats.Bandwidth = item.Bandwidth
 			stats.MaxBandwidth = item.MaxBandwidth
 			stats.NetworkInterfaces = item.NetworkInterfaces
@@ -533,10 +519,6 @@ func applyPluginPayload(plugin string, raw []byte, data *system.CombinedData) er
 		if err := json.Unmarshal(raw, &item); err != nil {
 			return err
 		}
-		data.Stats.NetworkSent = item.NetworkSent
-		data.Stats.NetworkRecv = item.NetworkRecv
-		data.Stats.MaxNetworkSent = item.MaxNetworkSent
-		data.Stats.MaxNetworkRecv = item.MaxNetworkRecv
 		data.Stats.Bandwidth = item.Bandwidth
 		data.Stats.MaxBandwidth = item.MaxBandwidth
 		data.Stats.NetworkInterfaces = item.NetworkInterfaces

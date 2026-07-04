@@ -573,15 +573,13 @@ func TestAggregatePluginHistoryJSONCoversAllPlugins(t *testing.T) {
 	first := storetest.SampleCombinedData(10)
 	first.Stats.Swap = 2
 	first.Stats.SwapUsed = 1
-	first.Stats.NetworkSent = 3
-	first.Stats.NetworkRecv = 4
+	first.Stats.Bandwidth = [2]uint64{3, 4}
 	first.Stats.Temperatures = map[string]float64{"cpu": 50}
 	first.Stats.GPUData = map[string]system.GPUData{"0": {Name: "gpu0", Usage: 20, MemoryUsed: 100}}
 	second := storetest.SampleCombinedData(30)
 	second.Stats.Swap = 4
 	second.Stats.SwapUsed = 2
-	second.Stats.NetworkSent = 9
-	second.Stats.NetworkRecv = 10
+	second.Stats.Bandwidth = [2]uint64{9, 10}
 	second.Stats.Temperatures = map[string]float64{"cpu": 70}
 	second.Stats.GPUData = map[string]system.GPUData{"0": {Name: "gpu0", Usage: 60, MemoryUsed: 300}}
 

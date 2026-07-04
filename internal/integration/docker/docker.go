@@ -359,9 +359,6 @@ func updateContainerStatsValues(stats *container.Stats, cpuPct float64, usedMemo
 	stats.Cpu = utils.TwoDecimals(cpuPct)
 	stats.Mem = utils.BytesToMegabytes(float64(usedMemory))
 	stats.Bandwidth = [2]uint64{sent_delta, recv_delta}
-	// TODO(0.19+): stop populating NetworkSent/NetworkRecv (deprecated in 0.18.3)
-	stats.NetworkSent = utils.BytesToMegabytes(float64(sent_delta))
-	stats.NetworkRecv = utils.BytesToMegabytes(float64(recv_delta))
 	stats.PrevReadTime = readTime
 }
 
@@ -517,9 +514,6 @@ func (dm *Manager) updateContainerStats(ctx context.Context, ctr *dockerapi.Info
 	stats.Cpu = 0
 	stats.Mem = 0
 	stats.Bandwidth = [2]uint64{0, 0}
-	// TODO(0.19+): stop populating NetworkSent/NetworkRecv (deprecated in 0.18.3)
-	stats.NetworkSent = 0
-	stats.NetworkRecv = 0
 
 	res := dm.apiStats
 	res.Networks = nil
@@ -559,14 +553,6 @@ func (dm *Manager) updateContainerStats(ctx context.Context, ctr *dockerapi.Info
 		dm.lastNetworkReadTime[cacheTimeMs] = make(map[string]time.Time)
 	}
 	dm.lastNetworkReadTime[cacheTimeMs][ctr.IdShort] = time.Now()
-
-	// Store current network values for legacy compatibility
-	var total_sent, total_recv uint64
-	for _, v := range res.Networks {
-		total_sent += v.TxBytes
-		total_recv += v.RxBytes
-	}
-	stats.PrevNet.Sent, stats.PrevNet.Recv = total_sent, total_recv
 
 	// Update final stats values
 	updateContainerStatsValues(stats, cpuPct, usedMemory, sent_delta, recv_delta, res.Read)
