@@ -1190,7 +1190,7 @@ func isNvmeControllerPath(path string) bool {
 func NewSmartManager() (*SmartManager, error) {
 	sm := &SmartManager{
 		SmartDataMap:    make(map[string]*smart.SmartData),
-		refreshInterval: time.Hour,
+		refreshInterval: DefaultSmartRefreshInterval,
 	}
 	sm.refreshExcludedDevices()
 	path, err := sm.detectSmartctl()

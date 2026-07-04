@@ -28,6 +28,7 @@ func TestLoadMissingReturnsDefaults(t *testing.T) {
 	require.True(t, ok)
 	assert.Contains(t, commands.Address, "agent.sock")
 	assert.Equal(t, app.DefaultCollectorInterval, cfg.CollectorInterval.Duration())
+	assert.Equal(t, app.DefaultSmartRefreshInterval, cfg.SmartRefreshInterval.Duration())
 	assert.Equal(t, 5*time.Second, cfg.CacheTTL[store.PluginContainers].Duration())
 }
 
@@ -45,6 +46,7 @@ func TestLoadMergesPartialConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, loaded)
 	assert.Equal(t, 30*time.Second, cfg.CollectorInterval.Duration())
+	assert.Equal(t, app.DefaultSmartRefreshInterval, cfg.SmartRefreshInterval.Duration())
 	assert.NotEmpty(t, cfg.Listeners)
 	assert.Equal(t, 9*time.Second, cfg.CacheTTL[store.PluginContainers].Duration())
 	assert.Equal(t, 2*time.Second, cfg.CacheTTL[store.PluginCPU].Duration())
@@ -66,6 +68,7 @@ func TestApplyEnvKeepsSupportedOverrides(t *testing.T) {
 	ApplyEnv(&cfg, func(key string) (string, bool) {
 		values := map[string]string{
 			"HISTORY":              "cpu",
+			"SMART_INTERVAL":       "2h",
 			"API_CACHE_DEFAULT":    "1s",
 			"API_CACHE_CONTAINERS": "8s",
 		}
@@ -77,6 +80,7 @@ func TestApplyEnvKeepsSupportedOverrides(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "127.0.0.1:45876", metrics.Address)
 	assert.Equal(t, "cpu", cfg.History)
+	assert.Equal(t, 2*time.Hour, cfg.SmartRefreshInterval.Duration())
 	assert.Equal(t, time.Second, cfg.CacheTTL[store.PluginCPU].Duration())
 	assert.Equal(t, 8*time.Second, cfg.CacheTTL[store.PluginContainers].Duration())
 }
@@ -122,4 +126,14 @@ func TestValidateRejectsUnsupportedVersion(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported config version")
+}
+
+func TestValidateRejectsInvalidSmartRefreshInterval(t *testing.T) {
+	cfg := Default()
+	cfg.SmartRefreshInterval = 0
+
+	err := Validate(cfg)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "smart_refresh_interval")
 }

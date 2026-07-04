@@ -63,11 +63,12 @@ cat > "$config_file" <<'JSON'
   "listeners": [
     {"name": "metrics", "address": "127.0.0.1:45876", "apis": ["metrics"]},
     {"name": "control", "address": "unix:/run/go-monitoring/agent.sock", "apis": ["commands"]}
-  ],
-  "collector_interval": "15s",
-  "history": "cpu,mem,diskio,network,containers",
-  "cache_ttl": {}
-}
+	  ],
+	  "collector_interval": "15s",
+	  "smart_refresh_interval": "1h",
+	  "history": "cpu,mem,diskio,network,containers",
+	  "cache_ttl": {}
+	}
 JSON
 
 echo "Saved config: $config_file"
@@ -96,7 +97,8 @@ echo "Saved config: $config_file"
 	}
 
 	var cfg struct {
-		Listeners []struct {
+		SmartRefreshInterval string `json:"smart_refresh_interval"`
+		Listeners            []struct {
 			Name    string   `json:"name"`
 			Address string   `json:"address"`
 			APIs    []string `json:"apis"`
@@ -104,6 +106,9 @@ echo "Saved config: $config_file"
 	}
 	if err := json.Unmarshal(configBytes, &cfg); err != nil {
 		t.Fatalf("packaged config is not valid JSON: %v\n%s", err, configBytes)
+	}
+	if cfg.SmartRefreshInterval != "1h0m0s" && cfg.SmartRefreshInterval != "1h" {
+		t.Fatalf("smart_refresh_interval = %q", cfg.SmartRefreshInterval)
 	}
 
 	var foundControl bool

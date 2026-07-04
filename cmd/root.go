@@ -431,6 +431,7 @@ func startAgent(ctx context.Context, opts cmdOptions, cfg config.Config, configS
 		"source", configSource,
 		"version", cfg.Version,
 		"collector_interval", cfg.CollectorInterval.Duration(),
+		"smart_refresh_interval", cfg.SmartRefreshInterval.Duration(),
 		"history", cfg.History,
 		"cache_ttl_count", len(cfg.CacheTTL),
 	)
@@ -443,27 +444,29 @@ func startAgent(ctx context.Context, opts cmdOptions, cfg config.Config, configS
 	commandExecutor := newAgentCommandExecutor(a, opts)
 
 	if err := a.StartContext(ctx, app.RunOptions{
-		Listeners:         appListenersFromConfig(cfg),
-		CollectorInterval: cfg.CollectorInterval.Duration(),
-		History:           cfg.History,
-		HistorySet:        true,
-		ConfigPath:        opts.configPath,
-		ConfigSource:      configSource,
-		ConfigVersion:     cfg.Version,
-		CacheTTL:          config.ToDurationMap(cfg.CacheTTL),
-		CommandExecutor:   commandExecutor,
+		Listeners:            appListenersFromConfig(cfg),
+		CollectorInterval:    cfg.CollectorInterval.Duration(),
+		SmartRefreshInterval: cfg.SmartRefreshInterval.Duration(),
+		History:              cfg.History,
+		HistorySet:           true,
+		ConfigPath:           opts.configPath,
+		ConfigSource:         configSource,
+		ConfigVersion:        cfg.Version,
+		CacheTTL:             config.ToDurationMap(cfg.CacheTTL),
+		CommandExecutor:      commandExecutor,
 		ReloadConfig: func() (app.ReloadOptions, error) {
 			reloaded, err := loadEffectiveConfig(opts)
 			if err != nil {
 				return app.ReloadOptions{}, err
 			}
 			return app.ReloadOptions{
-				CollectorInterval: reloaded.cfg.CollectorInterval.Duration(),
-				History:           reloaded.cfg.History,
-				HistorySet:        true,
-				CacheTTL:          config.ToDurationMap(reloaded.cfg.CacheTTL),
-				ConfigSource:      reloaded.source,
-				ConfigVersion:     reloaded.cfg.Version,
+				CollectorInterval:    reloaded.cfg.CollectorInterval.Duration(),
+				SmartRefreshInterval: reloaded.cfg.SmartRefreshInterval.Duration(),
+				History:              reloaded.cfg.History,
+				HistorySet:           true,
+				CacheTTL:             config.ToDurationMap(reloaded.cfg.CacheTTL),
+				ConfigSource:         reloaded.source,
+				ConfigVersion:        reloaded.cfg.Version,
 			}, nil
 		},
 	}); err != nil {

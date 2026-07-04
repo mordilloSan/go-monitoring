@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -52,12 +53,13 @@ func (d *Duration) UnmarshalJSON(data []byte) error {
 }
 
 type Config struct {
-	Version             int                 `json:"version"`
-	Listeners           []Listener          `json:"listeners"`
-	AllowRemoteCommands bool                `json:"allow_remote_commands,omitempty"`
-	CollectorInterval   Duration            `json:"collector_interval"`
-	History             string              `json:"history"`
-	CacheTTL            map[string]Duration `json:"cache_ttl"`
+	Version              int                 `json:"version"`
+	Listeners            []Listener          `json:"listeners"`
+	AllowRemoteCommands  bool                `json:"allow_remote_commands,omitempty"`
+	CollectorInterval    Duration            `json:"collector_interval"`
+	SmartRefreshInterval Duration            `json:"smart_refresh_interval"`
+	History              string              `json:"history"`
+	CacheTTL             map[string]Duration `json:"cache_ttl"`
 }
 
 type Listener struct {
@@ -87,11 +89,12 @@ func Default() Config {
 		cacheTTL[key] = Duration(ttl)
 	}
 	return Config{
-		Version:           CurrentVersion,
-		Listeners:         DefaultListeners(),
-		CollectorInterval: Duration(app.DefaultCollectorInterval),
-		History:           strings.Join(store.DefaultHistoryPluginNames(), ","),
-		CacheTTL:          cacheTTL,
+		Version:              CurrentVersion,
+		Listeners:            DefaultListeners(),
+		CollectorInterval:    Duration(app.DefaultCollectorInterval),
+		SmartRefreshInterval: Duration(app.DefaultSmartRefreshInterval),
+		History:              strings.Join(store.DefaultHistoryPluginNames(), ","),
+		CacheTTL:             cacheTTL,
 	}
 }
 
@@ -206,6 +209,9 @@ func Validate(cfg Config) error {
 	if cfg.CollectorInterval.Duration() <= 0 {
 		return fmt.Errorf("collector_interval must be greater than zero")
 	}
+	if cfg.SmartRefreshInterval.Duration() <= 0 {
+		return fmt.Errorf("smart_refresh_interval must be greater than zero")
+	}
 	if err := validateListeners(cfg); err != nil {
 		return err
 	}
@@ -226,6 +232,14 @@ func Validate(cfg Config) error {
 func ApplyEnv(cfg *Config, env func(string) (string, bool)) {
 	if value, ok := env("HISTORY"); ok {
 		cfg.History = value
+	}
+	if value, ok := env("SMART_INTERVAL"); ok {
+		duration, err := time.ParseDuration(strings.TrimSpace(value))
+		if err == nil && duration > 0 {
+			cfg.SmartRefreshInterval = Duration(duration)
+		} else {
+			slog.Warn("Invalid SMART_INTERVAL", "value", value, "err", err)
+		}
 	}
 
 	ttls := ToDurationMap(cfg.CacheTTL)
