@@ -19,6 +19,7 @@ import (
 	"github.com/mordilloSan/go-monitoring/internal/domain/smart"
 	"github.com/mordilloSan/go-monitoring/internal/health"
 	"github.com/mordilloSan/go-monitoring/internal/store"
+	"github.com/mordilloSan/go-monitoring/internal/version"
 )
 
 const DefaultCollectorInterval = 15 * time.Second
@@ -27,12 +28,22 @@ const DefaultCollectorInterval = 15 * time.Second
 // effective address differs from the requested one when the caller asks for
 // an ephemeral port (":0") and needs to discover what the kernel chose.
 type httpRuntime struct {
-	server     *http.Server
-	listenAddr string
+	name             string
+	requestedAddress string
+	server           *http.Server
+	effectiveAddress string
+	apis             []string
+}
+
+type ListenerOptions struct {
+	Name       string
+	Address    string
+	APIs       []string
+	BestEffort bool
 }
 
 type RunOptions struct {
-	Addr              string
+	Listeners         []ListenerOptions
 	CollectorInterval time.Duration
 	History           string
 	HistorySet        bool
@@ -40,6 +51,7 @@ type RunOptions struct {
 	ConfigSource      string
 	ConfigVersion     int
 	CacheTTL          map[string]time.Duration
+	CommandExecutor   httpapi.CommandExecutor
 	ReloadConfig      func() (ReloadOptions, error)
 }
 
@@ -100,35 +112,24 @@ func (a *App) StartContext(ctx context.Context, opts RunOptions) error {
 	}
 
 	serverErr := make(chan error, 1)
-	if IsListenDisabled(opts.Addr) {
-		slog.Info("HTTP server disabled", "listen", opts.Addr)
-	} else {
-		listener, err := openListener(opts.Addr)
-		if err != nil {
-			return err
+	if err := a.startHTTPServers(opts, serverErr); err != nil {
+		if shutdownErr := a.shutdownHTTPServers(ctx); shutdownErr != nil {
+			return errors.Join(err, shutdownErr)
 		}
-		defer listener.Close()
-
-		a.httpRuntime = &httpRuntime{
-			listenAddr: listener.Addr().String(),
-			server: &http.Server{
-				Addr:              opts.Addr,
-				Handler:           a.apiServer().Handler(a.CollectorInterval),
-				ReadHeaderTimeout: 5 * time.Second,
-			},
-		}
-		slog.Info("HTTP server starting", "addr", a.httpRuntime.listenAddr, "request_logging", a.requestLogging)
-
-		go func() {
-			if err := a.httpRuntime.server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				serverErr <- err
-			}
-		}()
+		return err
 	}
 
 	// The child context also stops the collector on the server-error path where
 	// the caller's context may still be live.
 	collectorIntervalUpdates := make(chan time.Duration, 1)
+	a.runtimeMu.Lock()
+	a.intervalUpdates = collectorIntervalUpdates
+	a.runtimeMu.Unlock()
+	defer func() {
+		a.runtimeMu.Lock()
+		a.intervalUpdates = nil
+		a.runtimeMu.Unlock()
+	}()
 	collectorStarted = true
 	collectorWG.Go(func() {
 		a.runCollector(runCtx, opts.CollectorInterval, collectorIntervalUpdates)
@@ -140,12 +141,8 @@ func (a *App) StartContext(ctx context.Context, opts RunOptions) error {
 
 	runErr := a.runEventLoop(runCtx, hupCh, serverErr, opts.ReloadConfig, collectorIntervalUpdates)
 
-	if a.httpRuntime != nil {
-		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		if err := a.httpRuntime.server.Shutdown(shutdownCtx); err != nil {
-			return err
-		}
+	if err := a.shutdownHTTPServers(ctx); err != nil {
+		return err
 	}
 	if err := health.CleanUp(); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -163,10 +160,65 @@ func (a *App) validateAndNormalizeOpts(opts *RunOptions) error {
 	if opts.CollectorInterval <= 0 {
 		opts.CollectorInterval = DefaultCollectorInterval
 	}
-	if opts.Addr == "" {
-		return errors.New("listen address is required")
+	return nil
+}
+
+func (a *App) startHTTPServers(opts RunOptions, serverErr chan<- error) error {
+	if len(opts.Listeners) == 0 {
+		slog.Info("HTTP servers disabled")
+		return nil
+	}
+	for _, listenerOpts := range opts.Listeners {
+		if IsListenDisabled(listenerOpts.Address) {
+			slog.Info("HTTP listener disabled", "name", listenerOpts.Name, "address", listenerOpts.Address)
+			continue
+		}
+		listener, err := openListener(listenerOpts.Address)
+		if err != nil {
+			if listenerOpts.BestEffort {
+				slog.Warn("HTTP listener unavailable; continuing", "name", listenerOpts.Name, "address", listenerOpts.Address, "err", err)
+				continue
+			}
+			return err
+		}
+		runtime := &httpRuntime{
+			name:             listenerOpts.Name,
+			requestedAddress: listenerOpts.Address,
+			effectiveAddress: listener.Addr().String(),
+			apis:             append([]string(nil), listenerOpts.APIs...),
+			server: &http.Server{
+				Addr:              listenerOpts.Address,
+				Handler:           a.apiServer(opts.CommandExecutor).HandlerFor(a.CollectorInterval, listenerOpts.APIs),
+				ReadHeaderTimeout: 5 * time.Second,
+			},
+		}
+		a.httpRuntimes = append(a.httpRuntimes, runtime)
+		slog.Info("HTTP server starting",
+			"name", runtime.name,
+			"address", runtime.effectiveAddress,
+			"apis", runtime.apis,
+			"request_logging", a.requestLogging,
+		)
+		go func(server *http.Server) {
+			if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				serverErr <- err
+			}
+		}(runtime.server)
 	}
 	return nil
+}
+
+func (a *App) shutdownHTTPServers(ctx context.Context) error {
+	var shutdownErr error
+	for _, runtime := range a.httpRuntimes {
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		if err := runtime.server.Shutdown(shutdownCtx); err != nil {
+			shutdownErr = errors.Join(shutdownErr, err)
+		}
+		cancel()
+	}
+	a.httpRuntimes = nil
+	return shutdownErr
 }
 
 func (a *App) runEventLoop(ctx context.Context, hupCh <-chan os.Signal, serverErr <-chan error, reloadFn func() (ReloadOptions, error), updates chan time.Duration) error {
@@ -216,6 +268,31 @@ func (a *App) handleSIGHUP(reloadFn func() (ReloadOptions, error), updates chan 
 		"source", reloaded.ConfigSource,
 		"version", reloaded.ConfigVersion,
 	)
+}
+
+func (a *App) ReloadRuntime(opts ReloadOptions) error {
+	interval, historyPlugins, err := a.applyReload(opts)
+	if err != nil {
+		return err
+	}
+	a.runtimeMu.RLock()
+	updates := a.intervalUpdates
+	a.runtimeMu.RUnlock()
+	if updates != nil {
+		select {
+		case updates <- interval:
+		default:
+			<-updates
+			updates <- interval
+		}
+	}
+	slog.Info("Config reloaded",
+		"interval", interval,
+		"history", historyPlugins,
+		"source", opts.ConfigSource,
+		"version", opts.ConfigVersion,
+	)
+	return nil
 }
 
 func (a *App) startManagers(ctx context.Context) {
@@ -339,11 +416,59 @@ func (a *App) refreshSmart(ctx context.Context, now time.Time, forceScan bool) e
 	return nil
 }
 
-func (a *App) ListenAddr() string {
-	if a.httpRuntime == nil {
-		return ""
+func (a *App) Listeners() []apimodel.ListenerMeta {
+	out := make([]apimodel.ListenerMeta, 0, len(a.httpRuntimes))
+	for _, runtime := range a.httpRuntimes {
+		out = append(out, runtime.meta(true))
 	}
-	return a.httpRuntime.listenAddr
+	return out
+}
+
+func (r *httpRuntime) meta(active bool) apimodel.ListenerMeta {
+	return apimodel.ListenerMeta{
+		Name:             r.name,
+		Address:          r.requestedAddress,
+		EffectiveAddress: r.effectiveAddress,
+		APIs:             append([]string(nil), r.apis...),
+		Active:           active,
+	}
+}
+
+func (a *App) StatusMeta() apimodel.MetaResponse {
+	dbPath := ""
+	if a.store != nil {
+		dbPath = a.store.Path()
+	}
+	return apimodel.MetaResponse{
+		Version:              version.Version,
+		DataDir:              a.dataDir,
+		DBPath:               dbPath,
+		Listeners:            a.Listeners(),
+		CollectorInterval:    a.CollectorInterval().String(),
+		SmartRefreshInterval: a.smartRefreshIntervalString(),
+		Config:               a.configInfo(),
+		Retention:            store.RetentionStrings(),
+	}
+}
+
+func (a *App) CheckDatabase() error {
+	if a.store == nil {
+		return errors.New("database not open")
+	}
+	return a.store.IntegrityCheck()
+}
+
+func (a *App) MaintainDatabase(ctx context.Context) error {
+	if a.store == nil {
+		return errors.New("database not open")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := a.store.RunMaintenance(time.Now().UTC()); err != nil {
+		return err
+	}
+	return a.store.IntegrityCheck()
 }
 
 func (a *App) CollectorInterval() time.Duration {
@@ -406,13 +531,14 @@ func (a *App) configInfo() apimodel.ConfigMeta {
 	}
 }
 
-func (a *App) apiServer() *httpapi.Server {
+func (a *App) apiServer(commandExecutor httpapi.CommandExecutor) *httpapi.Server {
 	return httpapi.NewServer(httpapi.Options{
 		Metrics:              a.store,
 		Current:              a,
 		SmartRefresher:       a,
+		CommandExecutor:      commandExecutor,
 		DataDir:              a.dataDir,
-		ListenAddr:           a.ListenAddr,
+		Listeners:            a.Listeners,
 		SmartRefreshInterval: a.smartRefreshIntervalString,
 		ConfigInfo:           a.configInfo,
 		RequestLogging:       a.requestLogging,

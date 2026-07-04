@@ -52,8 +52,10 @@ func TestPrintStatusOverUnixSocket(t *testing.T) {
 	})
 	mux.HandleFunc("/api/v1/meta", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(apimodel.MetaResponse{
-			Version:    "test",
-			ListenAddr: socketPath,
+			Version: "test",
+			Listeners: []apimodel.ListenerMeta{
+				{Name: "metrics", EffectiveAddress: socketPath, APIs: []string{config.APIKindMetrics}, Active: true},
+			},
 		})
 	})
 	server := &http.Server{Handler: mux}
@@ -61,7 +63,7 @@ func TestPrintStatusOverUnixSocket(t *testing.T) {
 	defer server.Close()
 
 	cfg := config.Default()
-	cfg.Listen = "unix:" + socketPath
+	cfg.Listeners = []config.Listener{{Name: "metrics", Address: "unix:" + socketPath, APIs: []string{config.APIKindMetrics}}}
 
 	out, err := captureStdout(t, func() error {
 		return printStatus(context.Background(), cfg)

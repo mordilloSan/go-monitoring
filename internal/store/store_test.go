@@ -138,52 +138,21 @@ func TestStoreRejectsNilSnapshot(t *testing.T) {
 	assert.Contains(t, err.Error(), "snapshot data is nil")
 }
 
-func TestStoreMigratesOldSchemaWithBackupAndArchivedTables(t *testing.T) {
+func TestStoreRejectsUnsupportedSchemaVersion(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "metrics.db")
 	db, err := sql.Open("sqlite", dbPath)
 	require.NoError(t, err)
 	_, err = db.Exec(`
-		CREATE TABLE system_current (
-			singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-			captured_at INTEGER NOT NULL,
-			info_json TEXT NOT NULL,
-			stats_json TEXT NOT NULL,
-			details_json TEXT
-		);
 		PRAGMA user_version = 3;
 	`)
 	require.NoError(t, err)
 	require.NoError(t, db.Close())
 
 	store, err := OpenStore(tmpDir)
-	require.NoError(t, err)
-	defer store.Close()
-
-	backupDBs, err := filepath.Glob(dbPath + ".backup-v3-*")
-	require.NoError(t, err)
-	require.Len(t, backupDBs, 1)
-	info, err := os.Stat(backupDBs[0])
-	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
-
-	var oldTableCount int
-	err = store.db.QueryRow("SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'legacy_v3_system_current'").Scan(&oldTableCount)
-	require.NoError(t, err)
-	assert.Equal(t, 1, oldTableCount)
-
-	var newTableCount int
-	err = store.db.QueryRow("SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'cpu_current'").Scan(&newTableCount)
-	require.NoError(t, err)
-	assert.Equal(t, 1, newTableCount)
-
-	var version int
-	require.NoError(t, store.db.QueryRow("PRAGMA user_version").Scan(&version))
-	assert.Equal(t, storeSchemaVersion, version)
-
-	var backupMeta string
-	require.NoError(t, store.db.QueryRow("SELECT value FROM meta WHERE key = 'schema_migration_backup'").Scan(&backupMeta))
-	assert.Equal(t, backupDBs[0], backupMeta)
+	require.Error(t, err)
+	assert.Nil(t, store)
+	assert.Contains(t, err.Error(), "unsupported store schema version 3")
 }
 
 func TestStoreMovesAsideCorruptDatabaseAndRecreatesSchema(t *testing.T) {
@@ -604,15 +573,13 @@ func TestAggregatePluginHistoryJSONCoversAllPlugins(t *testing.T) {
 	first := storetest.SampleCombinedData(10)
 	first.Stats.Swap = 2
 	first.Stats.SwapUsed = 1
-	first.Stats.NetworkSent = 3
-	first.Stats.NetworkRecv = 4
+	first.Stats.Bandwidth = [2]uint64{3, 4}
 	first.Stats.Temperatures = map[string]float64{"cpu": 50}
 	first.Stats.GPUData = map[string]system.GPUData{"0": {Name: "gpu0", Usage: 20, MemoryUsed: 100}}
 	second := storetest.SampleCombinedData(30)
 	second.Stats.Swap = 4
 	second.Stats.SwapUsed = 2
-	second.Stats.NetworkSent = 9
-	second.Stats.NetworkRecv = 10
+	second.Stats.Bandwidth = [2]uint64{9, 10}
 	second.Stats.Temperatures = map[string]float64{"cpu": 70}
 	second.Stats.GPUData = map[string]system.GPUData{"0": {Name: "gpu0", Usage: 60, MemoryUsed: 300}}
 

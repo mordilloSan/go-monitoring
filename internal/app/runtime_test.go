@@ -28,20 +28,21 @@ func TestStartContextCreatesDatabaseAndServesAPI(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- a.StartContext(ctx, RunOptions{
-			Addr:              "127.0.0.1:0",
+			Listeners:         []ListenerOptions{{Name: "metrics", Address: "127.0.0.1:0", APIs: []string{"metrics"}}},
 			CollectorInterval: 5 * time.Minute,
 		})
 	}()
 
 	require.Eventually(t, func() bool {
-		return a.ListenAddr() != ""
+		return testListenAddr(a) != ""
 	}, 20*time.Second, 50*time.Millisecond)
+	listenAddr := testListenAddr(a)
 
 	_, err = os.Stat(tmpDir + "/metrics.db")
 	require.NoError(t, err)
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("http://" + a.ListenAddr() + "/api/v1/all")
+	resp, err := client.Get("http://" + listenAddr + "/api/v1/all")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
@@ -52,7 +53,7 @@ func TestStartContextCreatesDatabaseAndServesAPI(t *testing.T) {
 	old := time.Now().Add(-2 * time.Minute)
 	require.NoError(t, os.Chtimes(healthpkg.FilePath(), old, old))
 
-	resp, err = client.Get("http://" + a.ListenAddr() + "/healthz")
+	resp, err = client.Get("http://" + listenAddr + "/healthz")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	body, err = io.ReadAll(resp.Body)
@@ -77,15 +78,15 @@ func TestStartContextUnixSocket(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- a.StartContext(ctx, RunOptions{
-			Addr:              "unix:" + socketPath,
+			Listeners:         []ListenerOptions{{Name: "metrics", Address: "unix:" + socketPath, APIs: []string{"metrics"}}},
 			CollectorInterval: 5 * time.Minute,
 		})
 	}()
 
 	require.Eventually(t, func() bool {
-		return a.ListenAddr() != ""
+		return testListenAddr(a) != ""
 	}, 20*time.Second, 50*time.Millisecond)
-	assert.Equal(t, socketPath, a.ListenAddr())
+	assert.Equal(t, socketPath, testListenAddr(a))
 
 	client := &http.Client{
 		Timeout: 5 * time.Second,
@@ -122,7 +123,6 @@ func TestStartContextDisabledHTTP(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- a.StartContext(ctx, RunOptions{
-			Addr:              ListenDisabled,
 			CollectorInterval: 5 * time.Minute,
 		})
 	}()
@@ -136,8 +136,16 @@ func TestStartContextDisabledHTTP(t *testing.T) {
 	}, 20*time.Second, 50*time.Millisecond)
 	_, err = os.Stat(tmpDir + "/metrics.db")
 	require.NoError(t, err)
-	assert.Empty(t, a.ListenAddr())
+	assert.Empty(t, a.Listeners())
 
 	cancel()
 	require.NoError(t, <-errCh)
+}
+
+func testListenAddr(a *App) string {
+	listeners := a.Listeners()
+	if len(listeners) == 0 {
+		return ""
+	}
+	return listeners[0].EffectiveAddress
 }

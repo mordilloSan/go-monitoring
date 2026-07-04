@@ -97,14 +97,14 @@ func TestMenuCursorSkipsDisabledItems(t *testing.T) {
 
 func TestResetAPIConfigPreservesGeneralSettings(t *testing.T) {
 	cfg := config.Default()
-	cfg.Listen = "none"
+	cfg.Listeners = nil
 	cfg.CollectorInterval = config.Duration(42 * time.Second)
 	cfg.History = "none"
 
 	resetAPIConfig(&cfg)
 
 	defaults := config.Default()
-	assert.Equal(t, defaults.Listen, cfg.Listen)
+	assert.Equal(t, defaults.Listeners, cfg.Listeners)
 	assert.Equal(t, defaults.CacheTTL, cfg.CacheTTL)
 	assert.Equal(t, config.Duration(42*time.Second), cfg.CollectorInterval)
 	assert.Equal(t, "none", cfg.History)
@@ -113,8 +113,8 @@ func TestResetAPIConfigPreservesGeneralSettings(t *testing.T) {
 func TestDetachedRunArgsPreservesMenuOverrides(t *testing.T) {
 	opts := cmdOptions{
 		configPath:           "/tmp/config.json",
-		listen:               "none",
-		listenSet:            true,
+		listeners:            listenerListFlag{values: []config.Listener{{Name: "metrics", Address: "127.0.0.1:9000", APIs: []string{config.APIKindMetrics}}}},
+		listenersSet:         true,
 		collectorInterval:    42 * time.Second,
 		collectorIntervalSet: true,
 		history:              "cpu,mem",
@@ -132,7 +132,7 @@ func TestDetachedRunArgsPreservesMenuOverrides(t *testing.T) {
 	assert.Equal(t, []string{
 		"run",
 		"--config", "/tmp/config.json",
-		"--listen", "none",
+		"--listener", "name=metrics,address=127.0.0.1:9000,apis=metrics",
 		"--collector-interval", "42s",
 		"--history", "cpu,mem",
 		"--api-cache-default", "2s",

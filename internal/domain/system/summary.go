@@ -53,18 +53,6 @@ func NewSummary(data *CombinedData) Summary {
 		summary.MemoryBytes = data.Details.MemoryTotal
 	}
 
-	if summary.Hostname == "" {
-		summary.Hostname = data.Info.Hostname
-	}
-	if summary.Kernel == "" {
-		summary.Kernel = data.Info.KernelVersion
-	}
-	if summary.CPUModel == "" {
-		summary.CPUModel = data.Info.CpuModel
-	}
-	if summary.Cores == 0 {
-		summary.Cores = data.Info.Cores
-	}
 	if summary.Threads == 0 {
 		summary.Threads = data.Info.Threads
 	}

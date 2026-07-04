@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -21,9 +22,12 @@ type healthResponse struct {
 }
 
 func printStatus(ctx context.Context, cfg config.Config) error {
-	target, err := statusTarget(cfg.Listen)
+	target, commandOnly, err := statusTargetForConfig(cfg)
 	if err != nil {
 		return err
+	}
+	if commandOnly {
+		return printCommandStatus(ctx, target)
 	}
 
 	var health healthResponse
@@ -41,7 +45,7 @@ func printStatus(ctx context.Context, cfg config.Config) error {
 	fmt.Printf("Health: %t (status=%d age=%.1fs last_updated=%s)\n", health.Healthy, healthCode, health.AgeSeconds, health.LastUpdated)
 	fmt.Printf("Version: %s\n", meta.Version)
 	fmt.Printf("Collector interval: %s\n", meta.CollectorInterval)
-	fmt.Printf("Listen address: %s\n", meta.ListenAddr)
+	printStatusListeners(meta.Listeners)
 	fmt.Printf("Data dir: %s\n", meta.DataDir)
 	fmt.Printf("Database: %s\n", meta.DBPath)
 	if meta.Config.Path != "" {
@@ -57,11 +61,64 @@ func printStatus(ctx context.Context, cfg config.Config) error {
 	return nil
 }
 
+func printStatusListeners(listeners []apimodel.ListenerMeta) {
+	if len(listeners) == 0 {
+		return
+	}
+	fmt.Println("Listeners:")
+	for _, listener := range listeners {
+		active := "inactive"
+		if listener.Active {
+			active = "active"
+		}
+		fmt.Printf("  %s: %s (%s; apis=%s)\n", listener.Name, listener.EffectiveAddress, active, strings.Join(listener.APIs, ","))
+	}
+}
+
+func printCommandStatus(ctx context.Context, target agentTarget) error {
+	req := apimodel.CommandRequest{Command: "status.get"}
+	var resp apimodel.CommandResponse
+	code, err := postJSON(ctx, target.client, target.baseURL+"/api/v1/command", req, &resp)
+	if err != nil {
+		return err
+	}
+	if code != http.StatusOK || !resp.OK {
+		return fmt.Errorf("status.get returned HTTP %d", code)
+	}
+	rendered, err := json.MarshalIndent(resp.Data, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(rendered))
+	return nil
+}
+
 func getJSON(ctx context.Context, client *http.Client, url string, target any) (int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return 0, err
 	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
+		return resp.StatusCode, err
+	}
+	return resp.StatusCode, nil
+}
+
+func postJSON(ctx context.Context, client *http.Client, url string, body any, target any) (int, error) {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return 0, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, err
@@ -105,6 +162,18 @@ func statusTarget(listen string) (agentTarget, error) {
 		return agentTarget{}, err
 	}
 	return agentTarget{client: client, baseURL: baseURL, display: baseURL}, nil
+}
+
+func statusTargetForConfig(cfg config.Config) (agentTarget, bool, error) {
+	if listener, ok := config.MetricsListener(cfg); ok {
+		target, err := statusTarget(listener.Address)
+		return target, false, err
+	}
+	if listener, ok := config.CommandListener(cfg); ok {
+		target, err := statusTarget(listener.Address)
+		return target, true, err
+	}
+	return agentTarget{}, false, fmt.Errorf("no metrics or command listener configured")
 }
 
 // statusBaseURL turns a TCP listen address into a dialable local base URL.

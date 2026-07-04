@@ -39,11 +39,12 @@ type App struct {
 	processManager    *processManager            // Manages per-process CPU state
 	requestLogging    bool                       // Whether HTTP API requests are logged
 	store             *store.Store               // Persistent local store
-	httpRuntime       *httpRuntime               // HTTP server + effective listen address (nil before Start)
+	httpRuntimes      []*httpRuntime             // HTTP servers + effective listen addresses (nil before Start)
 	liveMu            sync.Mutex                 // Protects live API response caches
 	liveCache         map[string]liveCacheEntry  // Current API raw response cache by plugin/key
 	liveTTLs          map[string]time.Duration   // Current API cache TTL by plugin/key
 	runtimeMu         sync.RWMutex               // Protects mutable runtime config visible to API/reload
+	intervalUpdates   chan time.Duration
 	collectorInterval time.Duration
 	configPath        string
 	configSource      string

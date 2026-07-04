@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/mordilloSan/go-monitoring/internal/utils"
 )
 
 // ListenDisabled is the canonical listen value that turns off the HTTP API.
@@ -19,12 +17,6 @@ const ListenDisabled = "none"
 // unix:/path (or an absolute path) selects a unix socket, and none/off/disabled
 // turns the HTTP API off entirely.
 func GetAddress(addr string) string {
-	if addr == "" {
-		addr, _ = utils.GetEnv("LISTEN")
-	}
-	if addr == "" {
-		addr, _ = utils.GetEnv("PORT")
-	}
 	addr = strings.TrimSpace(addr)
 	if addr == "" {
 		return "127.0.0.1:45876"

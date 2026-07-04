@@ -1099,7 +1099,7 @@ func TestCalculateGPUAverage(t *testing.T) {
 	})
 }
 
-func TestGPUCapabilitiesAndLegacyPriority(t *testing.T) {
+func TestGPUCapabilitiesAndPriority(t *testing.T) {
 	// Save original PATH
 	hasAmdSysfs := (&GPUManager{}).hasAmdSysfs()
 

@@ -40,12 +40,22 @@ type SmartRefresher interface {
 	RefreshSmartNow(context.Context) error
 }
 
+type CommandExecutor interface {
+	ExecuteCommand(context.Context, apimodel.CommandRequest) CommandResult
+}
+
+type CommandResult struct {
+	Status   int
+	Response apimodel.CommandResponse
+}
+
 type Options struct {
 	Metrics              MetricsReader
 	Current              CurrentReader
 	SmartRefresher       SmartRefresher
+	CommandExecutor      CommandExecutor
 	DataDir              string
-	ListenAddr           func() string
+	Listeners            func() []apimodel.ListenerMeta
 	SmartRefreshInterval func() string
 	ConfigInfo           func() apimodel.ConfigMeta
 	RequestLogging       bool
@@ -55,8 +65,9 @@ type Server struct {
 	metrics              MetricsReader
 	current              CurrentReader
 	smartRefresher       SmartRefresher
+	commandExecutor      CommandExecutor
 	dataDir              string
-	listenAddr           func() string
+	listeners            func() []apimodel.ListenerMeta
 	smartRefreshInterval func() string
 	configInfo           func() apimodel.ConfigMeta
 	requestLogging       bool
@@ -71,25 +82,40 @@ func NewServer(opts Options) *Server {
 		metrics:              opts.Metrics,
 		current:              current,
 		smartRefresher:       opts.SmartRefresher,
+		commandExecutor:      opts.CommandExecutor,
 		dataDir:              opts.DataDir,
-		listenAddr:           opts.ListenAddr,
+		listeners:            opts.Listeners,
 		smartRefreshInterval: opts.SmartRefreshInterval,
 		configInfo:           opts.ConfigInfo,
 		requestLogging:       opts.RequestLogging,
 	}
 }
 
-func (s *Server) Handler(collectorInterval func() time.Duration) http.Handler {
+func (s *Server) HandlerFor(collectorInterval func() time.Duration, apis []string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
-	mux.HandleFunc("/api/v1/meta", s.handleMeta(collectorInterval))
-	mux.HandleFunc("/api/v1/system/summary", s.handleSystemSummary)
-	mux.HandleFunc("/api/v1/benchmark", s.handleBenchmark(mux))
-	NewRegistry(s.current, s.metrics, s.smartRefresher).Mount(mux, "/api/v1/")
+	if hasAPI(apis, "metrics") {
+		mux.HandleFunc("/api/v1/meta", s.handleMeta(collectorInterval))
+		mux.HandleFunc("/api/v1/system/summary", s.handleSystemSummary)
+		mux.HandleFunc("/api/v1/benchmark", s.handleBenchmark(mux))
+		NewRegistry(s.current, s.metrics, s.smartRefresher).Mount(mux, "/api/v1/")
+	}
+	if hasAPI(apis, "commands") {
+		mux.HandleFunc("/api/v1/command", s.handleCommand)
+	}
 	if s.requestLogging {
 		return logRequests(mux)
 	}
 	return mux
+}
+
+func hasAPI(apis []string, api string) bool {
+	for _, value := range apis {
+		if strings.EqualFold(strings.TrimSpace(value), api) {
+			return true
+		}
+	}
+	return false
 }
 
 func RequestLoggingEnabled() bool {
@@ -176,6 +202,34 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if s.commandExecutor == nil {
+		http.NotFound(w, r)
+		return
+	}
+	var req apimodel.CommandRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, apimodel.CommandResponse{
+			OK: false,
+			Error: &apimodel.CommandError{
+				Code:    "invalid_json",
+				Message: err.Error(),
+			},
+		})
+		return
+	}
+	result := s.commandExecutor.ExecuteCommand(r.Context(), req)
+	status := result.Status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, result.Response)
+}
+
 func (s *Server) handleMeta(collectorInterval func() time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -229,9 +283,9 @@ func (s *Server) metaResponse(collectorInterval time.Duration) apimodel.MetaResp
 	if s.smartRefreshInterval != nil {
 		smartRefreshInterval = s.smartRefreshInterval()
 	}
-	listenAddr := ""
-	if s.listenAddr != nil {
-		listenAddr = s.listenAddr()
+	var listeners []apimodel.ListenerMeta
+	if s.listeners != nil {
+		listeners = s.listeners()
 	}
 	configInfo := apimodel.ConfigMeta{}
 	if s.configInfo != nil {
@@ -245,7 +299,7 @@ func (s *Server) metaResponse(collectorInterval time.Duration) apimodel.MetaResp
 		Version:              version.Version,
 		DataDir:              s.dataDir,
 		DBPath:               s.metrics.Path(),
-		ListenAddr:           listenAddr,
+		Listeners:            listeners,
 		CollectorInterval:    interval,
 		SmartRefreshInterval: smartRefreshInterval,
 		Config:               configInfo,

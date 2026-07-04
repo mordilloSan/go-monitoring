@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,6 +31,20 @@ type fakeSmartRefresher struct {
 
 func (r fakeSmartRefresher) RefreshSmartNow(context.Context) error {
 	return r.store.WriteSmartDevices(time.Now().UTC().UnixMilli(), map[string]smart.SmartData{})
+}
+
+type fakeCommandExecutor struct{}
+
+func (fakeCommandExecutor) ExecuteCommand(_ context.Context, req apimodel.CommandRequest) CommandResult {
+	return CommandResult{
+		Status: http.StatusOK,
+		Response: apimodel.CommandResponse{
+			OK:        true,
+			Command:   req.Command,
+			RequestID: req.RequestID,
+			Data:      map[string]string{"handled": "yes"},
+		},
+	}
 }
 
 type fakeCurrentReader struct {
@@ -82,10 +97,33 @@ func newHTTPTestServer(t *testing.T) *Server {
 		Current:              store,
 		SmartRefresher:       fakeSmartRefresher{store: store},
 		DataDir:              tmpDir,
-		ListenAddr:           func() string { return ":45876" },
 		SmartRefreshInterval: func() string { return "" },
 		RequestLogging:       true,
 	})
+}
+
+func TestHandlerForSeparatesMetricsAndCommandAPIs(t *testing.T) {
+	server := NewServer(Options{CommandExecutor: fakeCommandExecutor{}})
+
+	commandHandler := server.HandlerFor(func() time.Duration { return time.Minute }, []string{"commands"})
+	commandReq := httptest.NewRequest(http.MethodPost, "/api/v1/command", strings.NewReader(`{"command":"status.get","request_id":"test"}`))
+	commandRec := httptest.NewRecorder()
+	commandHandler.ServeHTTP(commandRec, commandReq)
+	require.Equal(t, http.StatusOK, commandRec.Code)
+	assert.Contains(t, commandRec.Body.String(), `"command":"status.get"`)
+	assert.Contains(t, commandRec.Body.String(), `"request_id":"test"`)
+
+	metaReq := httptest.NewRequest(http.MethodGet, "/api/v1/meta", nil)
+	metaRec := httptest.NewRecorder()
+	commandHandler.ServeHTTP(metaRec, metaReq)
+	assert.Equal(t, http.StatusNotFound, metaRec.Code)
+
+	metricsHandler := server.HandlerFor(func() time.Duration { return time.Minute }, []string{"metrics"})
+	blockedCommandReq := httptest.NewRequest(http.MethodPost, "/api/v1/command", strings.NewReader(`{"command":"status.get"}`))
+	blockedCommandRec := httptest.NewRecorder()
+	metricsHandler.ServeHTTP(blockedCommandRec, blockedCommandReq)
+	assert.Equal(t, http.StatusMethodNotAllowed, blockedCommandRec.Code)
+	assert.NotContains(t, blockedCommandRec.Body.String(), `"ok"`)
 }
 
 func TestCurrentRoutesUseCurrentReaderAndHistoryUsesStore(t *testing.T) {
@@ -109,7 +147,7 @@ func TestCurrentRoutesUseCurrentReaderAndHistoryUsesStore(t *testing.T) {
 		SmartRefresher: fakeSmartRefresher{store: store},
 		DataDir:        tmpDir,
 	})
-	handler := server.Handler(func() time.Duration { return time.Minute })
+	handler := server.HandlerFor(func() time.Duration { return time.Minute }, []string{"metrics"})
 
 	cpuReq := httptest.NewRequest(http.MethodGet, "/api/v1/cpu", nil)
 	cpuRec := httptest.NewRecorder()
@@ -145,7 +183,7 @@ func TestHistoryRoutesReflectUpdatedHistoryAllowlist(t *testing.T) {
 		Current: store,
 		DataDir: tmpDir,
 	})
-	handler := server.Handler(func() time.Duration { return time.Minute })
+	handler := server.HandlerFor(func() time.Duration { return time.Minute }, []string{"metrics"})
 
 	pluginsReq := httptest.NewRequest(http.MethodGet, "/api/v1/plugins", nil)
 	pluginsRec := httptest.NewRecorder()
@@ -186,7 +224,7 @@ func TestHistoryQueryValidationAndLimit(t *testing.T) {
 	}
 
 	server := NewServer(Options{Metrics: store, Current: store, DataDir: tmpDir})
-	handler := server.Handler(func() time.Duration { return time.Minute })
+	handler := server.HandlerFor(func() time.Duration { return time.Minute }, []string{"metrics"})
 
 	tests := []struct {
 		name   string
@@ -229,7 +267,7 @@ func TestEmptyStoreCurrentRouteReturnsNotFound(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	server := NewServer(Options{Metrics: store, Current: store, DataDir: tmpDir})
-	handler := server.Handler(func() time.Duration { return time.Minute })
+	handler := server.HandlerFor(func() time.Duration { return time.Minute }, []string{"metrics"})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/cpu", nil)
 	rec := httptest.NewRecorder()
@@ -264,7 +302,7 @@ func TestAllRouteReturnsNotFoundWhenEveryPluginHasNoRows(t *testing.T) {
 		Current: fakeCurrentReader{pluginErrors: pluginErrors},
 		DataDir: tmpDir,
 	})
-	handler := server.Handler(func() time.Duration { return time.Minute })
+	handler := server.HandlerFor(func() time.Duration { return time.Minute }, []string{"metrics"})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/all", nil)
 	rec := httptest.NewRecorder()
@@ -289,7 +327,7 @@ func TestAllRouteReturnsInternalErrorWhenEveryPluginFails(t *testing.T) {
 		Current: fakeCurrentReader{pluginErrors: pluginErrors},
 		DataDir: tmpDir,
 	})
-	handler := server.Handler(func() time.Duration { return time.Minute })
+	handler := server.HandlerFor(func() time.Duration { return time.Minute }, []string{"metrics"})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/all", nil)
 	rec := httptest.NewRecorder()
@@ -315,7 +353,7 @@ func TestInternalErrorsUseGenericBodies(t *testing.T) {
 		},
 		DataDir: tmpDir,
 	})
-	handler := server.Handler(func() time.Duration { return time.Minute })
+	handler := server.HandlerFor(func() time.Duration { return time.Minute }, []string{"metrics"})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/cpu", nil)
 	rec := httptest.NewRecorder()
@@ -345,7 +383,7 @@ func TestAllRouteReturnsPartialDataAndPluginErrors(t *testing.T) {
 		},
 		DataDir: tmpDir,
 	})
-	handler := server.Handler(func() time.Duration { return time.Minute })
+	handler := server.HandlerFor(func() time.Duration { return time.Minute }, []string{"metrics"})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/all", nil)
 	rec := httptest.NewRecorder()
@@ -361,7 +399,7 @@ func TestAllRouteReturnsPartialDataAndPluginErrors(t *testing.T) {
 
 func TestHTTPRoutes(t *testing.T) {
 	server := newHTTPTestServer(t)
-	handler := server.Handler(func() time.Duration { return time.Minute })
+	handler := server.HandlerFor(func() time.Duration { return time.Minute }, []string{"metrics"})
 
 	tests := []struct {
 		name   string
@@ -397,11 +435,11 @@ func TestHTTPRoutes(t *testing.T) {
 		{name: "invalid history", method: http.MethodGet, path: "/api/v1/cpu/history?resolution=bad", status: http.StatusBadRequest, body: `"error":"invalid resolution"`},
 		{name: "smart refresh", method: http.MethodPost, path: "/api/v1/smart/refresh", status: http.StatusOK, body: `"items":[]`},
 		{name: "benchmark", method: http.MethodGet, path: "/api/v1/benchmark", status: http.StatusOK, body: `"endpoint_count":`},
-		{name: "legacy summary removed", method: http.MethodGet, path: "/api/v1/summary", status: http.StatusNotFound, body: "404 page not found"},
-		{name: "legacy system history removed", method: http.MethodGet, path: "/api/v1/history/system?resolution=1m", status: http.StatusNotFound, body: "404 page not found"},
-		{name: "legacy processlist removed", method: http.MethodGet, path: "/api/v1/processlist", status: http.StatusNotFound, body: "404 page not found"},
-		{name: "legacy processcount removed", method: http.MethodGet, path: "/api/v1/processcount", status: http.StatusNotFound, body: "404 page not found"},
-		{name: "legacy programlist removed", method: http.MethodGet, path: "/api/v1/programlist", status: http.StatusNotFound, body: "404 page not found"},
+		{name: "old summary removed", method: http.MethodGet, path: "/api/v1/summary", status: http.StatusNotFound, body: "404 page not found"},
+		{name: "old system history removed", method: http.MethodGet, path: "/api/v1/history/system?resolution=1m", status: http.StatusNotFound, body: "404 page not found"},
+		{name: "old processlist removed", method: http.MethodGet, path: "/api/v1/processlist", status: http.StatusNotFound, body: "404 page not found"},
+		{name: "old processcount removed", method: http.MethodGet, path: "/api/v1/processcount", status: http.StatusNotFound, body: "404 page not found"},
+		{name: "old programlist removed", method: http.MethodGet, path: "/api/v1/programlist", status: http.StatusNotFound, body: "404 page not found"},
 	}
 
 	for _, tt := range tests {
@@ -419,7 +457,7 @@ func TestHTTPRoutes(t *testing.T) {
 
 func TestBenchmarkEndpointReportsReadOnlyRoutes(t *testing.T) {
 	server := newHTTPTestServer(t)
-	handler := server.Handler(func() time.Duration { return time.Minute })
+	handler := server.HandlerFor(func() time.Duration { return time.Minute }, []string{"metrics"})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/benchmark", nil)
 	rec := httptest.NewRecorder()
 
@@ -512,7 +550,7 @@ func TestRoutesCanDisableRequestLogging(t *testing.T) {
 
 	server := newHTTPTestServer(t)
 	server.requestLogging = false
-	handler := server.Handler(func() time.Duration { return time.Minute })
+	handler := server.HandlerFor(func() time.Duration { return time.Minute }, []string{"metrics"})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/meta", nil)
 	rec := httptest.NewRecorder()
@@ -524,7 +562,7 @@ func TestRoutesCanDisableRequestLogging(t *testing.T) {
 
 func TestHealthRouteReturnsServiceUnavailableWhenPersistIsStale(t *testing.T) {
 	server := newHTTPTestServer(t)
-	handler := server.Handler(func() time.Duration { return time.Minute })
+	handler := server.HandlerFor(func() time.Duration { return time.Minute }, []string{"metrics"})
 
 	old := time.Now().Add(-2 * time.Minute)
 	require.NoError(t, os.Chtimes(healthpkg.FilePath(), old, old))

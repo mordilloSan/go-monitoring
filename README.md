@@ -103,12 +103,14 @@ The package installs:
 - `/lib/systemd/system/go-monitoring.service`
 - `/var/lib/go-monitoring` for `metrics.db`
 
-Change the listen port or collection interval through the config CLI, then reload
-the service. Bare ports are localhost-only; use an explicit host if you need a
+Change listeners or collection interval through the config CLI, then reload the
+service. Bare ports are localhost-only; use an explicit host if you need a
 different bind address:
 
 ```sh
-sudo go-monitoring config --config /etc/go-monitoring/config.json --listen 9000
+sudo go-monitoring config --config /etc/go-monitoring/config.json \
+  --listener name=metrics,address=127.0.0.1:9000,apis=metrics \
+  --listener name=control,address=unix:/run/go-monitoring/agent.sock,apis=commands
 sudo go-monitoring config --config /etc/go-monitoring/config.json --collector-interval 30s
 sudo systemctl reload go-monitoring.service
 ```
@@ -118,10 +120,10 @@ sudo systemctl reload go-monitoring.service
 ```sh
 ./go-monitoring                       # interactive menu on a terminal; CLI help otherwise
 ./go-monitoring run                   # listens on 127.0.0.1:45876 and collects every 15s by default
-./go-monitoring run --listen 9000     # listen on 127.0.0.1:9000
-./go-monitoring run --listen :9000    # listen on all interfaces
-./go-monitoring run --listen unix:/run/go-monitoring/agent.sock  # serve the API on a unix socket
-./go-monitoring run --listen none     # collect and store history without the HTTP API
+./go-monitoring run --listener name=metrics,address=127.0.0.1:9000,apis=metrics
+./go-monitoring run --listener name=metrics,address=:9000,apis=metrics
+./go-monitoring run --listener name=control,address=unix:/run/go-monitoring/agent.sock,apis=commands
+./go-monitoring run --listener name=metrics,address=127.0.0.1:45876,apis=metrics --listener name=control,address=unix:/run/go-monitoring/agent.sock,apis=commands
 ./go-monitoring run --history cpu,mem # store history only for selected plugins
 ./go-monitoring health                # exit 0 if the latest tick is fresh
 ./go-monitoring status                # query a running local agent (TCP or unix socket)
@@ -130,16 +132,13 @@ sudo systemctl reload go-monitoring.service
 
 Started with no arguments on a terminal, the CLI opens an interactive menu
 (also available as `go-monitoring menu`) covering the agent, status, the
-config editor, and database operations. Listen addresses take four forms: a
-bare port (localhost-only), `host:port`, `unix:/path` (or a bare absolute
-path) for a unix socket restricted to the agent's user and group, and `none` /
-`off` to disable the HTTP API entirely while the collector keeps recording
-history. `status` reaches the agent over TCP or the unix socket automatically;
-with the API disabled, use `go-monitoring health` for the file-based liveness
-check.
-
-Dash-prefixed command aliases are also accepted: `./go-monitoring -run` and
-`./go-monitoring -config`.
+config editor, and database operations. Listener addresses take three forms: a
+bare port (localhost-only), `host:port`, and `unix:/path` (or a bare absolute
+path) for a unix socket restricted to the agent's user and group. Use an empty
+`listeners` array to disable API listeners entirely while the collector keeps
+recording history. `status` reaches the agent over TCP or the unix socket
+automatically; with the API disabled, use `go-monitoring health` for the
+file-based liveness check.
 
 Configure the agent with a JSON file:
 
@@ -157,7 +156,7 @@ The config file defaults to `$CONFIG_FILE` when set. Root runs use
 `/etc/go-monitoring/config.json`; non-root runs use
 `$XDG_CONFIG_HOME/go-monitoring/config.json` or `~/.config/go-monitoring/config.json`.
 If the file is absent, `run` creates it from the effective startup config.
-Precedence is built-in defaults, config file, legacy environment variables,
+Precedence is built-in defaults, config file, supported environment variables,
 and explicit CLI flags. If the config file cannot be created, the agent
 continues with the effective config in memory.
 
@@ -187,7 +186,6 @@ sudo systemctl start go-monitoring.service
 Environment variables:
 
 - `CONFIG_FILE` — config file path
-- `LISTEN` / `PORT` — fallback listen address if `--listen` is not provided; bare ports bind to `127.0.0.1`, `unix:/path` selects a unix socket, `none` disables the HTTP API
 - `HISTORY` — comma-separated history plugin allowlist, or `all` / `none` (`cpu,mem,diskio,network,containers` by default)
 - `MEM_CALC` — memory calculation formula
 - `DISK_USAGE_CACHE` — cache duration for disk-usage polling (e.g. `15m`) to avoid waking sleeping disks
@@ -212,8 +210,8 @@ If you built from source and installed the binary to `/usr/local/bin`, copy
 that unit and change `ExecStart` accordingly. The unit runs as root, pins
 `CONFIG_FILE=/etc/go-monitoring/config.json` and
 `DATA_DIR=/var/lib/go-monitoring`, and includes conservative hardening. Its
-`RuntimeDirectory=go-monitoring` provides `/run/go-monitoring` for a unix
-socket listener (`"listen": "unix:/run/go-monitoring/agent.sock"`). It
+`RuntimeDirectory=go-monitoring` provides `/run/go-monitoring` for the default
+command unix socket listener (`"address": "unix:/run/go-monitoring/agent.sock"`). It
 intentionally avoids stronger sandboxing such as `PrivateDevices`, `ProtectProc`,
 `PrivateNetwork`, and a tight capability bounding set because host metrics,
 Docker/DBus, SMART, and GPU collectors may need host `/proc`, `/sys`, sockets,
@@ -221,27 +219,326 @@ and devices.
 
 ## HTTP API
 
-Base URL: `http://127.0.0.1:45876` by default, or `http://<listen>` when configured.
-With a unix socket listener, point the client at the socket instead:
+The agent can expose more than one listener at the same time. Each listener
+chooses which API families it serves:
 
-```sh
-curl --unix-socket /run/go-monitoring/agent.sock http://localhost/api/v1/meta
+- `metrics` — read-only metric, collection, history, metadata, and benchmark endpoints
+- `commands` — JSON command endpoint used for status, config, SMART refresh, and DB maintenance commands
+
+Default listeners:
+
+```json
+{
+  "listeners": [
+    {
+      "name": "metrics",
+      "address": "127.0.0.1:45876",
+      "apis": ["metrics"]
+    },
+    {
+      "name": "control",
+      "address": "unix:/run/go-monitoring/agent.sock",
+      "apis": ["commands"]
+    }
+  ]
+}
 ```
 
-- `GET /healthz` — liveness / freshness
-- `GET /api/v1/meta` — agent metadata, effective config metadata, and collector interval
-- `GET /api/v1/plugins` — plugin metadata and mounted routes
-- `GET /api/v1/all` — current snapshots keyed by plugin name
-- `GET /api/v1/{plugin}` — current plugin snapshot
-- `GET /api/v1/{plugin}/history` — plugin history when enabled (`resolution`, `from`, `to`, `limit`)
-- `POST /api/v1/{plugin}/refresh` — force a plugin refresh when supported
+`GET /healthz` is mounted on every listener. Metrics routes are only mounted on
+listeners that include `metrics`; command routes are only mounted on listeners
+that include `commands`.
 
-Current endpoints are served from live providers with small configurable
+There is no authentication layer in the agent. Keep command listeners on a unix
+socket or loopback TCP unless the host network is trusted.
+
+TCP example:
+
+```sh
+curl http://127.0.0.1:45876/healthz
+curl http://127.0.0.1:45876/api/v1/meta
+```
+
+Unix socket example:
+
+```sh
+curl --unix-socket /run/go-monitoring/agent.sock http://localhost/healthz
+curl --unix-socket /run/go-monitoring/agent.sock \
+  -H 'Content-Type: application/json' \
+  -d '{"command":"status.get"}' \
+  http://localhost/api/v1/command
+```
+
+### Normal API
+
+These endpoints are useful for liveness, metadata, and API discovery.
+
+`GET /healthz`
+
+Returns collection freshness:
+
+```json
+{
+  "healthy": true,
+  "last_updated": "2026-07-04T12:00:00Z",
+  "age_seconds": 1.2
+}
+```
+
+Returns HTTP `200` when fresh and HTTP `503` when stale or unavailable.
+
+`GET /api/v1/meta`
+
+Returns agent, database, listener, config, and retention metadata:
+
+```json
+{
+  "version": "v1.2.0",
+  "data_dir": "/var/lib/go-monitoring",
+  "db_path": "/var/lib/go-monitoring/metrics.db",
+  "listeners": [
+    {
+      "name": "metrics",
+      "address": "127.0.0.1:45876",
+      "effective_address": "127.0.0.1:45876",
+      "apis": ["metrics"],
+      "active": true
+    }
+  ],
+  "collector_interval": "15s",
+  "smart_refresh_interval": "",
+  "config": {
+    "path": "/etc/go-monitoring/config.json",
+    "source": "loaded",
+    "version": 1,
+    "collector_interval": "15s",
+    "history_plugins": ["cpu", "mem", "diskio", "network", "containers"],
+    "cache_ttl": {
+      "cpu": "2s",
+      "containers": "5s"
+    }
+  },
+  "retention": {
+    "1m": "1h",
+    "10m": "24h",
+    "20m": "7d",
+    "120m": "30d"
+  }
+}
+```
+
+`GET /api/v1/plugins`
+
+Returns available metric plugins, whether each has history enabled, whether it
+supports refresh, and the routes currently mounted for it.
+
+`GET /api/v1/benchmark`
+
+Runs the mounted read endpoints internally and returns status, duration, and
+response size per endpoint. This is diagnostic; it does not change persisted
+data.
+
+### Normal Collection API
+
+These are the read-only metrics endpoints served by `metrics` listeners.
+Current endpoints are served from live collectors with small configurable
 in-memory TTL caches. History endpoints are served from SQLite.
 
-Plugins: `cpu`, `mem`, `swap`, `load`, `diskio`, `fs`, `network`, `gpu`, `sensors`, `containers`, `systemd`, `processes`, `programs`, `connections`, `irq`, `smart`.
+Plugins:
 
-Only history-enabled plugins mount `/{plugin}/history`. By default this is `cpu`, `mem`, `diskio`, `network`, and `containers`; use `--history` or `HISTORY` to change it.
+`cpu`, `mem`, `swap`, `load`, `diskio`, `fs`, `network`, `gpu`, `sensors`,
+`containers`, `systemd`, `processes`, `programs`, `connections`, `irq`, `smart`
+
+`GET /api/v1/all`
+
+Returns the current snapshot for every plugin, keyed by plugin name. If some
+plugins fail but at least one succeeds, the response includes an `errors`
+object with per-plugin public error messages.
+
+`GET /api/v1/system/summary`
+
+Returns a compact host summary for frequent polling.
+
+`GET /api/v1/{plugin}`
+
+Returns the current snapshot for one plugin:
+
+```sh
+curl http://127.0.0.1:45876/api/v1/cpu
+curl http://127.0.0.1:45876/api/v1/network
+curl http://127.0.0.1:45876/api/v1/containers
+```
+
+Most current plugin responses have this shape:
+
+```json
+{
+  "captured_at": 1783166400000,
+  "data": {}
+}
+```
+
+Item plugins use `items` instead of `data`; process responses may also include
+`count`.
+
+`GET /api/v1/{plugin}/history`
+
+Returns history for plugins that have history enabled.
+
+Query parameters:
+
+- `resolution` — rollup resolution, default `1m`
+- `from` — inclusive unix milliseconds lower bound, default `0`
+- `to` — inclusive unix milliseconds upper bound, default now
+- `limit` — maximum rows, default `200`, maximum `1000`
+
+Example:
+
+```sh
+curl 'http://127.0.0.1:45876/api/v1/cpu/history?resolution=1m&from=0&limit=100'
+```
+
+Response:
+
+```json
+{
+  "resolution": "1m",
+  "items": [
+    {
+      "captured_at": 1783166400000,
+      "stats": {}
+    }
+  ]
+}
+```
+
+Default history plugins are `cpu`, `mem`, `diskio`, `network`, and
+`containers`. Change them with `history` in config, `--history`, or the config
+API. Plugins without enabled history return HTTP `404` for history routes.
+
+`POST /api/v1/{plugin}/refresh`
+
+Refreshes a plugin when supported. Currently this is primarily useful for:
+
+```sh
+curl -X POST http://127.0.0.1:45876/api/v1/smart/refresh
+```
+
+The response is the refreshed current plugin payload.
+
+### Config API
+
+The config/control API is exposed through `POST /api/v1/command` on listeners
+that include `commands`. Requests and responses are JSON.
+
+Request:
+
+```json
+{
+  "command": "config.get",
+  "request_id": "optional-client-id",
+  "params": {}
+}
+```
+
+Response:
+
+```json
+{
+  "ok": true,
+  "command": "config.get",
+  "request_id": "optional-client-id",
+  "restart_required": false,
+  "data": {}
+}
+```
+
+Error response:
+
+```json
+{
+  "ok": false,
+  "command": "config.set",
+  "request_id": "optional-client-id",
+  "error": {
+    "code": "invalid_config",
+    "message": "listeners[0].apis cannot be empty"
+  }
+}
+```
+
+Commands:
+
+- `commands.list` — returns the command names supported by this agent
+- `status.get` — returns the same metadata shape as `/api/v1/meta`, using command transport
+- `config.get` — loads and returns the on-disk config
+- `config.set` — validates, saves, and live-applies supported config fields
+- `config.reload` — reloads effective config and live-applies supported fields
+- `smart.refresh` — refreshes SMART data immediately
+- `db.check` — runs SQLite integrity check
+- `db.maintain` — runs database maintenance and integrity check
+
+`config.set` accepts these `params` fields:
+
+```json
+{
+  "collector_interval": "30s",
+  "history": "cpu,mem,diskio,network,containers",
+  "cache_ttl": {
+    "cpu": "2s",
+    "containers": "5s",
+    "smart": "30s"
+  },
+  "listeners": [
+    {
+      "name": "metrics",
+      "address": "127.0.0.1:45876",
+      "apis": ["metrics"]
+    },
+    {
+      "name": "control",
+      "address": "unix:/run/go-monitoring/agent.sock",
+      "apis": ["commands"]
+    }
+  ],
+  "allow_remote_commands": false
+}
+```
+
+Live-applied without restart:
+
+- `collector_interval`
+- `history`
+- `cache_ttl`
+
+Saved but requiring agent restart:
+
+- `listeners`
+
+Command listeners on non-loopback TCP addresses are rejected unless
+`allow_remote_commands` is set to `true`.
+
+Examples:
+
+```sh
+curl --unix-socket /run/go-monitoring/agent.sock \
+  -H 'Content-Type: application/json' \
+  -d '{"command":"commands.list"}' \
+  http://localhost/api/v1/command
+```
+
+```sh
+curl --unix-socket /run/go-monitoring/agent.sock \
+  -H 'Content-Type: application/json' \
+  -d '{"command":"config.set","params":{"collector_interval":"30s","cache_ttl":{"containers":"10s"}}}' \
+  http://localhost/api/v1/command
+```
+
+```sh
+curl --unix-socket /run/go-monitoring/agent.sock \
+  -H 'Content-Type: application/json' \
+  -d '{"command":"db.check","request_id":"check-1"}' \
+  http://localhost/api/v1/command
+```
 
 ## License
 
