@@ -1,19 +1,19 @@
 Architectures: amd64
 Codename: stable
 Components: main
-Date: Sat, 04 Jul 2026 06:34:03 +0000
+Date: Sat, 04 Jul 2026 07:11:11 +0000
 Label: go-monitoring
 Origin: go-monitoring
 Suite: stable
 MD5Sum:
- caa60288c33052fd61311df4c4fdc000             2265 main/binary-amd64/Packages
- 175732bceb8e7b4fca0706f95d083381              908 main/binary-amd64/Packages.gz
+ bb90bbc97ca2293b57b75c7fbc351ca2             3020 main/binary-amd64/Packages
+ ae160b4a0dd38fa486f1de2cf6867e82             1094 main/binary-amd64/Packages.gz
 SHA1:
- b1f5b1c1ea2d82b7053d73c7be231e6b3a32fc4a             2265 main/binary-amd64/Packages
- 1c292bb9e647cba9f316ef5a348aa3f6eabc02fa              908 main/binary-amd64/Packages.gz
+ f09b3870304825380c9301431b3453edd98d2c47             3020 main/binary-amd64/Packages
+ 67e22033c337f6851b013594e1cbe0ed6466fe15             1094 main/binary-amd64/Packages.gz
 SHA256:
- 84346742500e34f966fef9ed077b69c578fed2273be8b51cb04a70ebb854aa24             2265 main/binary-amd64/Packages
- 67498c912495df8bbf5fdfd3f8ff74c5d3ca2abcb1eeb0f906f43b83f3d96448              908 main/binary-amd64/Packages.gz
+ 45511903c4c438a4aeae796623f8de7fe28dd09243f21cb0180c8b2d6eec8684             3020 main/binary-amd64/Packages
+ 1440c2547a0a9c03564f2b22c0798cf98a7811c22b5c6ae154e65e356e466d69             1094 main/binary-amd64/Packages.gz
 SHA512:
- 2f0657f810de96ff22190d2ff84dc9ce69946dd7e48876fd5fb055d4142bc49a607dd290cba220a3f69d659a55d36c0da2d3397d3199e9e69b1083135183ce09             2265 main/binary-amd64/Packages
- 538d62080fcdd8f3dd62c208f090a1a46e095f9899df14906e304828e81157aa2f34b5631003360d32ffcdb03f2a25c3d25db53b4223ad761ad57db03c07041a              908 main/binary-amd64/Packages.gz
+ 8fb812222f019e5ff3838d179ea346849e70029fa247de622e44e80c6531a8957f97ab5cd1389983857dcc3eb9786d69ff4630ef5192039ee206f24fca1161dd             3020 main/binary-amd64/Packages
+ 90301475b63e0045425688f30370777aa44590639b6482cf1a6d8279c9388720fd35b7430e7c9b1eea36739a808880e2d430568d2d586819a55e50663ebfd844             1094 main/binary-amd64/Packages.gz
