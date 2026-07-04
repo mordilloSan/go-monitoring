@@ -33,8 +33,8 @@ const (
 type cmdOptions struct {
 	command              command
 	configPath           string
-	listen               string
-	listenSet            bool
+	listeners            listenerListFlag
+	listenersSet         bool
 	collectorInterval    time.Duration
 	collectorIntervalSet bool
 	history              string
@@ -55,7 +55,7 @@ type cmdOptions struct {
 // parse fills opts from argv (argv[0] is the program name). It returns
 // done=true when the command was fully handled, along with the exit code.
 //
-//nolint:gocognit // CLI parsing keeps legacy aliases, command dispatch, and flag wiring together.
+//nolint:gocognit // CLI parsing keeps command dispatch and flag wiring together.
 func (opts *cmdOptions) parse(argv []string) (bool, int) {
 	name := argv[0]
 	args := argv[1:]
@@ -100,7 +100,7 @@ func (opts *cmdOptions) parse(argv []string) (bool, int) {
 	help := fs.BoolP("help", "h", false, "Show this help message")
 
 	if opts.command == commandRun || opts.command == commandConfig || opts.command == commandStatus || opts.command == commandMenu {
-		fs.StringVarP(&opts.listen, "listen", "l", "", "Address, port, unix:/path socket, or none to disable the HTTP API")
+		fs.Var(&opts.listeners, "listener", "Add an API listener as name=metrics,address=127.0.0.1:45876,apis=metrics; repeatable")
 		fs.DurationVar(&opts.collectorInterval, "collector-interval", 0, "Collector interval, for example 30s or 1m")
 		fs.StringVar(&opts.history, "history", "", "Comma-separated history plugin allowlist, or all/none")
 		fs.DurationVar(&opts.apiCacheDefault, "api-cache-default", 0, "Set every live API cache TTL")
@@ -119,11 +119,10 @@ func (opts *cmdOptions) parse(argv []string) (bool, int) {
 	}
 	fs.Usage = func() { printUsage(name) }
 
-	args = normalizeLegacyArgs(args)
 	if err := fs.Parse(args); err != nil {
 		return true, 2
 	}
-	opts.listenSet = flagChanged(fs, "listen")
+	opts.listenersSet = flagChanged(fs, "listener")
 	opts.collectorIntervalSet = flagChanged(fs, "collector-interval")
 	opts.historySet = flagChanged(fs, "history")
 	opts.apiCacheDefaultSet = flagChanged(fs, "api-cache-default")
@@ -148,26 +147,13 @@ func (opts *cmdOptions) parse(argv []string) (bool, int) {
 }
 
 func parseCommand(raw string) (string, bool) {
-	normalized := strings.ToLower(strings.TrimLeft(raw, "-"))
+	normalized := strings.ToLower(strings.TrimSpace(raw))
 	switch normalized {
 	case "run", "config", "db", "health", "help", "status", "menu":
 		return normalized, true
 	default:
 		return "help", false
 	}
-}
-
-func normalizeLegacyArgs(args []string) []string {
-	out := append([]string(nil), args...)
-	for i, arg := range out {
-		switch {
-		case arg == "-listen":
-			out[i] = "--listen"
-		case strings.HasPrefix(arg, "-listen="):
-			out[i] = "--listen" + arg[len("-listen"):]
-		}
-	}
-	return out
 }
 
 func flagChanged(fs *pflag.FlagSet, name string) bool {
@@ -189,14 +175,12 @@ func printUsage(name string) {
 	builder.WriteString("  health       Check if the latest persisted collection tick is fresh\n")
 	builder.WriteString("  status       Query a running local agent\n")
 	builder.WriteString("  help         Show this help message\n\n")
-	builder.WriteString("Aliases:\n")
-	builder.WriteString("  -run and -config are accepted for compatibility with dash-prefixed commands.\n\n")
 	builder.WriteString("Common flags:\n")
 	builder.WriteString("  --config path                 Config file path\n")
 	builder.WriteString("  -h, --help                    Show this help message\n")
 	builder.WriteString("  -v, --version                 Show version information\n\n")
 	builder.WriteString("Run/config flags:\n")
-	builder.WriteString("  -l, --listen address          Address, port, unix:/path socket, or none to disable the HTTP API\n")
+	builder.WriteString("  --listener spec               Listener spec: name=...,address=...,apis=metrics|commands; repeatable\n")
 	builder.WriteString("  --collector-interval duration Collector interval, for example 30s or 1m\n")
 	builder.WriteString("  --history list                History plugin allowlist, all, or none\n")
 	builder.WriteString("  --api-cache-default duration  Set every live API cache TTL\n")
@@ -258,9 +242,75 @@ func (f *durationMapFlag) Type() string {
 	return "plugin=duration"
 }
 
+type listenerListFlag struct {
+	values []config.Listener
+}
+
+func (f *listenerListFlag) String() string {
+	if f == nil || len(f.values) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(f.values))
+	for _, listener := range f.values {
+		parts = append(parts, listener.Name+"="+listener.Address)
+	}
+	return strings.Join(parts, ",")
+}
+
+func (f *listenerListFlag) Set(raw string) error {
+	listener := config.Listener{}
+	for part := range strings.SplitSeq(raw, ",") {
+		key, value, ok := strings.Cut(part, "=")
+		if !ok {
+			return fmt.Errorf("expected key=value in listener spec")
+		}
+		key = strings.ToLower(strings.TrimSpace(key))
+		value = strings.TrimSpace(value)
+		switch key {
+		case "name":
+			listener.Name = value
+		case "address", "addr":
+			listener.Address = value
+		case "apis", "api":
+			listener.APIs = splitListenerAPIs(value)
+		default:
+			return fmt.Errorf("unknown listener key %q", key)
+		}
+	}
+	if listener.Name == "" {
+		listener.Name = fmt.Sprintf("listener-%d", len(f.values)+1)
+	}
+	if listener.Address == "" {
+		return fmt.Errorf("listener address is required")
+	}
+	if len(listener.APIs) == 0 {
+		listener.APIs = []string{config.APIKindMetrics}
+	}
+	f.values = append(f.values, listener)
+	return nil
+}
+
+func (f *listenerListFlag) Type() string {
+	return "listener"
+}
+
+func splitListenerAPIs(raw string) []string {
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '|' || r == '+' || r == ';'
+	})
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field != "" {
+			out = append(out, field)
+		}
+	}
+	return out
+}
+
 func applyCLIToConfig(cfg *config.Config, opts cmdOptions) error {
-	if opts.listenSet {
-		cfg.Listen = opts.listen
+	if opts.listenersSet {
+		cfg.Listeners = append([]config.Listener(nil), opts.listeners.values...)
 	}
 	if opts.collectorIntervalSet {
 		if opts.collectorInterval <= 0 {
@@ -286,7 +336,7 @@ func applyCLIToConfig(cfg *config.Config, opts cmdOptions) error {
 }
 
 func configWasMutated(opts cmdOptions) bool {
-	return opts.listenSet ||
+	return opts.listenersSet ||
 		opts.collectorIntervalSet ||
 		opts.historySet ||
 		opts.apiCacheDefaultSet ||
@@ -390,9 +440,10 @@ func startAgent(ctx context.Context, opts cmdOptions, cfg config.Config, configS
 		return fmt.Errorf("failed to create agent: %w", err)
 	}
 	a.SetLiveCurrentTTLs(config.ToDurationMap(cfg.CacheTTL))
+	commandExecutor := newAgentCommandExecutor(a, opts)
 
 	if err := a.StartContext(ctx, app.RunOptions{
-		Addr:              app.GetAddress(cfg.Listen),
+		Listeners:         appListenersFromConfig(cfg),
 		CollectorInterval: cfg.CollectorInterval.Duration(),
 		History:           cfg.History,
 		HistorySet:        true,
@@ -400,6 +451,7 @@ func startAgent(ctx context.Context, opts cmdOptions, cfg config.Config, configS
 		ConfigSource:      configSource,
 		ConfigVersion:     cfg.Version,
 		CacheTTL:          config.ToDurationMap(cfg.CacheTTL),
+		CommandExecutor:   commandExecutor,
 		ReloadConfig: func() (app.ReloadOptions, error) {
 			reloaded, err := loadEffectiveConfig(opts)
 			if err != nil {
@@ -418,6 +470,19 @@ func startAgent(ctx context.Context, opts cmdOptions, cfg config.Config, configS
 		return fmt.Errorf("failed to start standalone agent: %w", err)
 	}
 	return nil
+}
+
+func appListenersFromConfig(cfg config.Config) []app.ListenerOptions {
+	out := make([]app.ListenerOptions, 0, len(cfg.Listeners))
+	for _, listener := range cfg.Listeners {
+		out = append(out, app.ListenerOptions{
+			Name:       listener.Name,
+			Address:    app.GetAddress(listener.Address),
+			APIs:       append([]string(nil), listener.APIs...),
+			BestEffort: listener.Implicit,
+		})
+	}
+	return out
 }
 
 func resolveDataDir(path string) (string, error) {

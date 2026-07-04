@@ -2,6 +2,8 @@
 package model
 
 import (
+	"encoding/json"
+
 	"github.com/mordilloSan/go-monitoring/internal/domain/container"
 	"github.com/mordilloSan/go-monitoring/internal/domain/smart"
 	"github.com/mordilloSan/go-monitoring/internal/domain/system"
@@ -78,11 +80,19 @@ type MetaResponse struct {
 	Version              string            `json:"version"`
 	DataDir              string            `json:"data_dir"`
 	DBPath               string            `json:"db_path"`
-	ListenAddr           string            `json:"listen_addr"`
+	Listeners            []ListenerMeta    `json:"listeners,omitempty"`
 	CollectorInterval    string            `json:"collector_interval"`
 	SmartRefreshInterval string            `json:"smart_refresh_interval"`
 	Config               ConfigMeta        `json:"config"`
 	Retention            map[string]string `json:"retention"`
+}
+
+type ListenerMeta struct {
+	Name             string   `json:"name"`
+	Address          string   `json:"address"`
+	EffectiveAddress string   `json:"effective_address"`
+	APIs             []string `json:"apis"`
+	Active           bool     `json:"active"`
 }
 
 type ConfigMeta struct {
@@ -96,4 +106,24 @@ type ConfigMeta struct {
 
 type ErrorResponse struct {
 	Error string `json:"error"`
+}
+
+type CommandRequest struct {
+	Command   string          `json:"command"`
+	Params    json.RawMessage `json:"params,omitempty"`
+	RequestID string          `json:"request_id,omitempty"`
+}
+
+type CommandResponse struct {
+	OK              bool          `json:"ok"`
+	Command         string        `json:"command"`
+	RequestID       string        `json:"request_id,omitempty"`
+	RestartRequired bool          `json:"restart_required,omitempty"`
+	Data            any           `json:"data,omitempty"`
+	Error           *CommandError `json:"error,omitempty"`
+}
+
+type CommandError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }

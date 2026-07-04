@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,6 +18,11 @@ import (
 const (
 	CurrentVersion = 1
 	EnvConfigFile  = "CONFIG_FILE"
+)
+
+const (
+	APIKindMetrics  = "metrics"
+	APIKindCommands = "commands"
 )
 
 type Duration time.Duration
@@ -46,11 +52,19 @@ func (d *Duration) UnmarshalJSON(data []byte) error {
 }
 
 type Config struct {
-	Version           int                 `json:"version"`
-	Listen            string              `json:"listen"`
-	CollectorInterval Duration            `json:"collector_interval"`
-	History           string              `json:"history"`
-	CacheTTL          map[string]Duration `json:"cache_ttl"`
+	Version             int                 `json:"version"`
+	Listeners           []Listener          `json:"listeners"`
+	AllowRemoteCommands bool                `json:"allow_remote_commands,omitempty"`
+	CollectorInterval   Duration            `json:"collector_interval"`
+	History             string              `json:"history"`
+	CacheTTL            map[string]Duration `json:"cache_ttl"`
+}
+
+type Listener struct {
+	Name     string   `json:"name"`
+	Address  string   `json:"address"`
+	APIs     []string `json:"apis"`
+	Implicit bool     `json:"-"`
 }
 
 func DefaultPath() string {
@@ -74,11 +88,31 @@ func Default() Config {
 	}
 	return Config{
 		Version:           CurrentVersion,
-		Listen:            "127.0.0.1:45876",
+		Listeners:         DefaultListeners(),
 		CollectorInterval: Duration(app.DefaultCollectorInterval),
 		History:           strings.Join(store.DefaultHistoryPluginNames(), ","),
 		CacheTTL:          cacheTTL,
 	}
+}
+
+func DefaultListeners() []Listener {
+	return []Listener{
+		{Name: APIKindMetrics, Address: "127.0.0.1:45876", APIs: []string{APIKindMetrics}, Implicit: true},
+		{Name: "control", Address: "unix:" + DefaultCommandSocketPath(), APIs: []string{APIKindCommands}, Implicit: true},
+	}
+}
+
+func DefaultCommandSocketPath() string {
+	if os.Geteuid() == 0 {
+		return "/run/go-monitoring/agent.sock"
+	}
+	if runtimeDir := strings.TrimSpace(os.Getenv("XDG_RUNTIME_DIR")); runtimeDir != "" {
+		return filepath.Join(runtimeDir, "go-monitoring", "agent.sock")
+	}
+	if cacheDir, err := os.UserCacheDir(); err == nil && cacheDir != "" {
+		return filepath.Join(cacheDir, "go-monitoring", "agent.sock")
+	}
+	return filepath.Join(os.TempDir(), "go-monitoring", "agent.sock")
 }
 
 func Load(path string) (Config, bool, error) {
@@ -97,6 +131,7 @@ func Load(path string) (Config, bool, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return cfg, true, err
 	}
+	normalizeLoadedConfig(&cfg)
 	for key := range cfg.CacheTTL {
 		if err := validateCacheKey(key); err != nil {
 			return cfg, true, err
@@ -111,6 +146,9 @@ func Save(path string, cfg Config) error {
 	}
 	if err := Validate(cfg); err != nil {
 		return err
+	}
+	if cfg.Listeners == nil {
+		cfg.Listeners = []Listener{}
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -129,6 +167,9 @@ func SaveIfMissing(path string, cfg Config) (bool, error) {
 	}
 	if err := Validate(cfg); err != nil {
 		return false, err
+	}
+	if cfg.Listeners == nil {
+		cfg.Listeners = []Listener{}
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return false, err
@@ -165,6 +206,9 @@ func Validate(cfg Config) error {
 	if cfg.CollectorInterval.Duration() <= 0 {
 		return fmt.Errorf("collector_interval must be greater than zero")
 	}
+	if err := validateListeners(cfg); err != nil {
+		return err
+	}
 	for key, ttl := range cfg.CacheTTL {
 		if err := validateCacheKey(key); err != nil {
 			return err
@@ -180,11 +224,6 @@ func Validate(cfg Config) error {
 }
 
 func ApplyEnv(cfg *Config, env func(string) (string, bool)) {
-	if value, ok := env("LISTEN"); ok && strings.TrimSpace(value) != "" {
-		cfg.Listen = value
-	} else if value, ok := env("PORT"); ok && strings.TrimSpace(value) != "" {
-		cfg.Listen = value
-	}
 	if value, ok := env("HISTORY"); ok {
 		cfg.History = value
 	}
@@ -192,6 +231,182 @@ func ApplyEnv(cfg *Config, env func(string) (string, bool)) {
 	ttls := ToDurationMap(cfg.CacheTTL)
 	app.ApplyLiveCurrentTTLEnv(ttls, env)
 	cfg.CacheTTL = FromDurationMap(ttls)
+}
+
+func normalizeLoadedConfig(cfg *Config) {
+	for i := range cfg.Listeners {
+		cfg.Listeners[i].Name = strings.TrimSpace(cfg.Listeners[i].Name)
+		cfg.Listeners[i].Address = strings.TrimSpace(cfg.Listeners[i].Address)
+		cfg.Listeners[i].APIs = normalizeAPIs(cfg.Listeners[i].APIs)
+	}
+}
+
+func SetMetricsListener(cfg *Config, listen string) {
+	normalized := app.GetAddress(listen)
+	if app.IsListenDisabled(normalized) {
+		out := cfg.Listeners[:0]
+		for _, listener := range cfg.Listeners {
+			if !listenerHasAPI(listener, APIKindMetrics) {
+				out = append(out, listener)
+			}
+		}
+		cfg.Listeners = out
+		return
+	}
+	listener := Listener{Name: APIKindMetrics, Address: normalized, APIs: []string{APIKindMetrics}}
+	for i := range cfg.Listeners {
+		if listenerHasAPI(cfg.Listeners[i], APIKindMetrics) {
+			cfg.Listeners[i].Address = normalized
+			cfg.Listeners[i].APIs = ensureAPI(cfg.Listeners[i].APIs, APIKindMetrics)
+			return
+		}
+	}
+	cfg.Listeners = append([]Listener{listener}, cfg.Listeners...)
+}
+
+func MetricsListener(cfg Config) (Listener, bool) {
+	for _, listener := range cfg.Listeners {
+		if listenerHasAPI(listener, APIKindMetrics) {
+			return listener, true
+		}
+	}
+	return Listener{}, false
+}
+
+func CommandListener(cfg Config) (Listener, bool) {
+	for _, listener := range cfg.Listeners {
+		if listenerHasAPI(listener, APIKindCommands) {
+			return listener, true
+		}
+	}
+	return Listener{}, false
+}
+
+func listenerHasAPI(listener Listener, api string) bool {
+	for _, value := range listener.APIs {
+		if strings.EqualFold(strings.TrimSpace(value), api) {
+			return true
+		}
+	}
+	return false
+}
+
+func ensureAPI(apis []string, api string) []string {
+	for _, value := range apis {
+		if strings.EqualFold(strings.TrimSpace(value), api) {
+			return normalizeAPIs(apis)
+		}
+	}
+	return append(normalizeAPIs(apis), api)
+}
+
+func normalizeAPIs(apis []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(apis))
+	for _, api := range apis {
+		api = strings.ToLower(strings.TrimSpace(api))
+		if api == "" || seen[api] {
+			continue
+		}
+		seen[api] = true
+		out = append(out, api)
+	}
+	return out
+}
+
+func validateListeners(cfg Config) error {
+	seenNames := map[string]bool{}
+	seenAddresses := map[string]bool{}
+	for i, listener := range cfg.Listeners {
+		if err := validateListenerName(i, listener, seenNames); err != nil {
+			return err
+		}
+		if err := validateListenerAddress(i, listener, seenAddresses); err != nil {
+			return err
+		}
+		if err := validateListenerAPIs(i, listener, cfg.AllowRemoteCommands); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateListenerName(index int, listener Listener, seen map[string]bool) error {
+	if strings.TrimSpace(listener.Name) == "" {
+		return fmt.Errorf("listeners[%d].name cannot be empty", index)
+	}
+	name := strings.ToLower(strings.TrimSpace(listener.Name))
+	if seen[name] {
+		return fmt.Errorf("duplicate listener name %q", listener.Name)
+	}
+	seen[name] = true
+	return nil
+}
+
+func validateListenerAddress(index int, listener Listener, seen map[string]bool) error {
+	address := strings.TrimSpace(listener.Address)
+	if address == "" {
+		return fmt.Errorf("listeners[%d].address cannot be empty", index)
+	}
+	if app.IsListenDisabled(address) {
+		return fmt.Errorf("listeners[%d].address cannot be disabled", index)
+	}
+	normalizedAddress := normalizeListenerAddress(address)
+	if seen[normalizedAddress] {
+		return fmt.Errorf("duplicate listener address %q", address)
+	}
+	seen[normalizedAddress] = true
+	return nil
+}
+
+func validateListenerAPIs(index int, listener Listener, allowRemoteCommands bool) error {
+	if len(listener.APIs) == 0 {
+		return fmt.Errorf("listeners[%d].apis cannot be empty", index)
+	}
+	for _, api := range listener.APIs {
+		switch strings.ToLower(strings.TrimSpace(api)) {
+		case APIKindMetrics, APIKindCommands:
+		default:
+			return fmt.Errorf("listeners[%d].apis contains unknown API %q", index, api)
+		}
+	}
+	if listenerHasAPI(listener, APIKindCommands) && !allowRemoteCommands && listenerIsNonLoopbackTCP(listener.Address) {
+		return fmt.Errorf("listeners[%d] enables commands on non-loopback TCP; set allow_remote_commands to true", index)
+	}
+	return nil
+}
+
+func normalizeListenerAddress(address string) string {
+	normalized := app.GetAddress(address)
+	network, addr := app.SplitListenAddress(normalized)
+	if network == "unix" {
+		return "unix:" + addr
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "tcp:" + addr
+	}
+	return "tcp:" + net.JoinHostPort(host, port)
+}
+
+func listenerIsNonLoopbackTCP(address string) bool {
+	normalized := app.GetAddress(address)
+	network, addr := app.SplitListenAddress(normalized)
+	if network != "tcp" {
+		return false
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return true
+	}
+	switch strings.ToLower(strings.Trim(host, "[]")) {
+	case "localhost", "127.0.0.1", "::1":
+		return false
+	case "", "0.0.0.0", "::":
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip == nil || !ip.IsLoopback()
 }
 
 func ApplyCacheDefault(cfg *Config, ttl time.Duration) {
@@ -242,6 +457,9 @@ func FromDurationMap(ttls map[string]time.Duration) map[string]Duration {
 }
 
 func JSON(cfg Config) (string, error) {
+	if cfg.Listeners == nil {
+		cfg.Listeners = []Listener{}
+	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return "", err

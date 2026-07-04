@@ -282,98 +282,9 @@ func (s *Store) init() error {
 		return s.createSchema()
 	case storeSchemaVersion:
 		return s.createSchema()
-	case 1, 2, 3:
-		return s.migrateLegacySchema(version)
 	default:
 		return fmt.Errorf("unsupported store schema version %d", version)
 	}
-}
-
-func (s *Store) migrateLegacySchema(version int) error {
-	backupPath, err := s.backupDatabase("backup", version)
-	if err != nil {
-		return fmt.Errorf("backup metrics.db before schema migration: %w", err)
-	}
-	slog.Warn(
-		"Migrating metrics.db to plugin storage schema",
-		"from_version", version,
-		"to_version", storeSchemaVersion,
-		"backup", backupPath,
-	)
-
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
-
-	if err = archiveLegacyTables(tx, version); err != nil {
-		return err
-	}
-	if err = createSchema(tx); err != nil {
-		return err
-	}
-	if err = upsertMeta(tx, "schema_migration_backup", backupPath); err != nil {
-		return err
-	}
-	if err = tx.Commit(); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (s *Store) backupDatabase(reason string, version int) (string, error) {
-	if s.path == "" {
-		return "", errors.New("database path is empty")
-	}
-	backupPath := fmt.Sprintf("%s.%s-v%d-%s", s.path, reason, version, time.Now().UTC().Format("20060102T150405.000000000Z"))
-	if _, err := s.db.Exec("VACUUM INTO " + sqlStringLiteral(backupPath)); err != nil {
-		return "", err
-	}
-	if err := os.Chmod(backupPath, 0o600); err != nil {
-		return "", err
-	}
-	return backupPath, nil
-}
-
-func archiveLegacyTables(tx *sql.Tx, version int) error {
-	for _, table := range legacyStoreTables() {
-		exists, err := tableExists(tx, table)
-		if err != nil {
-			return err
-		}
-		if !exists {
-			continue
-		}
-		archiveTable := fmt.Sprintf("legacy_v%d_%s", version, table)
-		if archived, err := tableExists(tx, archiveTable); err != nil {
-			return err
-		} else if archived {
-			return fmt.Errorf("legacy archive table %s already exists", archiveTable)
-		}
-		if _, err := tx.Exec(
-			fmt.Sprintf("ALTER TABLE %s RENAME TO %s", quoteIdentifier(table), quoteIdentifier(archiveTable)),
-		); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func tableExists(tx *sql.Tx, table string) (bool, error) {
-	var exists bool
-	err := tx.QueryRow(`
-		SELECT EXISTS(
-			SELECT 1
-			FROM sqlite_master
-			WHERE type = 'table' AND name = ?
-		)
-	`, table).Scan(&exists)
-	return exists, err
 }
 
 func (s *Store) createSchema() error {
@@ -416,31 +327,6 @@ func createSchema(db schemaExecer) error {
 		}
 	}
 	return nil
-}
-
-func legacyStoreTables() []string {
-	return []string{
-		"meta",
-		"system_current",
-		"system_stats_history",
-		"container_stats_history",
-		"containers_current",
-		"systemd_services_current",
-		"smart_devices_current",
-		"processes_current",
-		"process_count_current",
-		"programs_current",
-		"connections_current",
-		"irq_current",
-	}
-}
-
-func quoteIdentifier(identifier string) string {
-	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`
-}
-
-func sqlStringLiteral(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }
 
 func (s *Store) Close() error {

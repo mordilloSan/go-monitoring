@@ -122,25 +122,14 @@ const (
 
 // Core system data that is needed in All Systems table
 type Info struct {
-	Hostname      string `json:"hostname,omitempty" cbor:"0,keyasint,omitempty"`       // deprecated - moved to Details struct
-	KernelVersion string `json:"kernel_version,omitempty" cbor:"1,keyasint,omitempty"` // deprecated - moved to Details struct
-	Cores         int    `json:"cores,omitzero" cbor:"2,keyasint,omitzero"`            // deprecated - moved to Details struct
-	// Threads is needed in Info struct to calculate load average thresholds
-	Threads       int     `json:"threads,omitempty" cbor:"3,keyasint,omitempty"`
-	CpuModel      string  `json:"cpu_model,omitempty" cbor:"4,keyasint,omitempty"` // deprecated - moved to Details struct
-	Uptime        uint64  `json:"uptime_seconds" cbor:"5,keyasint"`
-	Cpu           float64 `json:"cpu_percent" cbor:"6,keyasint"`
-	MemPct        float64 `json:"memory_percent" cbor:"7,keyasint"`
-	DiskPct       float64 `json:"disk_percent" cbor:"8,keyasint"`
-	Bandwidth     float64 `json:"bandwidth_mb_per_second,omitzero" cbor:"9,keyasint"` // deprecated in favor of BandwidthBytes
-	AgentVersion  string  `json:"agent_version" cbor:"10,keyasint"`
-	Podman        bool    `json:"podman,omitempty" cbor:"11,keyasint,omitempty"` // deprecated - moved to Details struct
-	GpuPct        float64 `json:"gpu_percent,omitempty" cbor:"12,keyasint,omitempty"`
-	DashboardTemp float64 `json:"dashboard_temperature_celsius,omitempty" cbor:"13,keyasint,omitempty"`
-	// LoadAvg1       float64 `json:"l1,omitempty" cbor:"15,keyasint,omitempty"`  // deprecated - use `la` array instead
-	// LoadAvg5       float64 `json:"l5,omitempty" cbor:"16,keyasint,omitempty"`  // deprecated - use `la` array instead
-	// LoadAvg15      float64 `json:"l15,omitempty" cbor:"17,keyasint,omitempty"` // deprecated - use `la` array instead
-
+	Threads        int                `json:"threads,omitempty" cbor:"3,keyasint,omitempty"`
+	Uptime         uint64             `json:"uptime_seconds" cbor:"5,keyasint"`
+	Cpu            float64            `json:"cpu_percent" cbor:"6,keyasint"`
+	MemPct         float64            `json:"memory_percent" cbor:"7,keyasint"`
+	DiskPct        float64            `json:"disk_percent" cbor:"8,keyasint"`
+	AgentVersion   string             `json:"agent_version" cbor:"10,keyasint"`
+	GpuPct         float64            `json:"gpu_percent,omitempty" cbor:"12,keyasint,omitempty"`
+	DashboardTemp  float64            `json:"dashboard_temperature_celsius,omitempty" cbor:"13,keyasint,omitempty"`
 	BandwidthBytes uint64             `json:"bandwidth_bytes_per_second" cbor:"18,keyasint"`
 	LoadAvg        [3]float64         `json:"load_average,omitempty" cbor:"19,keyasint"`
 	ConnectionType ConnectionType     `json:"connection_type,omitempty" cbor:"20,keyasint,omitempty,omitzero"`

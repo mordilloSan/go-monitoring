@@ -103,12 +103,14 @@ The package installs:
 - `/lib/systemd/system/go-monitoring.service`
 - `/var/lib/go-monitoring` for `metrics.db`
 
-Change the listen port or collection interval through the config CLI, then reload
-the service. Bare ports are localhost-only; use an explicit host if you need a
+Change listeners or collection interval through the config CLI, then reload the
+service. Bare ports are localhost-only; use an explicit host if you need a
 different bind address:
 
 ```sh
-sudo go-monitoring config --config /etc/go-monitoring/config.json --listen 9000
+sudo go-monitoring config --config /etc/go-monitoring/config.json \
+  --listener name=metrics,address=127.0.0.1:9000,apis=metrics \
+  --listener name=control,address=unix:/run/go-monitoring/agent.sock,apis=commands
 sudo go-monitoring config --config /etc/go-monitoring/config.json --collector-interval 30s
 sudo systemctl reload go-monitoring.service
 ```
@@ -118,10 +120,10 @@ sudo systemctl reload go-monitoring.service
 ```sh
 ./go-monitoring                       # interactive menu on a terminal; CLI help otherwise
 ./go-monitoring run                   # listens on 127.0.0.1:45876 and collects every 15s by default
-./go-monitoring run --listen 9000     # listen on 127.0.0.1:9000
-./go-monitoring run --listen :9000    # listen on all interfaces
-./go-monitoring run --listen unix:/run/go-monitoring/agent.sock  # serve the API on a unix socket
-./go-monitoring run --listen none     # collect and store history without the HTTP API
+./go-monitoring run --listener name=metrics,address=127.0.0.1:9000,apis=metrics
+./go-monitoring run --listener name=metrics,address=:9000,apis=metrics
+./go-monitoring run --listener name=control,address=unix:/run/go-monitoring/agent.sock,apis=commands
+./go-monitoring run --listener name=metrics,address=127.0.0.1:45876,apis=metrics --listener name=control,address=unix:/run/go-monitoring/agent.sock,apis=commands
 ./go-monitoring run --history cpu,mem # store history only for selected plugins
 ./go-monitoring health                # exit 0 if the latest tick is fresh
 ./go-monitoring status                # query a running local agent (TCP or unix socket)
@@ -130,16 +132,13 @@ sudo systemctl reload go-monitoring.service
 
 Started with no arguments on a terminal, the CLI opens an interactive menu
 (also available as `go-monitoring menu`) covering the agent, status, the
-config editor, and database operations. Listen addresses take four forms: a
-bare port (localhost-only), `host:port`, `unix:/path` (or a bare absolute
-path) for a unix socket restricted to the agent's user and group, and `none` /
-`off` to disable the HTTP API entirely while the collector keeps recording
-history. `status` reaches the agent over TCP or the unix socket automatically;
-with the API disabled, use `go-monitoring health` for the file-based liveness
-check.
-
-Dash-prefixed command aliases are also accepted: `./go-monitoring -run` and
-`./go-monitoring -config`.
+config editor, and database operations. Listener addresses take three forms: a
+bare port (localhost-only), `host:port`, and `unix:/path` (or a bare absolute
+path) for a unix socket restricted to the agent's user and group. Use an empty
+`listeners` array to disable API listeners entirely while the collector keeps
+recording history. `status` reaches the agent over TCP or the unix socket
+automatically; with the API disabled, use `go-monitoring health` for the
+file-based liveness check.
 
 Configure the agent with a JSON file:
 
@@ -157,7 +156,7 @@ The config file defaults to `$CONFIG_FILE` when set. Root runs use
 `/etc/go-monitoring/config.json`; non-root runs use
 `$XDG_CONFIG_HOME/go-monitoring/config.json` or `~/.config/go-monitoring/config.json`.
 If the file is absent, `run` creates it from the effective startup config.
-Precedence is built-in defaults, config file, legacy environment variables,
+Precedence is built-in defaults, config file, supported environment variables,
 and explicit CLI flags. If the config file cannot be created, the agent
 continues with the effective config in memory.
 
@@ -187,7 +186,6 @@ sudo systemctl start go-monitoring.service
 Environment variables:
 
 - `CONFIG_FILE` — config file path
-- `LISTEN` / `PORT` — fallback listen address if `--listen` is not provided; bare ports bind to `127.0.0.1`, `unix:/path` selects a unix socket, `none` disables the HTTP API
 - `HISTORY` — comma-separated history plugin allowlist, or `all` / `none` (`cpu,mem,diskio,network,containers` by default)
 - `MEM_CALC` — memory calculation formula
 - `DISK_USAGE_CACHE` — cache duration for disk-usage polling (e.g. `15m`) to avoid waking sleeping disks

@@ -16,7 +16,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mordilloSan/go-monitoring/internal/app"
 	"github.com/mordilloSan/go-monitoring/internal/config"
 	"github.com/mordilloSan/go-monitoring/internal/health"
 	buildinfo "github.com/mordilloSan/go-monitoring/internal/version"
@@ -245,11 +244,10 @@ func menuAgentTarget(opts cmdOptions) (agentTarget, bool, error) {
 	if err != nil {
 		return agentTarget{}, false, err
 	}
-	addr := app.GetAddress(effective.cfg.Listen)
-	if app.IsListenDisabled(addr) {
+	target, _, err := statusTargetForConfig(effective.cfg)
+	if err != nil {
 		return agentTarget{}, false, nil
 	}
-	target, err := statusTarget(effective.cfg.Listen)
 	return target, true, err
 }
 
@@ -497,8 +495,10 @@ func (m *configMenu) printAgentAPIStartResult(ctx context.Context, opts cmdOptio
 
 func detachedRunArgs(opts cmdOptions) []string {
 	args := []string{"run", "--config", opts.configPath}
-	if opts.listenSet {
-		args = append(args, "--listen", opts.listen)
+	if opts.listenersSet {
+		for _, listener := range opts.listeners.values {
+			args = append(args, "--listener", listenerFlagValue(listener))
+		}
 	}
 	if opts.collectorIntervalSet {
 		args = append(args, "--collector-interval", opts.collectorInterval.String())
@@ -521,6 +521,10 @@ func detachedRunArgs(opts cmdOptions) []string {
 		args = append(args, "--api-cache", key+"="+opts.cacheTTL.values[key].String())
 	}
 	return args
+}
+
+func listenerFlagValue(listener config.Listener) string {
+	return "name=" + listener.Name + ",address=" + listener.Address + ",apis=" + strings.Join(listener.APIs, "|")
 }
 
 func detachedAgentLogPath() (string, error) {
@@ -724,7 +728,7 @@ func (m *configMenu) apiMenu(ctx context.Context, opts cmdOptions) error {
 	cursor := 0
 	for {
 		items := []string{
-			"HTTP API Config (" + apiListenSummary(cfg.Listen) + ")",
+			"HTTP API Config (" + apiListenSummaryForConfig(cfg) + ")",
 			"Live API cache TTLs",
 			"Reset API config",
 			"Save API config",
@@ -761,7 +765,8 @@ func (m *configMenu) apiMenu(ctx context.Context, opts cmdOptions) error {
 
 func resetAPIConfig(cfg *config.Config) {
 	defaults := config.Default()
-	cfg.Listen = defaults.Listen
+	cfg.Listeners = defaults.Listeners
+	cfg.AllowRemoteCommands = defaults.AllowRemoteCommands
 	cfg.CacheTTL = defaults.CacheTTL
 }
 

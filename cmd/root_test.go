@@ -49,34 +49,16 @@ func TestGetAddress(t *testing.T) {
 	tests := []struct {
 		name     string
 		listen   string
-		envVars  map[string]string
 		expected string
 	}{
 		{name: "default port", expected: "127.0.0.1:45876"},
 		{name: "port only", listen: "8080", expected: "127.0.0.1:8080"},
 		{name: "explicit address", listen: "127.0.0.1:9000", expected: "127.0.0.1:9000"},
 		{name: "explicit all interfaces", listen: ":9000", expected: ":9000"},
-		{
-			name: "listen env",
-			envVars: map[string]string{
-				"LISTEN": "0.0.0.0:9001",
-			},
-			expected: "0.0.0.0:9001",
-		},
-		{
-			name: "legacy port env",
-			envVars: map[string]string{
-				"PORT": "7000",
-			},
-			expected: "127.0.0.1:7000",
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			for key, value := range tt.envVars {
-				t.Setenv(key, value)
-			}
 			assert.Equal(t, tt.expected, app.GetAddress(tt.listen))
 		})
 	}
@@ -86,11 +68,10 @@ func TestParseFlags(t *testing.T) {
 	defaultConfigPath := config.DefaultPath()
 
 	tests := []struct {
-		name         string
-		args         []string
-		expected     cmdOptions
-		handled      bool
-		expectedArgs []string
+		name     string
+		args     []string
+		expected cmdOptions
+		handled  bool
 	}{
 		{
 			name:    "no args shows help",
@@ -103,9 +84,16 @@ func TestParseFlags(t *testing.T) {
 			expected: cmdOptions{command: commandRun, configPath: defaultConfigPath},
 		},
 		{
-			name:     "listen flag",
-			args:     []string{"cmd", "run", "--listen", "8080"},
-			expected: cmdOptions{command: commandRun, configPath: defaultConfigPath, listen: "8080", listenSet: true},
+			name: "listener flag",
+			args: []string{"cmd", "run", "--listener", "name=metrics,address=127.0.0.1:9000,apis=metrics"},
+			expected: cmdOptions{
+				command:      commandRun,
+				configPath:   defaultConfigPath,
+				listenersSet: true,
+				listeners: listenerListFlag{values: []config.Listener{
+					{Name: "metrics", Address: "127.0.0.1:9000", APIs: []string{config.APIKindMetrics}},
+				}},
+			},
 		},
 		{
 			name:     "history flag",
@@ -116,22 +104,6 @@ func TestParseFlags(t *testing.T) {
 			name:     "collector interval flag",
 			args:     []string{"cmd", "run", "--collector-interval", "30s"},
 			expected: cmdOptions{command: commandRun, configPath: defaultConfigPath, collectorInterval: 30 * time.Second, collectorIntervalSet: true},
-		},
-		{
-			name:         "legacy single dash listen",
-			args:         []string{"cmd", "run", "-listen=8080"},
-			expected:     cmdOptions{command: commandRun, configPath: defaultConfigPath, listen: "8080", listenSet: true},
-			expectedArgs: []string{"cmd", "run", "-listen=8080"},
-		},
-		{
-			name:     "dash run alias",
-			args:     []string{"cmd", "-run", "--listen", "8080"},
-			expected: cmdOptions{command: commandRun, configPath: defaultConfigPath, listen: "8080", listenSet: true},
-		},
-		{
-			name:     "capital dash config alias",
-			args:     []string{"cmd", "-Config", "--print"},
-			expected: cmdOptions{command: commandConfig, configPath: defaultConfigPath, configPrint: true},
 		},
 		{
 			name:     "db command defaults to check action",
@@ -171,9 +143,6 @@ func TestParseFlags(t *testing.T) {
 			if !handled {
 				tt.expected.cacheTTL = opts.cacheTTL
 				assert.Equal(t, tt.expected, opts)
-			}
-			if tt.expectedArgs != nil {
-				assert.Equal(t, tt.expectedArgs, tt.args)
 			}
 		})
 	}

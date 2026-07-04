@@ -62,46 +62,48 @@ func TestListenMenuDefaults(t *testing.T) {
 	assert.Equal(t, "unix:/tmp/agent.sock", unixSocketListenValue("unix:/tmp/agent.sock"))
 }
 
-func TestAPIListenSummary(t *testing.T) {
-	assert.Equal(t, "unix: no; HTTP: yes (:45876)", apiListenSummary(":45876"))
-	assert.Equal(t, "unix: yes (/run/go-monitoring/agent.sock); HTTP: no", apiListenSummary("unix:/run/go-monitoring/agent.sock"))
-	assert.Equal(t, "unix: no; HTTP: no", apiListenSummary("none"))
-}
-
 func TestBuildListenItemsShowsHTTPAndUnixState(t *testing.T) {
-	tcpItems := buildListenItems(":45876")
+	cfg := config.Default()
+	cfg.Listeners = []config.Listener{{Name: "metrics", Address: ":45876", APIs: []string{config.APIKindMetrics}}}
+	tcpItems := buildListenItems(cfg)
 	assert.Equal(t, "HTTP listener: yes", tcpItems[0])
 	assert.Equal(t, "Unix socket: no", tcpItems[4])
 
-	unixItems := buildListenItems("unix:/run/go-monitoring/agent.sock")
+	cfg.Listeners = []config.Listener{{Name: "control", Address: "unix:/run/go-monitoring/agent.sock", APIs: []string{config.APIKindCommands}}}
+	unixItems := buildListenItems(cfg)
 	assert.Equal(t, "HTTP listener: no", unixItems[0])
 	assert.Equal(t, "Unix socket: yes", unixItems[4])
 }
 
-func TestHandleListenEnterTogglesSingleListenerMode(t *testing.T) {
+func TestHandleListenEnterTogglesListeners(t *testing.T) {
 	menu := &configMenu{}
 
 	cfg := config.Default()
-	cfg.Listen = ":45876"
-	done, err := menu.handleListenEnter(0, &cfg, len(buildListenItems(cfg.Listen)))
+	cfg.Listeners = []config.Listener{{Name: "metrics", Address: ":45876", APIs: []string{config.APIKindMetrics}}}
+	done, err := menu.handleListenEnter(0, &cfg, len(buildListenItems(cfg)))
 	require.NoError(t, err)
 	assert.False(t, done)
-	assert.Equal(t, "none", cfg.Listen)
+	_, ok := config.MetricsListener(cfg)
+	assert.False(t, ok)
 
-	done, err = menu.handleListenEnter(4, &cfg, len(buildListenItems(cfg.Listen)))
+	done, err = menu.handleListenEnter(4, &cfg, len(buildListenItems(cfg)))
 	require.NoError(t, err)
 	assert.False(t, done)
-	assert.Equal(t, defaultUnixSocketListen, cfg.Listen)
+	command, ok := config.CommandListener(cfg)
+	require.True(t, ok)
+	assert.Equal(t, defaultUnixSocketListen, command.Address)
 
-	done, err = menu.handleListenEnter(0, &cfg, len(buildListenItems(cfg.Listen)))
+	done, err = menu.handleListenEnter(0, &cfg, len(buildListenItems(cfg)))
 	require.NoError(t, err)
 	assert.False(t, done)
-	assert.Equal(t, defaultTCPListen, cfg.Listen)
+	metrics, ok := config.MetricsListener(cfg)
+	require.True(t, ok)
+	assert.Equal(t, defaultTCPListen, metrics.Address)
 }
 
 func TestResetGeneralConfigPreservesAPISettings(t *testing.T) {
 	cfg := config.Default()
-	cfg.Listen = "unix:/tmp/custom.sock"
+	cfg.Listeners = []config.Listener{{Name: "control", Address: "unix:/tmp/custom.sock", APIs: []string{config.APIKindCommands}}}
 	cfg.CollectorInterval = config.Duration(42 * time.Second)
 	cfg.History = "none"
 
@@ -110,5 +112,7 @@ func TestResetGeneralConfigPreservesAPISettings(t *testing.T) {
 	defaults := config.Default()
 	assert.Equal(t, defaults.CollectorInterval, cfg.CollectorInterval)
 	assert.Equal(t, defaults.History, cfg.History)
-	assert.Equal(t, "unix:/tmp/custom.sock", cfg.Listen)
+	command, ok := config.CommandListener(cfg)
+	require.True(t, ok)
+	assert.Equal(t, "unix:/tmp/custom.sock", command.Address)
 }

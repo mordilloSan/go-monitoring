@@ -194,8 +194,8 @@ func resetGeneralConfig(cfg *config.Config) {
 func (m *configMenu) listenMenu(cfg *config.Config) error {
 	cursor := 0
 	for {
-		items := buildListenItems(cfg.Listen)
-		m.render("HTTP API Config", apiListenSummary(cfg.Listen), true, items, cursor)
+		items := buildListenItems(*cfg)
+		m.render("HTTP API Config", apiListenSummaryForConfig(*cfg), true, items, cursor)
 
 		key, err := m.readKey()
 		if err != nil {
@@ -222,15 +222,16 @@ func (m *configMenu) listenMenu(cfg *config.Config) error {
 	}
 }
 
-func buildListenItems(listen string) []string {
-	tcpEnabled, unixEnabled := listenMode(listen)
+func buildListenItems(cfg config.Config) []string {
+	tcpEnabled := metricsEnabled(cfg)
+	unixEnabled := commandsEnabled(cfg)
 	return []string{
 		fmt.Sprintf("HTTP listener: %s", yesNo(tcpEnabled)),
 		"HTTP bind: localhost (127.0.0.1:45876)",
 		"HTTP bind: all interfaces (:45876)",
-		fmt.Sprintf("HTTP address/port: %s", tcpListenPromptDefault(listen)),
+		fmt.Sprintf("HTTP address/port: %s", tcpListenPromptDefault(metricsListenValue(cfg))),
 		fmt.Sprintf("Unix socket: %s", yesNo(unixEnabled)),
-		fmt.Sprintf("Unix socket path: %s", unixSocketPromptDefault(listen)),
+		fmt.Sprintf("Unix socket path: %s", unixSocketPromptDefault(commandListenValue(cfg))),
 		"Disable API",
 		"Back",
 	}
@@ -242,62 +243,127 @@ func (m *configMenu) handleListenEnter(cursor int, cfg *config.Config, itemCount
 	}
 	switch cursor {
 	case 0:
-		if tcpEnabled, _ := listenMode(cfg.Listen); tcpEnabled {
-			cfg.Listen = app.ListenDisabled
+		if metricsEnabled(*cfg) {
+			removeListenerAPI(cfg, config.APIKindMetrics)
 		} else {
-			cfg.Listen = defaultTCPListen
+			config.SetMetricsListener(cfg, defaultTCPListen)
 		}
 	case 1:
-		cfg.Listen = defaultTCPListen
+		config.SetMetricsListener(cfg, defaultTCPListen)
 	case 2:
-		cfg.Listen = defaultAllTCPListen
+		config.SetMetricsListener(cfg, defaultAllTCPListen)
 	case 3:
-		next, changed, err := m.promptString("TCP listen address or port", tcpListenPromptDefault(cfg.Listen), validateTCPListen)
+		next, changed, err := m.promptString("TCP listen address or port", tcpListenPromptDefault(metricsListenValue(*cfg)), validateTCPListen)
 		if err != nil {
 			return false, err
 		}
 		if changed {
-			cfg.Listen = next
+			config.SetMetricsListener(cfg, next)
 		}
 	case 4:
-		if _, unixEnabled := listenMode(cfg.Listen); unixEnabled {
-			cfg.Listen = app.ListenDisabled
+		if commandsEnabled(*cfg) {
+			removeListenerAPI(cfg, config.APIKindCommands)
 		} else {
-			cfg.Listen = defaultUnixSocketListen
+			setCommandListener(cfg, defaultUnixSocketListen)
 		}
 	case 5:
-		next, changed, err := m.promptString("Unix socket path", unixSocketPromptDefault(cfg.Listen), validateUnixSocketPath)
+		next, changed, err := m.promptString("Unix socket path", unixSocketPromptDefault(commandListenValue(*cfg)), validateUnixSocketPath)
 		if err != nil {
 			return false, err
 		}
 		if changed {
-			cfg.Listen = unixSocketListenValue(next)
+			setCommandListener(cfg, unixSocketListenValue(next))
 		}
 	case 6:
-		cfg.Listen = app.ListenDisabled
+		cfg.Listeners = nil
 	}
 	return false, nil
 }
 
-func apiListenSummary(listen string) string {
-	normalized := app.GetAddress(listen)
-	if app.IsListenDisabled(normalized) {
-		return "unix: no; HTTP: no"
-	}
-	network, address := app.SplitListenAddress(normalized)
-	if network == "unix" {
-		return "unix: yes (" + address + "); HTTP: no"
-	}
-	return "unix: no; HTTP: yes (" + address + ")"
+func apiListenSummaryForConfig(cfg config.Config) string {
+	return "unix: " + yesNo(commandsEnabled(cfg)) + "; HTTP: " + yesNo(metricsEnabled(cfg))
 }
 
-func listenMode(listen string) (tcpEnabled bool, unixEnabled bool) {
+func metricsEnabled(cfg config.Config) bool {
+	_, ok := config.MetricsListener(cfg)
+	return ok
+}
+
+func commandsEnabled(cfg config.Config) bool {
+	_, ok := config.CommandListener(cfg)
+	return ok
+}
+
+func metricsListenValue(cfg config.Config) string {
+	if listener, ok := config.MetricsListener(cfg); ok {
+		return listener.Address
+	}
+	return app.ListenDisabled
+}
+
+func commandListenValue(cfg config.Config) string {
+	if listener, ok := config.CommandListener(cfg); ok {
+		return listener.Address
+	}
+	return app.ListenDisabled
+}
+
+func setCommandListener(cfg *config.Config, listen string) {
 	normalized := app.GetAddress(listen)
 	if app.IsListenDisabled(normalized) {
-		return false, false
+		removeListenerAPI(cfg, config.APIKindCommands)
+		return
 	}
-	network, _ := app.SplitListenAddress(normalized)
-	return network == "tcp", network == "unix"
+	for i := range cfg.Listeners {
+		if listenerHasAPI(cfg.Listeners[i], config.APIKindCommands) {
+			cfg.Listeners[i].Address = normalized
+			cfg.Listeners[i].APIs = ensureListenerAPI(cfg.Listeners[i].APIs, config.APIKindCommands)
+			return
+		}
+	}
+	cfg.Listeners = append(cfg.Listeners, config.Listener{Name: "control", Address: normalized, APIs: []string{config.APIKindCommands}})
+}
+
+func removeListenerAPI(cfg *config.Config, api string) {
+	out := cfg.Listeners[:0]
+	for _, listener := range cfg.Listeners {
+		apis := removeAPI(listener.APIs, api)
+		if len(apis) == 0 {
+			continue
+		}
+		listener.APIs = apis
+		out = append(out, listener)
+	}
+	cfg.Listeners = out
+}
+
+func removeAPI(apis []string, api string) []string {
+	out := make([]string, 0, len(apis))
+	for _, value := range apis {
+		if strings.EqualFold(strings.TrimSpace(value), api) {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
+}
+
+func ensureListenerAPI(apis []string, api string) []string {
+	for _, value := range apis {
+		if strings.EqualFold(strings.TrimSpace(value), api) {
+			return apis
+		}
+	}
+	return append(apis, api)
+}
+
+func listenerHasAPI(listener config.Listener, api string) bool {
+	for _, value := range listener.APIs {
+		if strings.EqualFold(strings.TrimSpace(value), api) {
+			return true
+		}
+	}
+	return false
 }
 
 func yesNo(value bool) string {
