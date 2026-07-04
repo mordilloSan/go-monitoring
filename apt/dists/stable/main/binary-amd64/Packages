@@ -74,3 +74,22 @@ Description: Lightweight Linux host monitoring agent
  go-monitoring collects local host metrics and serves a small HTTP API backed by
  a local SQLite history database.
 
+Package: go-monitoring
+Architecture: amd64
+Version: 1.4.0
+Priority: optional
+Section: admin
+Maintainer: go-monitoring maintainers
+Installed-Size: 12585
+Depends: systemd
+Filename: pool/main/go-monitoring_1.4.0_amd64.deb
+Size: 4616656
+MD5sum: f44c9bce56dddf9b5b000ed04cf4df04
+SHA1: 74fe1ef2daad65ba58372760f04aeb336046b39c
+SHA256: c6c6614802e5c1c9c536e1b9e2b4f77cee69a93aaa7f281e06cf386caa7e91cb
+SHA512: e809466b26ca20940da3abad590d94d367314c4db34cc2374edeb71b88ec3ba7047c0ce0f81b8dd88a57a93f6914c67a2d7755be1136dc927fea9e9352115b16
+Homepage: https://github.com/mordilloSan/go-monitoring
+Description: Lightweight Linux host monitoring agent
+ go-monitoring collects local host metrics and serves a small HTTP API backed by
+ a local SQLite history database.
+
