@@ -88,11 +88,12 @@ func (e *agentCommandExecutor) handleConfigReload(req apimodel.CommandRequest) h
 }
 
 type configSetParams struct {
-	CollectorInterval   *string            `json:"collector_interval"`
-	History             *string            `json:"history"`
-	CacheTTL            map[string]string  `json:"cache_ttl"`
-	Listeners           *[]config.Listener `json:"listeners"`
-	AllowRemoteCommands *bool              `json:"allow_remote_commands"`
+	CollectorInterval    *string            `json:"collector_interval"`
+	SmartRefreshInterval *string            `json:"smart_refresh_interval"`
+	History              *string            `json:"history"`
+	CacheTTL             map[string]string  `json:"cache_ttl"`
+	Listeners            *[]config.Listener `json:"listeners"`
+	AllowRemoteCommands  *bool              `json:"allow_remote_commands"`
 }
 
 func (e *agentCommandExecutor) handleConfigSet(_ context.Context, req apimodel.CommandRequest) httpapi.CommandResult {
@@ -132,6 +133,13 @@ func applyConfigSetParams(cfg *config.Config, params configSetParams) (bool, err
 		}
 		cfg.CollectorInterval = config.Duration(parsed)
 	}
+	if params.SmartRefreshInterval != nil {
+		parsed, err := time.ParseDuration(*params.SmartRefreshInterval)
+		if err != nil {
+			return false, err
+		}
+		cfg.SmartRefreshInterval = config.Duration(parsed)
+	}
 	if params.History != nil {
 		cfg.History = *params.History
 	}
@@ -159,12 +167,13 @@ func applyConfigSetParams(cfg *config.Config, params configSetParams) (bool, err
 
 func (e *agentCommandExecutor) reloadRuntimeConfig(req apimodel.CommandRequest, cfg config.Config, source string) httpapi.CommandResult {
 	if err := e.app.ReloadRuntime(app.ReloadOptions{
-		CollectorInterval: cfg.CollectorInterval.Duration(),
-		History:           cfg.History,
-		HistorySet:        true,
-		CacheTTL:          config.ToDurationMap(cfg.CacheTTL),
-		ConfigSource:      source,
-		ConfigVersion:     cfg.Version,
+		CollectorInterval:    cfg.CollectorInterval.Duration(),
+		SmartRefreshInterval: cfg.SmartRefreshInterval.Duration(),
+		History:              cfg.History,
+		HistorySet:           true,
+		CacheTTL:             config.ToDurationMap(cfg.CacheTTL),
+		ConfigSource:         source,
+		ConfigVersion:        cfg.Version,
 	}); err != nil {
 		return commandError(req, http.StatusBadRequest, "reload_failed", err.Error())
 	}

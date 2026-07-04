@@ -22,7 +22,10 @@ import (
 	"github.com/mordilloSan/go-monitoring/internal/version"
 )
 
-const DefaultCollectorInterval = 15 * time.Second
+const (
+	DefaultCollectorInterval    = 15 * time.Second
+	DefaultSmartRefreshInterval = time.Hour
+)
 
 // httpRuntime groups the HTTP server with its effective listen address. The
 // effective address differs from the requested one when the caller asks for
@@ -43,25 +46,27 @@ type ListenerOptions struct {
 }
 
 type RunOptions struct {
-	Listeners         []ListenerOptions
-	CollectorInterval time.Duration
-	History           string
-	HistorySet        bool
-	ConfigPath        string
-	ConfigSource      string
-	ConfigVersion     int
-	CacheTTL          map[string]time.Duration
-	CommandExecutor   httpapi.CommandExecutor
-	ReloadConfig      func() (ReloadOptions, error)
+	Listeners            []ListenerOptions
+	CollectorInterval    time.Duration
+	SmartRefreshInterval time.Duration
+	History              string
+	HistorySet           bool
+	ConfigPath           string
+	ConfigSource         string
+	ConfigVersion        int
+	CacheTTL             map[string]time.Duration
+	CommandExecutor      httpapi.CommandExecutor
+	ReloadConfig         func() (ReloadOptions, error)
 }
 
 type ReloadOptions struct {
-	CollectorInterval time.Duration
-	History           string
-	HistorySet        bool
-	CacheTTL          map[string]time.Duration
-	ConfigSource      string
-	ConfigVersion     int
+	CollectorInterval    time.Duration
+	SmartRefreshInterval time.Duration
+	History              string
+	HistorySet           bool
+	CacheTTL             map[string]time.Duration
+	ConfigSource         string
+	ConfigVersion        int
 }
 
 func (a *App) StartContext(ctx context.Context, opts RunOptions) error {
@@ -73,7 +78,7 @@ func (a *App) StartContext(ctx context.Context, opts RunOptions) error {
 	if err != nil {
 		return err
 	}
-	a.setRuntimeConfig(opts.CollectorInterval, historyPlugins, opts.ConfigPath, opts.ConfigSource, opts.ConfigVersion)
+	a.setRuntimeConfig(opts.CollectorInterval, opts.SmartRefreshInterval, historyPlugins, opts.ConfigPath, opts.ConfigSource, opts.ConfigVersion)
 	if opts.CacheTTL != nil {
 		a.SetLiveCurrentTTLs(opts.CacheTTL)
 	}
@@ -159,6 +164,9 @@ func (a *App) validateAndNormalizeOpts(opts *RunOptions) error {
 	}
 	if opts.CollectorInterval <= 0 {
 		opts.CollectorInterval = DefaultCollectorInterval
+	}
+	if opts.SmartRefreshInterval <= 0 {
+		opts.SmartRefreshInterval = DefaultSmartRefreshInterval
 	}
 	return nil
 }
@@ -480,22 +488,30 @@ func (a *App) CollectorInterval() time.Duration {
 	return a.collectorInterval
 }
 
-func (a *App) setRuntimeConfig(interval time.Duration, historyPlugins []string, configPath, configSource string, configVersion int) {
+func (a *App) setRuntimeConfig(interval, smartRefreshInterval time.Duration, historyPlugins []string, configPath, configSource string, configVersion int) {
 	if interval <= 0 {
 		interval = DefaultCollectorInterval
 	}
+	if smartRefreshInterval <= 0 {
+		smartRefreshInterval = DefaultSmartRefreshInterval
+	}
 	a.runtimeMu.Lock()
-	defer a.runtimeMu.Unlock()
 	a.collectorInterval = interval
 	a.historyPlugins = append([]string(nil), historyPlugins...)
 	a.configPath = configPath
 	a.configSource = configSource
 	a.configVersion = configVersion
+	a.runtimeMu.Unlock()
+
+	a.setSmartRefreshInterval(smartRefreshInterval)
 }
 
 func (a *App) applyReload(opts ReloadOptions) (time.Duration, []string, error) {
 	if opts.CollectorInterval <= 0 {
 		opts.CollectorInterval = DefaultCollectorInterval
+	}
+	if opts.SmartRefreshInterval <= 0 {
+		opts.SmartRefreshInterval = DefaultSmartRefreshInterval
 	}
 	historyPlugins, err := store.ParseHistoryPlugins(opts.History, opts.HistorySet)
 	if err != nil {
@@ -510,8 +526,20 @@ func (a *App) applyReload(opts ReloadOptions) (time.Duration, []string, error) {
 	a.runtimeMu.RLock()
 	configPath := a.configPath
 	a.runtimeMu.RUnlock()
-	a.setRuntimeConfig(opts.CollectorInterval, historyPlugins, configPath, opts.ConfigSource, opts.ConfigVersion)
+	a.setRuntimeConfig(opts.CollectorInterval, opts.SmartRefreshInterval, historyPlugins, configPath, opts.ConfigSource, opts.ConfigVersion)
 	return opts.CollectorInterval, historyPlugins, nil
+}
+
+func (a *App) setSmartRefreshInterval(interval time.Duration) {
+	if interval <= 0 {
+		interval = DefaultSmartRefreshInterval
+	}
+	a.Lock()
+	defer a.Unlock()
+	a.systemInfoManager.systemDetails.SmartInterval = interval
+	if a.smartManager != nil {
+		a.smartManager.refreshInterval = interval
+	}
 }
 
 func (a *App) configInfo() apimodel.ConfigMeta {

@@ -113,21 +113,6 @@ func New(ctx context.Context, dataDir ...string) (app *App, err error) {
 		slog.Debug("SMART", "err", err)
 	}
 
-	// SMART_INTERVAL env var overrides the SmartManager default refresh cadence.
-	// SmartManager may be nil when smartctl is unavailable; the value is still
-	// reported in systemDetails for diagnostic visibility.
-	if smartIntervalEnv, exists := utils.GetEnv("SMART_INTERVAL"); exists {
-		if duration, parseErr := time.ParseDuration(smartIntervalEnv); parseErr == nil && duration > 0 {
-			app.systemInfoManager.systemDetails.SmartInterval = duration
-			if app.smartManager != nil {
-				app.smartManager.refreshInterval = duration
-			}
-			slog.Info("SMART_INTERVAL", "duration", duration)
-		} else {
-			slog.Warn("Invalid SMART_INTERVAL", "err", parseErr)
-		}
-	}
-
 	// initialize GPU manager
 	app.gpuManager, err = NewGPUManager()
 	if err != nil {

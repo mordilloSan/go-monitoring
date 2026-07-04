@@ -23,6 +23,10 @@ type Stats struct {
 	MemZfsArc      float64             `json:"memory_zfs_arc_gb,omitempty" cbor:"6,keyasint,omitempty"` // ZFS ARC memory
 	Swap           float64             `json:"swap_gb,omitempty" cbor:"7,keyasint,omitempty"`
 	SwapUsed       float64             `json:"swap_used_gb,omitempty" cbor:"8,keyasint,omitempty"`
+	SwapPct        float64             `json:"memory_swap_percent,omitempty" cbor:"36,keyasint,omitempty"`
+	MemAvailable   float64             `json:"memory_available_gb,omitempty" cbor:"37,keyasint,omitempty"`
+	MemCached      float64             `json:"memory_cached_gb,omitempty" cbor:"38,keyasint,omitempty"`
+	MemBuffers     float64             `json:"memory_buffers_gb,omitempty" cbor:"39,keyasint,omitempty"`
 	DiskTotal      float64             `json:"disk_total_gb" cbor:"9,keyasint"`
 	DiskUsed       float64             `json:"disk_used_gb" cbor:"10,keyasint"`
 	DiskPct        float64             `json:"disk_percent" cbor:"11,keyasint"`

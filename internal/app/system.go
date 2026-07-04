@@ -225,8 +225,15 @@ func (a *App) updateMemoryStats(ctx context.Context, systemStats *system.Stats) 
 		return nil
 	}
 
+	swapUsed := usedSwapBytes(v.SwapTotal, v.SwapFree, v.SwapCached)
 	systemStats.Swap = utils.BytesToGigabytes(v.SwapTotal)
-	systemStats.SwapUsed = utils.BytesToGigabytes(v.SwapTotal - v.SwapFree - v.SwapCached)
+	systemStats.SwapUsed = utils.BytesToGigabytes(swapUsed)
+	if v.SwapTotal > 0 {
+		systemStats.SwapPct = utils.TwoDecimals(float64(swapUsed) / float64(v.SwapTotal) * 100)
+	}
+	systemStats.MemAvailable = utils.BytesToGigabytes(v.Available)
+	systemStats.MemCached = utils.BytesToGigabytes(v.Cached)
+	systemStats.MemBuffers = utils.BytesToGigabytes(v.Buffers)
 	cacheBuff := v.Cached + v.Buffers - v.Shared
 	if cacheBuff <= 0 {
 		cacheBuff = max(v.Total-v.Free-v.Used, 0)
@@ -247,6 +254,17 @@ func (a *App) updateMemoryStats(ctx context.Context, systemStats *system.Stats) 
 	systemStats.MemUsed = utils.BytesToGigabytes(v.Used)
 	systemStats.MemPct = utils.TwoDecimals(v.UsedPercent)
 	return nil
+}
+
+func usedSwapBytes(total, free, cached uint64) uint64 {
+	if free >= total {
+		return 0
+	}
+	used := total - free
+	if cached >= used {
+		return 0
+	}
+	return used - cached
 }
 
 func (a *App) updateGPUStats(cacheTimeMs uint16, systemStats *system.Stats) {

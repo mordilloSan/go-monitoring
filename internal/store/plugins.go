@@ -54,6 +54,7 @@ var pluginNames = []string{
 var defaultHistoryPluginNames = []string{
 	PluginCPU,
 	PluginMem,
+	PluginSwap,
 	PluginDiskIO,
 	PluginNetwork,
 	PluginContainers,
@@ -73,6 +74,12 @@ type MemData struct {
 	MemPct       float64 `json:"memory_percent"`
 	MemBuffCache float64 `json:"memory_buffer_cache_gb"`
 	MemZfsArc    float64 `json:"memory_zfs_arc_gb,omitempty"`
+	MemSwapTotal float64 `json:"memory_swap_total_gb"`
+	MemSwapUsed  float64 `json:"memory_swap_used_gb"`
+	MemSwapPct   float64 `json:"memory_swap_percent"`
+	MemAvailable float64 `json:"memory_available_gb"`
+	MemCached    float64 `json:"memory_cached_gb"`
+	MemBuffers   float64 `json:"memory_buffers_gb"`
 }
 
 type SwapData struct {
@@ -168,6 +175,12 @@ func snapshotPluginPayloads(data *system.CombinedData) map[string]any {
 			MemPct:       stats.MemPct,
 			MemBuffCache: stats.MemBuffCache,
 			MemZfsArc:    stats.MemZfsArc,
+			MemSwapTotal: stats.Swap,
+			MemSwapUsed:  stats.SwapUsed,
+			MemSwapPct:   stats.SwapPct,
+			MemAvailable: stats.MemAvailable,
+			MemCached:    stats.MemCached,
+			MemBuffers:   stats.MemBuffers,
 		},
 		PluginSwap: SwapData{
 			Swap:     stats.Swap,
@@ -325,6 +338,12 @@ func aggregatePluginHistoryJSON(plugin string, items []string) (string, error) {
 			stats.MemPct = item.MemPct
 			stats.MemBuffCache = item.MemBuffCache
 			stats.MemZfsArc = item.MemZfsArc
+			stats.Swap = item.MemSwapTotal
+			stats.SwapUsed = item.MemSwapUsed
+			stats.SwapPct = item.MemSwapPct
+			stats.MemAvailable = item.MemAvailable
+			stats.MemCached = item.MemCached
+			stats.MemBuffers = item.MemBuffers
 			return nil
 		}, func(stats system.Stats) any {
 			return snapshotPluginPayloads(&system.CombinedData{Stats: stats})[PluginMem]
@@ -478,6 +497,12 @@ func applyPluginPayload(plugin string, raw []byte, data *system.CombinedData) er
 		data.Stats.MemPct = item.MemPct
 		data.Stats.MemBuffCache = item.MemBuffCache
 		data.Stats.MemZfsArc = item.MemZfsArc
+		data.Stats.Swap = item.MemSwapTotal
+		data.Stats.SwapUsed = item.MemSwapUsed
+		data.Stats.SwapPct = item.MemSwapPct
+		data.Stats.MemAvailable = item.MemAvailable
+		data.Stats.MemCached = item.MemCached
+		data.Stats.MemBuffers = item.MemBuffers
 	case PluginSwap:
 		var item SwapData
 		if err := json.Unmarshal(raw, &item); err != nil {

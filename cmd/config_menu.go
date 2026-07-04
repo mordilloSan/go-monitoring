@@ -138,6 +138,7 @@ func (m *configMenu) runWithOptions(path string, cfg config.Config, loaded bool,
 func mainMenuItems(cfg config.Config, exitLabel string) []string {
 	return []string{
 		fmt.Sprintf("Collector interval: %s", cfg.CollectorInterval.Duration()),
+		fmt.Sprintf("SMART refresh interval: %s", cfg.SmartRefreshInterval.Duration()),
 		fmt.Sprintf("History plugins: %s", cfg.History),
 		"Reset general settings",
 		"Save and exit",
@@ -157,21 +158,29 @@ func (m *configMenu) handleRunEnter(cursor int, cfg *config.Config, path string,
 			cfg.CollectorInterval = config.Duration(next)
 		}
 	case 1:
+		next, changed, err := m.promptDuration("SMART refresh interval", cfg.SmartRefreshInterval.Duration(), validateCollectorInterval)
+		if err != nil {
+			return configMenuResult{}, true, err
+		}
+		if changed {
+			cfg.SmartRefreshInterval = config.Duration(next)
+		}
+	case 2:
 		if err := m.historyMenu(cfg); err != nil {
 			return configMenuResult{}, true, err
 		}
-	case 2:
-		resetGeneralConfig(cfg)
 	case 3:
+		resetGeneralConfig(cfg)
+	case 4:
 		if saved, err := m.save(path, *cfg); err != nil || saved {
 			return configMenuResult{pause: saved, cfg: *cfg}, true, err
 		}
-	case 4:
+	case 5:
 		if saved, err := m.save(path, *cfg); err != nil || saved {
 			return configMenuResult{run: saved, cfg: *cfg}, true, err
 		}
 		_ = m.enterRaw()
-	case 5:
+	case 6:
 		return m.leaveConfigMenu(opts), true, nil
 	}
 	return configMenuResult{}, false, nil
@@ -188,6 +197,7 @@ func (m *configMenu) leaveConfigMenu(opts configMenuOptions) configMenuResult {
 func resetGeneralConfig(cfg *config.Config) {
 	defaults := config.Default()
 	cfg.CollectorInterval = defaults.CollectorInterval
+	cfg.SmartRefreshInterval = defaults.SmartRefreshInterval
 	cfg.History = defaults.History
 }
 

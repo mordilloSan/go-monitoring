@@ -118,6 +118,12 @@ func TestStoreSnapshotAndCurrentQueries(t *testing.T) {
 	assert.Equal(t, capturedAt, cpuCapturedAt)
 	assert.Contains(t, string(cpuRaw), `"cpu_percent":42`)
 
+	memCapturedAt, memRaw, err := store.CurrentPlugin(ctx, PluginMem)
+	require.NoError(t, err)
+	assert.Equal(t, capturedAt, memCapturedAt)
+	assert.Contains(t, string(memRaw), `"memory_swap_total_gb":4.2`)
+	assert.Contains(t, string(memRaw), `"memory_available_gb":9.4`)
+
 	allPlugins := PluginNames()
 	require.Contains(t, allPlugins, PluginCPU)
 	require.Contains(t, allPlugins, PluginSmart)
@@ -611,6 +617,16 @@ func TestAggregatePluginHistoryJSONCoversAllPlugins(t *testing.T) {
 			assert.True(t, json.Valid([]byte(aggregated)), "aggregate should be valid JSON: %s", aggregated)
 			if _, passThrough := passThroughPlugins[plugin]; passThrough || plugin == PluginSmart {
 				assert.JSONEq(t, secondRaw, aggregated)
+			}
+			if plugin == PluginMem {
+				var item MemData
+				require.NoError(t, json.Unmarshal([]byte(aggregated), &item))
+				assert.InDelta(t, 3.0, item.MemSwapTotal, 0.001)
+				assert.InDelta(t, 1.5, item.MemSwapUsed, 0.001)
+				assert.InDelta(t, 50.0, item.MemSwapPct, 0.001)
+				assert.InDelta(t, 9.4, item.MemAvailable, 0.001)
+				assert.InDelta(t, 7.8, item.MemCached, 0.001)
+				assert.InDelta(t, 0.6, item.MemBuffers, 0.001)
 			}
 		})
 	}

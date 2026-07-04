@@ -99,6 +99,7 @@ func TestResetAPIConfigPreservesGeneralSettings(t *testing.T) {
 	cfg := config.Default()
 	cfg.Listeners = nil
 	cfg.CollectorInterval = config.Duration(42 * time.Second)
+	cfg.SmartRefreshInterval = config.Duration(3 * time.Hour)
 	cfg.History = "none"
 
 	resetAPIConfig(&cfg)
@@ -107,6 +108,7 @@ func TestResetAPIConfigPreservesGeneralSettings(t *testing.T) {
 	assert.Equal(t, defaults.Listeners, cfg.Listeners)
 	assert.Equal(t, defaults.CacheTTL, cfg.CacheTTL)
 	assert.Equal(t, config.Duration(42*time.Second), cfg.CollectorInterval)
+	assert.Equal(t, config.Duration(3*time.Hour), cfg.SmartRefreshInterval)
 	assert.Equal(t, "none", cfg.History)
 }
 

@@ -105,12 +105,14 @@ func TestResetGeneralConfigPreservesAPISettings(t *testing.T) {
 	cfg := config.Default()
 	cfg.Listeners = []config.Listener{{Name: "control", Address: "unix:/tmp/custom.sock", APIs: []string{config.APIKindCommands}}}
 	cfg.CollectorInterval = config.Duration(42 * time.Second)
+	cfg.SmartRefreshInterval = config.Duration(3 * time.Hour)
 	cfg.History = "none"
 
 	resetGeneralConfig(&cfg)
 
 	defaults := config.Default()
 	assert.Equal(t, defaults.CollectorInterval, cfg.CollectorInterval)
+	assert.Equal(t, defaults.SmartRefreshInterval, cfg.SmartRefreshInterval)
 	assert.Equal(t, defaults.History, cfg.History)
 	command, ok := config.CommandListener(cfg)
 	require.True(t, ok)
