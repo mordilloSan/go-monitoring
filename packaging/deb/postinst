@@ -4,6 +4,16 @@ set -e
 # $1=configure, $2=previously installed version (empty on fresh install).
 # Guard on /run/systemd/system so containers/chroots without a running
 # systemd still install cleanly.
+config_file="/etc/go-monitoring/config.json"
+if [ "$1" = "configure" ] && [ -f "$config_file" ]; then
+	if grep -Eq 'unix:/run/user/[0-9]+/go-monitoring/agent\.sock' "$config_file" &&
+		! grep -Fq 'unix:/run/go-monitoring/agent.sock' "$config_file"; then
+		sed -i.bak -E \
+			's|unix:/run/user/[0-9]+/go-monitoring/agent\.sock|unix:/run/go-monitoring/agent.sock|g' \
+			"$config_file"
+	fi
+fi
+
 if [ "$1" = "configure" ] && [ -d /run/systemd/system ]; then
 	systemctl daemon-reload || true
 	systemctl enable go-monitoring.service || true

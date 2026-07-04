@@ -36,7 +36,10 @@ chmod 0644 "$LIST"
 
 echo "Installing go-monitoring..."
 apt-get update -qq
-apt-get install -y go-monitoring
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
+	-o Dpkg::Options::=--force-confdef \
+	-o Dpkg::Options::=--force-confold \
+	go-monitoring
 
 echo
 echo "Done. The service is enabled and running:"
