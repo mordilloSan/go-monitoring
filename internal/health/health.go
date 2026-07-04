@@ -58,7 +58,8 @@ func updateHealthFile(path string) error {
 	if chmodErr != nil && !errors.Is(chmodErr, os.ErrPermission) {
 		return chmodErr
 	}
-	return nil
+	now := time.Now()
+	return os.Chtimes(path, now, now)
 }
 
 func GetStatus() (Status, error) {

@@ -56,6 +56,7 @@ $(error Could not find go in $(GO_INSTALL_DIR)/bin or PATH)
 endif
 GO_TOOLCHAIN ?= auto
 SKIP_ENSURE_GO ?= 0
+RUN_INSTALLED_SMOKE ?= 0
 GO_CMD_ENV = env PATH="$(GO_INSTALL_DIR)/bin:$(GO_TOOLS_DIR)/bin:$$PATH" GOTOOLCHAIN=$(GO_TOOLCHAIN)
 # Tool versions are pinned so CI runs are reproducible and cacheable.
 GOLANGCI_LINT_MODULE  := github.com/golangci/golangci-lint/v2/cmd/golangci-lint
@@ -116,7 +117,7 @@ AGENT_GO_TAGS := -tags glibc
 endif
 endif
 
-.PHONY: build clean test check-backend test-backend dev install uninstall golint golint-only deadcode deadcode-only ensure-go ensure-golint ensure-deadcode
+.PHONY: build clean test check-backend test-backend dev install uninstall smoke-installed golint golint-only deadcode deadcode-only ensure-go ensure-golint ensure-deadcode
 .DEFAULT_GOAL := build
 
 ensure-go:
@@ -200,6 +201,10 @@ check-backend: ensure-go ensure-golint ensure-deadcode
 	$(MAKE) --no-print-directory test-backend SKIP_ENSURE_GO=1 || ST=1; \
 	echo ""; \
 	$(MAKE) --no-print-directory deadcode-only SKIP_ENSURE_GO=1 || true; \
+	if [ "$(RUN_INSTALLED_SMOKE)" = "1" ]; then \
+		echo ""; \
+		$(MAKE) --no-print-directory smoke-installed || ST=1; \
+	fi; \
 	if [ $$ST -ne 0 ]; then \
 		echo "❌ Backend checks failed."; \
 		exit 1; \
@@ -261,6 +266,9 @@ install: build
 
 uninstall:
 	rm -f "$(BINDIR)/go-monitoring"
+
+smoke-installed:
+	./scripts/smoke-installed.sh
 
 dev:
 	@if command -v entr >/dev/null 2>&1; then \

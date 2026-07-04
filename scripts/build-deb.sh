@@ -41,7 +41,11 @@ mkdir -p \
 	"$out_dir"
 
 install -m 0755 "$binary" "$pkgroot/usr/bin/go-monitoring"
-"$binary" config --print --config "$root/config.json" > "$pkgroot/etc/go-monitoring/config.json"
+"$binary" config --config "$root/config.json" \
+	--listener "name=metrics,address=127.0.0.1:45876,apis=metrics" \
+	--listener "name=control,address=unix:/run/go-monitoring/agent.sock,apis=commands" \
+	> /dev/null
+install -m 0644 "$root/config.json" "$pkgroot/etc/go-monitoring/config.json"
 install -m 0644 packaging/systemd/go-monitoring.service "$pkgroot/lib/systemd/system/go-monitoring.service"
 install -m 0644 packaging/deb/conffiles "$pkgroot/DEBIAN/conffiles"
 install -m 0755 packaging/deb/postinst "$pkgroot/DEBIAN/postinst"
