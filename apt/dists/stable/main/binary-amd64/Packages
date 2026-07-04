@@ -64,11 +64,11 @@ Maintainer: go-monitoring maintainers
 Installed-Size: 12585
 Depends: systemd
 Filename: pool/main/go-monitoring_1.3.0_amd64.deb
-Size: 4615088
-MD5sum: 932e8dffe8626b63899628a0036b346c
-SHA1: ec7594a1f912e613d9095eb971861651165833e1
-SHA256: 614eebd7a67e2dadf6adba4df6897ac9868f8d3aaf69e05eb086743d962b8a30
-SHA512: e5f181371229a6520d882377b1e705768ae1aec8cd2eb323d199b7f7028455ba2a7942ee3ae3ab824a4a0f15df0f291274baa6c6d76a27a60eb499933bd1628e
+Size: 4615246
+MD5sum: cf71e0b0f94ae1037efed4f7f7f23e75
+SHA1: 24723da09d43ca1edc0dc1ebdcd7620b35b24961
+SHA256: d58874a5bd02a9bd1c3d256fcc272ed08fcae430a571bd097b9e3c2e1f1cb11e
+SHA512: bc7d368f9b3f9ade452061545444c9bc68b29b40df0c675d6125382967c66e191f535b5ce389474671d3659f59ce503f8c15eb8c398de4af8a33d4f575ab8f65
 Homepage: https://github.com/mordilloSan/go-monitoring
 Description: Lightweight Linux host monitoring agent
  go-monitoring collects local host metrics and serves a small HTTP API backed by

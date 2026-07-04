@@ -28,8 +28,11 @@ fi
 
 echo "Adding APT repository..."
 mkdir -p /etc/apt/keyrings
+chmod 0755 /etc/apt/keyrings
 curl -fsSL "$REPO_URL/gpg.key" -o "$KEYRING"
+chmod 0644 "$KEYRING"
 echo "deb [signed-by=$KEYRING arch=amd64] $REPO_URL stable main" > "$LIST"
+chmod 0644 "$LIST"
 
 echo "Installing go-monitoring..."
 apt-get update -qq
