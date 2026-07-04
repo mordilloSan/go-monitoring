@@ -185,6 +185,79 @@ func TestPostinstMigratesUserRuntimeCommandSocket(t *testing.T) {
 	}
 }
 
+func TestInstalledSmokeScriptIsNonDestructive(t *testing.T) {
+	repoRoot := testRepoRoot(t)
+	scriptPath := filepath.Join(repoRoot, "scripts/smoke-installed.sh")
+	info, err := os.Stat(scriptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&0o111 == 0 {
+		t.Fatalf("smoke-installed.sh is not executable: mode %v", info.Mode())
+	}
+
+	contents, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(contents)
+
+	for _, want := range []string{
+		"systemctl is-active",
+		"http://localhost/healthz",
+		"commands.list",
+		"config.get",
+		"status.get",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("smoke-installed.sh missing %q", want)
+		}
+	}
+
+	for _, forbidden := range []string{
+		"apt-get install",
+		"apt install",
+		"dpkg -i",
+		"systemctl restart",
+		"systemctl reload",
+		"systemctl stop",
+		"systemctl start",
+		"systemctl enable",
+		"systemctl disable",
+		" rm ",
+		" sed -i",
+	} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("smoke-installed.sh contains destructive operation %q", forbidden)
+		}
+	}
+}
+
+func TestMakeTestCanRunInstalledSmokeAfterDeadcode(t *testing.T) {
+	repoRoot := testRepoRoot(t)
+	contents, err := os.ReadFile(filepath.Join(repoRoot, "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	makefile := string(contents)
+
+	if !strings.Contains(makefile, "RUN_INSTALLED_SMOKE ?= 0") {
+		t.Fatal("Makefile does not define RUN_INSTALLED_SMOKE default")
+	}
+	if !strings.Contains(makefile, `if [ "$(RUN_INSTALLED_SMOKE)" = "1" ]`) {
+		t.Fatal("Makefile does not gate installed smoke behind RUN_INSTALLED_SMOKE=1")
+	}
+
+	deadcodeIndex := strings.Index(makefile, "$(MAKE) --no-print-directory deadcode-only")
+	smokeIndex := strings.Index(makefile, "$(MAKE) --no-print-directory smoke-installed")
+	if deadcodeIndex < 0 || smokeIndex < 0 {
+		t.Fatalf("Makefile missing deadcode or smoke invocation")
+	}
+	if smokeIndex < deadcodeIndex {
+		t.Fatal("installed smoke should run after deadcode")
+	}
+}
+
 func testRepoRoot(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
